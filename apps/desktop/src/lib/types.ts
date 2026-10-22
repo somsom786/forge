@@ -197,4 +197,145 @@ export type UiEvent =
   | { type: 'mission'; mission: Mission }
   | { type: 'approval'; approval: Approval }
   | { type: 'session'; session: AgentSession }
+  | { type: 'verification'; run: VerificationRun }
   | { type: 'notice'; level: 'info' | 'warn' | 'error'; message: string };
+
+// ---- Phase 2: contracts, verification, review, proof -----------------------------------------
+
+export type CheckKind = 'test' | 'build' | 'lint' | 'typecheck' | 'security' | 'custom';
+
+export interface CheckSpec {
+  id: string;
+  name: string;
+  /** Shell command run in the mission worktree. Authored or confirmed by the user, never by the agent. */
+  command: string;
+  kind: CheckKind;
+  timeoutSecs: number;
+  /** A required check not passing on the current changes needs a recorded override reason to approve. */
+  required: boolean;
+}
+
+export interface Criterion {
+  id: string;
+  text: string;
+  /** Ids of checks whose passing result is evidence for this criterion. */
+  verifiedBy: string[];
+  /** Needs a human verdict in addition to any checks. */
+  manual: boolean;
+  /** Evaluated automatically against the contract's scope globs. */
+  scopeRule: boolean;
+}
+
+export interface Contract {
+  version: number;
+  /** Globs relative to the repo root; a trailing "/" means everything beneath. Empty = unrestricted. */
+  inScope: string[];
+  outOfScope: string[];
+  criteria: Criterion[];
+  checks: CheckSpec[];
+  securityConstraints: string[];
+  reviewExpectations: string | null;
+}
+
+export type RunState = 'running' | 'passed' | 'failed' | 'error' | 'timeout' | 'cancelled';
+
+export interface VerificationRun {
+  id: string;
+  missionId: string;
+  checkId: string;
+  name: string;
+  command: string;
+  kind: string;
+  state: RunState;
+  exitCode: number | null;
+  startedAt: string;
+  endedAt: string | null;
+  durationMs: number | null;
+  /** Identity of the changes this ran against. */
+  fingerprint: string;
+  headCommit: string | null;
+  /** The check modified files in the worktree, so its result no longer matches the current changes. */
+  mutated: boolean;
+  outputTail: string;
+  outputTruncated: boolean;
+  logPath: string | null;
+}
+
+/** Derived from evidence only; an agent claiming "done" changes nothing. */
+export type CriterionStatus =
+  | { status: 'not_checked' }
+  | { status: 'check_pending'; pending: string[] }
+  | { status: 'verified_by_checks'; evidence: string[] }
+  | { status: 'verified_manually'; note: string | null }
+  | { status: 'verified_by_scope_check' }
+  | { status: 'failed'; reason: string }
+  | { status: 'inconclusive'; reason: string }
+  | { status: 'requires_manual_review'; reason: string };
+
+export interface ManualVerdict {
+  criterionId: string;
+  pass: boolean;
+  note: string | null;
+  fingerprint: string;
+  decidedBy: string;
+  at: string;
+}
+
+export interface CriterionReport {
+  id: string;
+  text: string;
+  status: CriterionStatus;
+  manual: boolean;
+  scopeRule: boolean;
+  verifiedBy: string[];
+  manualVerdict: ManualVerdict | null;
+}
+
+export interface CheckReport {
+  spec: CheckSpec;
+  latest: VerificationRun | null;
+  /** The latest run is about the changes as they are now. */
+  fresh: boolean;
+  runs: number;
+}
+
+export interface ScopeReport { outsideInScope: string[]; inOutOfScope: string[] }
+
+export interface VerificationReport {
+  fingerprint: string;
+  headCommit: string | null;
+  files: ChangedFile[];
+  scope: ScopeReport;
+  scopeConfigured: boolean;
+  criteria: CriterionReport[];
+  checks: CheckReport[];
+  /** Required checks not passing on the current changes. */
+  blockingChecks: string[];
+  /** Everything not established, in plain words. If non-empty, approving needs an override reason. */
+  unresolved: string[];
+  /** Cannot be overridden: agent running, unanswered permission requests, a check in flight. */
+  hardBlockers: string[];
+  contract: Contract;
+}
+
+export type ReviewDecisionKind = 'approve' | 'reject' | 'request_changes';
+
+export interface MergeOutcome {
+  commit: string;
+  branch: string;
+  target: string;
+  squashed: boolean;
+  cleanedUp: boolean;
+  notes: string[];
+}
+
+export interface ProofPack {
+  id: string;
+  missionId: string;
+  createdAt: string;
+  contentSha256: string;
+  markdown: string;
+  /** Local path of the exact diff the pack describes. */
+  diffPath: string | null;
+  content: Record<string, any>;
+}

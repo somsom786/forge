@@ -97,6 +97,62 @@ const MIGRATIONS: &[&str] = &[
         detail_json TEXT
     );
     "#,
+    // v2 — verification, review, proof
+    r#"
+    CREATE TABLE verification_run (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES mission(id),
+        check_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        command TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        state TEXT NOT NULL,
+        exit_code INTEGER,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        duration_ms INTEGER,
+        fingerprint TEXT NOT NULL,
+        head_commit TEXT,
+        mutated INTEGER NOT NULL DEFAULT 0,
+        output_tail TEXT NOT NULL DEFAULT '',
+        output_truncated INTEGER NOT NULL DEFAULT 0,
+        log_path TEXT
+    );
+    CREATE INDEX verification_mission ON verification_run(mission_id, started_at);
+    CREATE TABLE manual_verdict (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mission_id TEXT NOT NULL REFERENCES mission(id),
+        criterion_id TEXT NOT NULL,
+        pass INTEGER NOT NULL,
+        note TEXT,
+        fingerprint TEXT NOT NULL,
+        decided_by TEXT NOT NULL,
+        at TEXT NOT NULL
+    );
+    CREATE INDEX verdict_mission ON manual_verdict(mission_id, criterion_id, id);
+    CREATE TABLE review_decision (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES mission(id),
+        decision TEXT NOT NULL,
+        note TEXT,
+        override_reason TEXT,
+        fingerprint TEXT NOT NULL,
+        head_commit TEXT,
+        decided_by TEXT NOT NULL,
+        at TEXT NOT NULL
+    );
+    CREATE INDEX review_mission ON review_decision(mission_id, at);
+    CREATE TABLE proof_pack (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES mission(id),
+        created_at TEXT NOT NULL,
+        content_json TEXT NOT NULL,
+        content_sha256 TEXT NOT NULL,
+        markdown TEXT NOT NULL,
+        diff_path TEXT
+    );
+    CREATE INDEX proof_mission ON proof_pack(mission_id, created_at);
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

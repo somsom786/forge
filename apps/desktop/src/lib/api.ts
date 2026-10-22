@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   ActivityEvent, AppInfo, Approval, Mission, MissionChanges, MissionDetail, MissionDiff, NewMissionArgs,
   Project, ProviderInfo, RecoveryReport, RepoStatus, UiEvent,
+  CheckSpec, Contract, MergeOutcome, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
 } from './types';
 
 export const api = {
@@ -29,6 +30,22 @@ export const api = {
   missionChanges: (missionId: string) => invoke<MissionChanges>('mission_changes', { missionId }),
   missionDiff: (missionId: string) => invoke<MissionDiff>('mission_diff', { missionId }),
   openWorktreeInEditor: (missionId: string) => invoke<void>('open_worktree_in_editor', { missionId }),
+
+  contractGet: (missionId: string) => invoke<Contract>('contract_get', { missionId }),
+  contractSet: (missionId: string, contract: Contract) => invoke<Mission>('contract_set', { missionId, contract }),
+  checksSuggest: (projectId: string) => invoke<CheckSpec[]>('checks_suggest', { projectId }),
+  verificationReport: (missionId: string) => invoke<VerificationReport>('verification_report', { missionId }),
+  verificationRuns: (missionId: string) => invoke<VerificationRun[]>('verification_runs', { missionId }),
+  checkStart: (missionId: string, checkId: string) => invoke<VerificationRun>('check_start', { missionId, checkId }),
+  checkCancel: (missionId: string) => invoke<void>('check_cancel', { missionId }),
+  verdictSet: (missionId: string, criterionId: string, pass: boolean, note?: string) =>
+    invoke<void>('verdict_set', { missionId, criterionId, pass, note: note ?? null }),
+  reviewSubmit: (missionId: string, decision: ReviewDecisionKind, note?: string, overrideReason?: string) =>
+    invoke<Mission>('review_submit', { missionId, decision, note: note ?? null, overrideReason: overrideReason ?? null }),
+  missionMerge: (missionId: string, squash: boolean) => invoke<MergeOutcome>('mission_merge', { missionId, squash }),
+  missionCleanup: (missionId: string, confirmLoss: boolean) => invoke<WorktreeSafety>('mission_cleanup', { missionId, confirmLoss }),
+  proofpackGenerate: (missionId: string) => invoke<ProofPack>('proofpack_generate', { missionId }),
+  proofpackList: (missionId: string) => invoke<ProofPack[]>('proofpack_list', { missionId }),
 
   approvalsPending: (missionId?: string) => invoke<Approval[]>('approvals_pending', { missionId: missionId ?? null }),
   approvalDecide: (approvalId: string, approved: boolean, note?: string) =>

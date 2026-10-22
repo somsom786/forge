@@ -5,16 +5,18 @@ import { createMission, refreshProviders } from '../lib/actions';
 import { providerLabel } from '../lib/format';
 import { useStore } from '../lib/store';
 import type { PermissionProfile, ProviderId, ProviderInfo } from '../lib/types';
+import { defaultModel, modelRequired, modelSatisfied } from '../lib/provider';
 import { Kbd } from './ui';
 
 export function providerAvailability(p: ProviderInfo): { ok: boolean; reason: string | null } {
   if (!p.adapterAvailable) return { ok: false, reason: `${p.name} has no adapter in this build yet, so missions cannot use it.` };
-  if (!p.installed) return { ok: false, reason: `${p.name} is not installed (not found on this machine).` };
+  if (!p.installed) return { ok: false, reason: `${p.name} is not available: ${p.notes.length ? p.notes.join(' ') : 'not found on this machine.'}` };
   if (p.signedIn === false) return { ok: false, reason: `${p.name} is installed but not signed in. Sign in with its CLI first.` };
   return { ok: true, reason: null };
 }
 
 export function billingNote(p: ProviderInfo): string {
+  if (p.id === 'claude-local') return 'Runs on this machine: no provider billing.';
   const m = (p.authMethod ?? '').toLowerCase();
   if (!p.authMethod) return 'Auth method not reported. FORGE cannot confirm how usage is billed.';
   if (m.includes('claude.ai') || m.includes('subscription') || m.includes('chatgpt') || m.includes('oauth')) {
@@ -50,7 +52,6 @@ export function NewMissionDialog() {
     setProjectId(presetProject ?? currentProjectId ?? projects[0]?.id ?? '');
     setObjective('');
     setTitle('');
-    setModel('');
     setProfile('default');
     setBusy(false);
     void refreshProviders();
@@ -65,7 +66,13 @@ export function NewMissionDialog() {
   }, [open, providers, provider, firstAvailable]);
 
   const selected = providers?.find((p) => p.id === provider);
-  const canSubmit = !!projectId && objective.trim().length > 0 && !!selected && providerAvailability(selected).ok && !busy;
+  const hasList = (selected?.models.length ?? 0) > 0;
+  // Default to the first listed model whenever the provider changes.
+  useEffect(() => {
+    setModel(defaultModel(selected));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider]);
+  const canSubmit = !!projectId && objective.trim().length > 0 && !!selected && providerAvailability(selected).ok && modelSatisfied(selected, model) && !busy;
 
   const submit = async (start: boolean) => {
     if (!canSubmit || !provider) return;
@@ -162,6 +169,9 @@ export function NewMissionDialog() {
                           </span>
                         </div>
                         {av.reason ? <div className="text-warn">{av.reason}</div> : <div className="text-muted">{billingNote(p)}</div>}
+                        {p.id === 'claude-local' && p.notes.length > 0 && av.ok && (
+                          <ul className="m-0 mt-1 list-disc pl-4 text-muted">{p.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
+                        )}
                       </div>
                     </label>
                   );
@@ -185,8 +195,22 @@ export function NewMissionDialog() {
             </fieldset>
 
             <div>
-              <label className="label" htmlFor="nm-model">Model (optional; provider default if empty)</label>
-              <input id="nm-model" className="input mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. a model alias accepted by the CLI" />
+              {hasList ? (
+                <>
+                  <label className="label" htmlFor="nm-model">Model{modelRequired(selected) ? ' (required)' : ''}</label>
+                  <select id="nm-model" className="input mono" value={model} onChange={(e) => setModel(e.target.value)}>
+                    {!modelRequired(selected) && <option value="">Provider default</option>}
+                    {selected!.models.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </>
+              ) : (
+                <>
+                  <label className="label" htmlFor="nm-model">Model (optional; provider default if empty)</label>
+                  <input id="nm-model" className="input mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. a model alias accepted by the CLI" />
+                </>
+              )}
             </div>
           </div>
           <div className="flex items-center justify-between gap-2 border-t border-line px-4 py-3">

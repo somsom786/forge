@@ -301,3 +301,79 @@ pub async fn approvals_pending(core: CoreState<'_>, mission_id: Option<String>) 
 pub async fn approval_decide(core: CoreState<'_>, approval_id: String, approved: bool, note: Option<String>) -> Result<Approval> {
     blocking(&core, move |c| c.decide_approval(&approval_id, approved, note.as_deref())).await
 }
+
+// ---- Phase 2: contracts, verification, review, merge, proof ---------------------------------
+
+use crate::contract::{CheckSpec, Contract};
+use crate::proof::VerificationReport;
+use crate::store_review::{ProofPackRow, VerificationRun};
+use crate::supervisor::{MergeOutcome, ReviewDecision};
+
+#[tauri::command]
+pub async fn contract_get(core: CoreState<'_>, mission_id: String) -> Result<Contract> {
+    blocking(&core, move |c| c.get_contract(&mission_id)).await
+}
+
+#[tauri::command]
+pub async fn contract_set(core: CoreState<'_>, mission_id: String, contract: Contract) -> Result<Mission> {
+    blocking(&core, move |c| c.set_contract(&mission_id, contract)).await
+}
+
+#[tauri::command]
+pub async fn checks_suggest(core: CoreState<'_>, project_id: String) -> Result<Vec<CheckSpec>> {
+    blocking(&core, move |c| c.suggest_checks(&project_id)).await
+}
+
+#[tauri::command]
+pub async fn verification_report(core: CoreState<'_>, mission_id: String) -> Result<VerificationReport> {
+    blocking(&core, move |c| c.verification_report(&mission_id)).await
+}
+
+#[tauri::command]
+pub async fn verification_runs(core: CoreState<'_>, mission_id: String) -> Result<Vec<VerificationRun>> {
+    blocking(&core, move |c| c.store.runs_for_mission(&mission_id)).await
+}
+
+#[tauri::command]
+pub async fn check_start(core: CoreState<'_>, mission_id: String, check_id: String) -> Result<VerificationRun> {
+    blocking(&core, move |c| c.start_check(&mission_id, &check_id)).await
+}
+
+#[tauri::command]
+pub async fn check_cancel(core: CoreState<'_>, mission_id: String) -> Result<()> {
+    blocking(&core, move |c| c.cancel_check(&mission_id)).await
+}
+
+#[tauri::command]
+pub async fn verdict_set(core: CoreState<'_>, mission_id: String, criterion_id: String, pass: bool, note: Option<String>) -> Result<()> {
+    blocking(&core, move |c| c.set_manual_verdict(&mission_id, &criterion_id, pass, note.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn review_submit(core: CoreState<'_>, mission_id: String, decision: String, note: Option<String>, override_reason: Option<String>) -> Result<Mission> {
+    blocking(&core, move |c| {
+        let d = ReviewDecision::parse(&decision).ok_or_else(|| ForgeError::Other(format!("unknown review decision \"{decision}\"")))?;
+        c.review(&mission_id, d, note.as_deref(), override_reason.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn mission_merge(core: CoreState<'_>, mission_id: String, squash: bool) -> Result<MergeOutcome> {
+    blocking(&core, move |c| c.merge_mission(&mission_id, squash)).await
+}
+
+#[tauri::command]
+pub async fn mission_cleanup(core: CoreState<'_>, mission_id: String, confirm_loss: bool) -> Result<git::WorktreeSafety> {
+    blocking(&core, move |c| c.cleanup_workspace(&mission_id, confirm_loss)).await
+}
+
+#[tauri::command]
+pub async fn proofpack_generate(core: CoreState<'_>, mission_id: String) -> Result<ProofPackRow> {
+    blocking(&core, move |c| c.generate_proof_pack(&mission_id)).await
+}
+
+#[tauri::command]
+pub async fn proofpack_list(core: CoreState<'_>, mission_id: String) -> Result<Vec<ProofPackRow>> {
+    blocking(&core, move |c| c.store.proof_packs(&mission_id)).await
+}

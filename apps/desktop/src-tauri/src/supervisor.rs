@@ -50,6 +50,7 @@ pub enum UiEvent {
     Mission { mission: Mission },
     Approval { approval: Approval },
     Session { session: AgentSession },
+    Verification { run: crate::store_review::VerificationRun },
     Notice { level: String, message: String },
 }
 
@@ -168,6 +169,10 @@ pub struct Core {
     pub cfg: Config,
     emit: Emitter,
     reg: Mutex<Registry>,
+    /// mission id -> cancel flag of its running verification check (one at a time per mission).
+    checks: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// project ids with a merge in progress (merges into one checkout are serialised).
+    merging: Mutex<HashSet<String>>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -201,7 +206,7 @@ fn request_key(tool_use_id: &str, tool: &str, input: &Value) -> String {
 
 impl Core {
     pub fn new(store: Store, cfg: Config, emit: Emitter) -> Arc<Self> {
-        Arc::new(Self { store, cfg, emit, reg: Mutex::new(Registry::default()) })
+        Arc::new(Self { store, cfg, emit, reg: Mutex::new(Registry::default()), checks: Mutex::new(HashMap::new()), merging: Mutex::new(HashSet::new()) })
     }
 
     fn emit(&self, e: UiEvent) {
@@ -238,6 +243,9 @@ impl Core {
         }
         if r.sessions.values().any(|h| h.mission_id == mission_id) {
             return Err(ForgeError::InvalidState("this mission already has a session (if it just finished, give it a moment to shut down)".into()));
+        }
+        if lock(&self.checks).contains_key(mission_id) {
+            return Err(ForgeError::InvalidState("a verification check is running on this mission; wait for it or cancel it first".into()));
         }
         if for_run {
             let mut busy: HashSet<&str> = r.sessions.values().map(|h| h.mission_id.as_str()).collect();
@@ -817,6 +825,10 @@ impl Core {
             self.store.transition(&m.id, MissionState::Interrupted, "FORGE restarted while this mission was active")?;
             report.interrupted_missions.push(m.id);
         }
+        let orphaned = self.store.fail_orphaned_runs()?;
+        if orphaned > 0 {
+            self.store.audit("system", "recovery.checks", None, &json!({"orphanedRuns": orphaned}));
+        }
         if report.lost_sessions + report.interrupted_missions.len() > 0 {
             self.store.audit("system", "recovery", None, &json!({"lostSessions": report.lost_sessions, "interrupted": report.interrupted_missions.len()}));
         }
@@ -867,6 +879,9 @@ fn derive_title(objective: &str) -> String {
     let t: String = first.chars().take(72).collect();
     if first.chars().count() > 72 { format!("{t}…") } else { t }
 }
+
+mod review;
+pub use review::{MergeOutcome, ReviewDecision};
 
 #[cfg(test)]
 mod tests;

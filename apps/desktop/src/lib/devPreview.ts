@@ -224,8 +224,9 @@ const codexCaps: CapabilityMatrix = {
   approvals: cap(false), usageReporting: cap(false), modelSelection: cap(false), worktreeIntegration: cap(true),
 };
 const providers: ProviderInfo[] = [
-  { id: 'claude', name: 'Claude Code', installed: true, path: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd', version: '2.1.4', signedIn: true, authMethod: 'claude.ai', plan: 'max', adapterAvailable: true, notes: [], capabilities: claudeCaps },
-  { id: 'codex', name: 'Codex', installed: true, path: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd', version: '0.40.0', signedIn: true, authMethod: 'chatgpt', plan: null, adapterAvailable: false, notes: ['Detected, but FORGE has no Codex adapter in this build.'], capabilities: codexCaps },
+  { id: 'claude', name: 'Claude Code', installed: true, path: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd', version: '2.1.4', signedIn: true, authMethod: 'claude.ai', plan: 'max', adapterAvailable: true, notes: [], models: [], capabilities: claudeCaps },
+  { id: 'claude-local', name: 'Claude Code (local model)', installed: true, path: 'C:\Users\dev\AppData\Roaming\npm\claude.cmd', version: '2.1.4', signedIn: null, authMethod: null, plan: null, adapterAvailable: true, notes: ['Runs the Claude Code harness against a local Ollama model on loopback. Models need a context window of at least 16k tokens; forge-* tags are prepared for this.'], models: ['forge-qwen2.5-coder-32k', 'qwen2.5-coder:7b'], capabilities: claudeCaps },
+  { id: 'codex', name: 'Codex', installed: true, path: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd', version: '0.40.0', signedIn: true, authMethod: 'chatgpt', plan: null, adapterAvailable: false, notes: ['Detected, but FORGE has no Codex adapter in this build.'], models: [], capabilities: codexCaps },
 ];
 
 const statusFor = (id: string): RepoStatus =>

@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowDown, Brain, Check, FilePen, Gauge, RefreshCw, ShieldAlert, Wrench, X } from 'lucide-react';
 import { buildFeed, filterFeed, type FeedItem, type FilterGroup } from '../lib/feed';
-import { clockTime, fmtCost, fmtNum, fmtUtilization, formatDuration, localTime } from '../lib/format';
+import { clockTime, fmtNum, fmtUtilization, formatDuration, localTime } from '../lib/format';
 import type { ActivityEvent, Approval, UsageReport } from '../lib/types';
+import { costText, credentialChip } from '../lib/provider';
 import { Badge } from './ui';
 
 interface Props {
@@ -104,9 +105,9 @@ function ToolRow({ item }: { item: Extract<FeedItem, { type: 'tool' }> }) {
 function UsageLine({ u }: { u: UsageReport }) {
   return (
     <span className="mono text-[11.5px] text-muted">
-      est. {fmtNum(u.inputTokens)} in / {fmtNum(u.outputTokens)} out
+      tokens (provider-reported): {fmtNum(u.inputTokens)} in / {fmtNum(u.outputTokens)} out
       {u.cacheReadTokens ? ` / ${fmtNum(u.cacheReadTokens)} cache-read` : ''}
-      {u.costUsdEstimate !== undefined ? ` · ${fmtCost(u.costUsdEstimate)} est.` : ''}
+      {costText(u.costUsdEstimate) ? ` · ${costText(u.costUsdEstimate)}` : ''}
       {u.durationMs !== undefined ? ` · ${formatDuration(u.durationMs)}` : ''}
       {u.numTurns !== undefined ? ` · ${u.numTurns} turn${u.numTurns === 1 ? '' : 's'}` : ''}
     </span>
@@ -227,8 +228,7 @@ function EventRow({ ev, approvals, onFocusApprovals }: { ev: ActivityEvent; appr
       );
     }
     case 'session.started': {
-      const src = p.credentialSource as string | undefined;
-      const subscription = src === 'none';
+      const chip = credentialChip(p.credentialSource, p.model);
       return (
         <Row at={ev.at}>
           <div className="rounded-md border border-line bg-panel px-3 py-1.5 text-[12px]">
@@ -236,14 +236,19 @@ function EventRow({ ev, approvals, onFocusApprovals }: { ev: ActivityEvent; appr
               <span className="font-medium text-fg">Session started</span>
               {p.model && <span className="mono">{String(p.model)}</span>}
               {p.claudeCodeVersion && <span className="mono text-muted">Claude Code {String(p.claudeCodeVersion)}</span>}
-              {subscription && <Badge tone="ok">subscription login</Badge>}
-              {!src && <span className="text-muted">credential source not reported</span>}
+              {chip.kind === 'subscription' && <Badge tone="ok">subscription login</Badge>}
+              {chip.kind === 'local' && (
+                <Badge tone="idle" title={p.localEndpoint ? String(p.localEndpoint) : undefined}>
+                  Local model · {chip.model ?? 'unknown model'} · no provider billing
+                </Badge>
+              )}
+              {chip.kind === 'unreported' && <span className="text-muted">credential source not reported</span>}
             </div>
-            {src && !subscription && (
+            {chip.kind === 'api-warning' && (
               <div className="mt-1.5 flex gap-1.5 rounded border border-warn/50 bg-warn-dim px-2 py-1.5 text-warn" role="alert">
                 <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
                 <span>
-                  Credential source is <span className="mono">{src}</span>, not a subscription login. This session may be billed per token to an API key.
+                  Credential source is <span className="mono">{chip.source}</span>, not a subscription login. This session may be billed per token to an API key.
                 </span>
               </div>
             )}

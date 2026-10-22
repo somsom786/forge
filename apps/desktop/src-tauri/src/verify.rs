@@ -124,31 +124,31 @@ pub fn run_check(command: &str, cwd: &Path, timeout: Duration, log_path: Option<
         }));
     }
 
-    let mut state = None;
+    let state: RunState;
     let mut exit_code = None;
     loop {
         match child.try_wait() {
             Ok(Some(st)) => {
                 exit_code = st.code();
-                state = Some(if st.success() { RunState::Passed } else { RunState::Failed });
+                state = if st.success() { RunState::Passed } else { RunState::Failed };
                 break;
             }
             Ok(None) => {}
             Err(_) => {
-                state = Some(RunState::Error);
+                state = RunState::Error;
                 break;
             }
         }
         if cancel.load(Ordering::SeqCst) {
             proc::kill_tree(pid);
             let _ = child.wait();
-            state = Some(RunState::Cancelled);
+            state = RunState::Cancelled;
             break;
         }
         if started.elapsed() >= timeout {
             proc::kill_tree(pid);
             let _ = child.wait();
-            state = Some(RunState::Timeout);
+            state = RunState::Timeout;
             break;
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -170,7 +170,7 @@ pub fn run_check(command: &str, cwd: &Path, timeout: Duration, log_path: Option<
     let start = b.tail.len().saturating_sub(TAIL_BYTES);
     let text = String::from_utf8_lossy(&b.tail[start..]).into_owned();
     RunOutcome {
-        state: state.unwrap_or(RunState::Error),
+        state,
         exit_code,
         duration_ms: started.elapsed().as_millis() as u64,
         output_tail: redact::redact_str(&text),

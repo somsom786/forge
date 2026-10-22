@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { api } from '../lib/api';
-import { errMsg, fmtCost, fmtNum, formatDuration, localTime, STATE_META } from '../lib/format';
+import { errMsg, fmtNum, formatDuration, localTime, STATE_META } from '../lib/format';
 import type { AgentSession, Approval, ChangedFile, Mission, MissionChanges, MissionDiff, Transition } from '../lib/types';
+import { costText } from '../lib/provider';
 import { ApprovalCard } from './ApprovalCard';
 import { DiffViewer } from './DiffViewer';
 import { Badge, Callout, EmptyState } from './ui';
@@ -187,11 +188,11 @@ export function TimelinePanel({ transitions, sessions }: { transitions: Transiti
                 )}
                 {s.usage && (
                   <>
-                    <dt className="text-faint">Usage (est.)</dt>
+                    <dt className="text-faint">Usage (reported)</dt>
                     <dd className="mono m-0">
                       {fmtNum(s.usage.inputTokens)} in / {fmtNum(s.usage.outputTokens)} out
                       {s.usage.cacheReadTokens ? ` / ${fmtNum(s.usage.cacheReadTokens)} cache-read` : ''}
-                      {s.usage.costUsdEstimate !== undefined ? ` · ${fmtCost(s.usage.costUsdEstimate)} est.` : ''}
+                      {costText(s.usage.costUsdEstimate) ? ` · ${costText(s.usage.costUsdEstimate)}` : ''}
                     </dd>
                   </>
                 )}

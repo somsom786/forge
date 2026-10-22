@@ -172,7 +172,7 @@ impl Store {
         Self { conn: Mutex::new(crate::db::open_in_memory().unwrap()) }
     }
 
-    fn c(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn c(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }
 

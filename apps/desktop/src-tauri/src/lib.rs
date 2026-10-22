@@ -1,15 +1,19 @@
 pub mod commands;
 pub mod contract;
 pub mod db;
+pub mod detect;
 pub mod error;
 pub mod git;
+pub mod merge;
 pub mod mission;
 pub mod paths;
+pub mod proof;
 pub mod policy;
 pub mod proc;
 pub mod providers;
 pub mod redact;
 pub mod store;
+pub mod store_review;
 pub mod verify;
 pub mod supervisor;
 
@@ -100,6 +104,19 @@ pub fn run() {
             commands::open_worktree_in_editor,
             commands::approvals_pending,
             commands::approval_decide,
+            commands::contract_get,
+            commands::contract_set,
+            commands::checks_suggest,
+            commands::verification_report,
+            commands::verification_runs,
+            commands::check_start,
+            commands::check_cancel,
+            commands::verdict_set,
+            commands::review_submit,
+            commands::mission_merge,
+            commands::mission_cleanup,
+            commands::proofpack_generate,
+            commands::proofpack_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running FORGE");

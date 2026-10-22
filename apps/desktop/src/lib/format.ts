@@ -95,7 +95,7 @@ export function missionLabel(m: Pick<Mission, 'title' | 'id'>): string {
 }
 
 export function providerLabel(id: string): string {
-  return id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex' : id === 'fake' ? 'Scripted test agent' : id;
+  return id === 'claude' ? 'Claude Code' : id === 'claude-local' ? 'Claude Code (local model)' : id === 'codex' ? 'Codex' : id === 'fake' ? 'Scripted test agent' : id;
 }
 
 /** Utilization may arrive as a 0..1 fraction or already as a percentage. */
