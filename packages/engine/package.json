@@ -1,0 +1,20 @@
+{
+  "name": "@forge/engine",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.309"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "typescript": "~6.0.3",
+    "vitest": "^4"
+  }
+}
