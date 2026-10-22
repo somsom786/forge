@@ -1,0 +1,74 @@
+//! LIVE tests against real agents. Ignored by default.
+//!
+//! * Local model (free, needs Ollama running and the Claude Code CLI installed):
+//!     cargo test --lib live_local -- --ignored --nocapture
+//!   The model tag defaults to `forge-qwen3.5-9b-32k`; override with FORGE_LOCAL_MODEL.
+//! * The Claude-provider test lives in `tests.rs` and spends subscription quota; avoid it unless needed.
+
+use super::*;
+use crate::providers;
+
+#[test]
+#[ignore = "live: needs Ollama + Claude Code CLI; uses the local GPU, no provider quota"]
+fn live_local_model_mission_end_to_end() {
+    let claude = which::which("claude").expect("claude CLI on PATH (used only as the agent harness)");
+    let url = std::env::var("FORGE_OLLAMA_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into());
+    let model = std::env::var("FORGE_LOCAL_MODEL").unwrap_or_else(|_| "forge-qwen3.5-9b-32k".into());
+    let models = providers::list_ollama_models(&url).expect("Ollama is not answering; start it first");
+    assert!(models.iter().any(|m| m.starts_with(&model)), "model {model} not found; have {models:?}");
+
+    let repo = git::testutil::init_repo();
+    let home = tempfile::tempdir().unwrap();
+    let core = Core::new(
+        Store::in_memory(),
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: Some(claude), allow_fake: false, max_concurrent: 1, ollama_url: url },
+        Arc::new(|_| {}),
+    );
+    let project = core.add_project(repo.path()).unwrap();
+    let m = core
+        .create_mission(
+            &project.id,
+            "Create a file named hello.txt in the repository root containing exactly the text: forge works\nUse the Write tool. Do nothing else.",
+            None,
+            "claude-local",
+            Some(&model),
+            PermissionProfile::Default,
+        )
+        .unwrap();
+    core.start_mission(&m.id, None).unwrap();
+
+    let t0 = Instant::now();
+    let mut asked: Vec<String> = vec![];
+    let terminal = ["awaiting_review", "failed", "interrupted"];
+    loop {
+        let st = core.store.get_mission(&m.id).unwrap();
+        if terminal.contains(&st.state.as_str()) {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(600), "local mission timed out in state {}", st.state);
+        for a in core.store.pending_approvals(Some(&m.id)).unwrap() {
+            asked.push(format!("{} :: {}", a.tool, a.summary));
+            let ok = matches!(a.tool.as_str(), "Write" | "Edit" | "MultiEdit");
+            core.decide_approval(&a.id, ok, None).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let done = core.store.get_mission(&m.id).unwrap();
+    println!("elapsed: {:?}  final state: {}  error: {:?}", t0.elapsed(), done.state, done.last_error);
+    println!("approvals asked: {asked:#?}");
+    for e in core.store.events(&m.id, 0, 500).unwrap() {
+        println!("{:>4} {:<20} {}", e.seq, e.kind, e.payload.to_string().chars().take(200).collect::<String>());
+    }
+
+    let ev = core.store.events(&m.id, 0, 500).unwrap();
+    let started = ev.iter().find(|e| e.kind == "session.started").expect("session.started");
+    assert_eq!(started.payload["credentialSource"], "local-endpoint", "must be reported as a local endpoint, never as API/subscription billing");
+    assert!(ev.iter().any(|e| e.kind == "turn.completed"), "a turn must complete");
+    assert_eq!(done.state, "awaiting_review", "error: {:?}", done.last_error);
+    let wt = PathBuf::from(done.worktree_path.clone().unwrap());
+    let created = std::fs::read_to_string(wt.join("hello.txt"));
+    println!("hello.txt -> {created:?}");
+    assert!(!repo.path().join("hello.txt").exists(), "main checkout untouched");
+    assert!(created.is_ok(), "the local model did not create hello.txt (a model-quality outcome, but worth knowing)");
+    wait_until("finalised", || core.live_session_count() == 0);
+}

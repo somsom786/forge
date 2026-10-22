@@ -9,7 +9,10 @@
 //   FAKE:hang    never finish until cancelled
 //   FAKE:deny    attempt a write outside the worktree (policy must deny it)
 //   FAKE:env     attempt to write a protected file (.env)
+//   FAKE:replay  ask twice with the SAME toolUseId but different input (a re-ask must not inherit approval)
+//   FAKE:orphan  leave a descendant process holding the stdio pipes after finishing
 
+import { spawn } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { CapabilityMatrix } from '../protocol.js';
@@ -56,14 +59,21 @@ export const fakeAdapter: ProviderAdapter = {
       return;
     }
 
+    if (prompt.includes('FAKE:orphan')) {
+      // A grandchild inheriting stdout/stderr: the pipes stay open after the engine itself exits.
+      const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: ['ignore', 'inherit', 'inherit'] });
+      ctx.emit('status', { message: 'spawned a lingering descendant', childPid: child.pid });
+    }
+
     const targets: string[] = [];
     if (prompt.includes('FAKE:deny')) targets.push(resolve(cwd, '..', 'outside-worktree.txt'));
     else if (prompt.includes('FAKE:env')) targets.push(join(cwd, '.env'));
+    else if (prompt.includes('FAKE:replay')) targets.push(join(cwd, 'FORGE_TEST.md'), join(cwd, 'FORGE_TEST_2.md'));
     else targets.push(join(cwd, 'FORGE_TEST.md'));
 
     let denials = 0;
     for (const [i, file] of targets.entries()) {
-      const toolUseId = `tu_write_${i}`;
+      const toolUseId = prompt.includes('FAKE:replay') ? 'tu_dup' : `tu_write_${i}`;
       const input = { file_path: file, content: `# scripted change\n\nprompt: ${prompt.slice(0, 200)}\n` };
       ctx.emit('tool.call', { toolUseId, name: 'Write', summary: file, input });
       const d = await ctx.requestPermission({ tool: 'Write', input, toolUseId, source: 'hook' });

@@ -23,6 +23,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 thiserror = "2"
 regex = "1"
 dunce = "1"
+globset = "0.4"
+sha2 = "0.10"
 which = "8"
 
 [target.'cfg(windows)'.dependencies]

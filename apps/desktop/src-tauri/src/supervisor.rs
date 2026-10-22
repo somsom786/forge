@@ -1,10 +1,17 @@
 //! Session supervisor and mission orchestration.
 //!
-//! Invariants:
+//! Invariants (each has a regression test below):
 //! * State is persisted before the UI is told about it.
-//! * Exactly one finalisation runs per session (in the reader thread, after the process exits).
-//! * Permission requests are decided by `policy` first; only `Ask` outcomes reach a human, and
-//!   humans can only answer through `decide_approval`, which is single-shot.
+//! * Starting/discarding a mission first takes an atomic *reservation* (one owner per mission, capacity counted),
+//!   so concurrent calls cannot create duplicate engines or race cleanup.
+//! * Every session has a lifecycle lock (`life`). Approval registration, approval delivery, withdrawal and
+//!   finalisation all take it, so an answer can never be lost between "row inserted" and "waiter registered".
+//! * Exactly one finalisation runs per session, driven by *process exit* (not pipe EOF), so a descendant that keeps
+//!   stdout open cannot wedge a session; finalisation then terminates the whole Job Object.
+//! * A process that cannot be contained is not run.
+//! * Approvals are bound to a digest of the exact tool call; a re-ask with changed input is a new request.
+//! * Permission requests are decided by `policy` first; only `Ask` outcomes reach a human, and humans can only
+//!   answer through `decide_approval`, which is single-shot.
 //! * FORGE never claims a session is running unless its process is attached.
 
 use crate::error::{ForgeError, Result};
@@ -16,13 +23,14 @@ use crate::redact;
 use crate::store::{ActivityEvent, AgentSession, Approval, Mission, NewMission, Project, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 #[cfg(windows)]
@@ -57,6 +65,8 @@ pub struct Config {
     /// Allow the scripted test agent (dev/test only).
     pub allow_fake: bool,
     pub max_concurrent: usize,
+    /// Loopback Anthropic-compatible endpoint (Ollama) for `claude-local` missions.
+    pub ollama_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +85,7 @@ enum EngineMsg {
         blocked_path: Option<String>,
         reason: Option<String>,
     },
+    PermissionCancelled { request_id: String },
     TurnComplete {
         status: String,
         message: Option<String>,
@@ -83,6 +94,16 @@ enum EngineMsg {
         permission_denials: Option<i64>,
     },
     Fatal { message: String },
+}
+
+struct PermissionRequest {
+    request_id: String,
+    tool: String,
+    input: Value,
+    tool_use_id: String,
+    source: String,
+    blocked_path: Option<String>,
+    reason: Option<String>,
 }
 
 struct SessionHandle {
@@ -96,16 +117,49 @@ struct SessionHandle {
     completed: AtomicBool,
     /// Core-originated events use negative sequence numbers so they never collide with the engine's.
     core_seq: AtomicI64,
+    /// Serialises approval registration/delivery/withdrawal against finalisation.
+    life: Mutex<()>,
     /// approval id -> engine request ids waiting on it (a hook and a fallback prompt can coincide).
     waiters: Mutex<HashMap<String, Vec<String>>>,
     fatal: Mutex<Option<String>>,
     stderr_tail: Mutex<String>,
-    _containment: proc::Containment,
+    /// Dropping this terminates the whole process tree (Windows Job Object).
+    containment: Mutex<Option<proc::Containment>>,
 }
 
 impl SessionHandle {
     fn send(&self, v: Value) {
         let _ = self.tx.send(v.to_string());
+    }
+    fn terminate_tree(&self) {
+        let taken = lock(&self.containment).take();
+        match taken {
+            Some(c) => drop(c),
+            None => proc::kill_tree(self.pid),
+        }
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[derive(Default)]
+struct Registry {
+    sessions: HashMap<String, Arc<SessionHandle>>,
+    /// Missions that are mid-start or mid-discard.
+    reserved: HashSet<String>,
+}
+
+/// Exclusive right to start or discard one mission. Released on drop.
+pub struct Reservation {
+    core: Arc<Core>,
+    mission_id: String,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        self.core.reg().reserved.remove(&self.mission_id);
     }
 }
 
@@ -113,7 +167,7 @@ pub struct Core {
     pub store: Store,
     pub cfg: Config,
     emit: Emitter,
-    sessions: Mutex<HashMap<String, Arc<SessionHandle>>>,
+    reg: Mutex<Registry>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -124,9 +178,30 @@ pub struct RecoveryReport {
     pub expired_approvals: usize,
 }
 
+/// Canonical JSON (sorted keys) so equal requests hash equally regardless of key order.
+fn canonical_json(v: &Value) -> String {
+    fn canon(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => Value::Object(m.iter().map(|(k, v)| (k.clone(), canon(v))).collect::<BTreeMap<_, _>>().into_iter().collect()),
+            Value::Array(a) => Value::Array(a.iter().map(canon).collect()),
+            other => other.clone(),
+        }
+    }
+    canon(v).to_string()
+}
+
+/// Identity of one exact tool call: the provider's id *and* a digest of tool + input.
+fn request_key(tool_use_id: &str, tool: &str, input: &Value) -> String {
+    let mut h = Sha256::new();
+    h.update(tool.as_bytes());
+    h.update([0u8]);
+    h.update(canonical_json(input).as_bytes());
+    format!("{tool_use_id}:{}", &format!("{:x}", h.finalize())[..16])
+}
+
 impl Core {
     pub fn new(store: Store, cfg: Config, emit: Emitter) -> Arc<Self> {
-        Arc::new(Self { store, cfg, emit, sessions: Mutex::new(HashMap::new()) })
+        Arc::new(Self { store, cfg, emit, reg: Mutex::new(Registry::default()) })
     }
 
     fn emit(&self, e: UiEvent) {
@@ -139,12 +214,12 @@ impl Core {
         self.emit(UiEvent::Notice { level: level.into(), message });
     }
 
-    fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<SessionHandle>>> {
-        self.sessions.lock().unwrap_or_else(|p| p.into_inner())
+    fn reg(&self) -> MutexGuard<'_, Registry> {
+        lock(&self.reg)
     }
 
     fn handle_for_mission(&self, mission_id: &str) -> Option<Arc<SessionHandle>> {
-        self.sessions().values().find(|h| h.mission_id == mission_id).cloned()
+        self.reg().sessions.values().find(|h| h.mission_id == mission_id).cloned()
     }
 
     pub fn is_running(&self, mission_id: &str) -> bool {
@@ -152,7 +227,30 @@ impl Core {
     }
 
     pub fn live_session_count(&self) -> usize {
-        self.sessions().len()
+        self.reg().sessions.len()
+    }
+
+    /// Atomically claim a mission for starting/discarding. Counts against the concurrency limit when `for_run`.
+    fn reserve(self: &Arc<Self>, mission_id: &str, for_run: bool) -> Result<Reservation> {
+        let mut r = self.reg();
+        if r.reserved.contains(mission_id) {
+            return Err(ForgeError::InvalidState("this mission is already being started or discarded".into()));
+        }
+        if r.sessions.values().any(|h| h.mission_id == mission_id) {
+            return Err(ForgeError::InvalidState("this mission already has a session (if it just finished, give it a moment to shut down)".into()));
+        }
+        if for_run {
+            let mut busy: HashSet<&str> = r.sessions.values().map(|h| h.mission_id.as_str()).collect();
+            busy.extend(r.reserved.iter().map(String::as_str));
+            if busy.len() >= self.cfg.max_concurrent {
+                return Err(ForgeError::InvalidState(format!(
+                    "concurrency limit reached ({} running); stop one or raise the limit in Settings",
+                    self.cfg.max_concurrent
+                )));
+            }
+        }
+        r.reserved.insert(mission_id.to_string());
+        Ok(Reservation { core: self.clone(), mission_id: mission_id.to_string() })
     }
 
     // ---- projects & missions ------------------------------------------------------------
@@ -178,8 +276,11 @@ impl Core {
         if provider == "fake" && !self.cfg.allow_fake {
             return Err(ForgeError::Provider("the scripted test agent is not enabled".into()));
         }
-        if !matches!(provider, "claude" | "fake") {
+        if !matches!(provider, "claude" | "claude-local" | "fake") {
             return Err(ForgeError::Provider(format!("provider \"{provider}\" is not available in this build")));
+        }
+        if provider == "claude-local" && model.map(str::trim).unwrap_or("").is_empty() {
+            return Err(ForgeError::Provider("choose a local model for this mission".into()));
         }
         self.store.get_project(project_id)?;
         let title = title.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string).unwrap_or_else(|| derive_title(objective));
@@ -235,21 +336,20 @@ impl Core {
 
     /// Start a mission, or send a follow-up turn when `followup` is given.
     pub fn start_mission(self: &Arc<Self>, mission_id: &str, followup: Option<&str>) -> Result<Mission> {
-        if self.handle_for_mission(mission_id).is_some() {
-            return Err(ForgeError::InvalidState("this mission already has a running session".into()));
-        }
-        if self.live_session_count() >= self.cfg.max_concurrent {
-            return Err(ForgeError::InvalidState(format!(
-                "concurrency limit reached ({} running); stop one or raise the limit in Settings",
-                self.cfg.max_concurrent
-            )));
-        }
+        let reservation = self.reserve(mission_id, true)?;
         let m = self.store.get_mission(mission_id)?;
+        let from = MissionState::parse(&m.state).ok_or_else(|| ForgeError::InvalidState(format!("unknown state {}", m.state)))?;
+        if !matches!(from, MissionState::Ready | MissionState::Failed | MissionState::Interrupted | MissionState::AwaitingReview) {
+            return Err(ForgeError::InvalidState(format!("a mission in state \"{}\" cannot be started", from.as_str())));
+        }
+        if followup.is_some() && from == MissionState::Ready {
+            return Err(ForgeError::InvalidState("start the mission before sending a follow-up".into()));
+        }
         let project = self.store.get_project(&m.project_id)?;
         let reason = if followup.is_some() { "follow-up" } else if m.provider_session_id.is_some() { "resume" } else { "start" };
         let m = self.set_state(mission_id, MissionState::Preparing, reason)?;
 
-        let (worktree, base_commit) = match self.ensure_workspace(&m, &project) {
+        let worktree = match self.ensure_workspace(&m, &project) {
             Ok(w) => w,
             Err(e) => {
                 let _ = self.store.set_mission_error(mission_id, Some(&e.to_string()));
@@ -257,7 +357,6 @@ impl Core {
                 return Err(e);
             }
         };
-        let _ = base_commit;
 
         let resume = m.provider_session_id.clone();
         let prompt = match (followup, &resume) {
@@ -267,7 +366,9 @@ impl Core {
         };
         let _ = self.store.set_mission_error(mission_id, None);
 
-        match self.spawn_session(&m, &worktree, &prompt, resume.as_deref()) {
+        let res = self.spawn_session(&m, &worktree, &prompt, resume.as_deref());
+        drop(reservation); // the session (if any) is in the registry now
+        match res {
             Ok(()) => self.store.get_mission(mission_id),
             Err(e) => {
                 let _ = self.store.set_mission_error(mission_id, Some(&e.to_string()));
@@ -277,15 +378,17 @@ impl Core {
         }
     }
 
-    fn ensure_workspace(&self, m: &Mission, project: &Project) -> Result<(PathBuf, String)> {
-        if let (Some(wt), Some(base)) = (&m.worktree_path, &m.base_commit) {
+    fn ensure_workspace(&self, m: &Mission, project: &Project) -> Result<PathBuf> {
+        let root = PathBuf::from(&project.root_path);
+        if let (Some(wt), Some(_base)) = (&m.worktree_path, &m.base_commit) {
             let p = PathBuf::from(wt);
             if !p.exists() {
                 return Err(ForgeError::Git(format!("the mission worktree {wt} no longer exists")));
             }
-            return Ok((p, base.clone()));
+            // Prove it is still *our* worktree, on *our* branch, before an agent runs in it again.
+            git::verify_worktree(&root, &p, m.branch.as_deref())?;
+            return Ok(p);
         }
-        let root = PathBuf::from(&project.root_path);
         let base_ref = git::current_branch(&root).unwrap_or_else(|_| project.default_branch.clone());
         let base_commit = git::head_commit(&root)?;
         let slug = git::slugify(&m.title, 24);
@@ -295,9 +398,10 @@ impl Core {
         let wt = self.cfg.home.join("worktrees").join(proj_short).join(format!("{slug}-{short}"));
         git::worktree_add(&root, &wt, &branch, &base_commit)?;
         let wt = crate::paths::canonical_dir(&wt)?;
+        git::verify_worktree(&root, &wt, Some(&branch))?;
         self.store.set_mission_workspace(&m.id, &base_ref, &base_commit, &branch, &wt.to_string_lossy())?;
         self.store.audit("system", "worktree.create", Some(&m.id), &json!({"branch": branch, "path": wt.to_string_lossy(), "base": base_commit}));
-        Ok((wt, base_commit))
+        Ok(wt)
     }
 
     fn resolve_runtime(&self) -> Result<(PathBuf, PathBuf)> {
@@ -321,10 +425,18 @@ impl Core {
     fn spawn_session(self: &Arc<Self>, m: &Mission, worktree: &Path, prompt: &str, resume: Option<&str>) -> Result<()> {
         let (node, script) = self.resolve_runtime()?;
         let profile = PermissionProfile::parse(&m.permission_profile);
-        if m.provider == "claude" && self.cfg.claude.is_none() {
+        let local = m.provider == "claude-local";
+        if local && !crate::providers::is_loopback_http(&self.cfg.ollama_url) {
+            return Err(ForgeError::Provider(format!("the local model endpoint must be http on loopback, got {}", self.cfg.ollama_url)));
+        }
+        if matches!(m.provider.as_str(), "claude" | "claude-local") && self.cfg.claude.is_none() {
             return Err(ForgeError::Provider("Claude Code was not found on PATH; install it and sign in with `claude`".into()));
         }
         let session = self.store.create_session(&m.id, &m.provider, resume)?;
+        let fail_session = |reason: String| {
+            let _ = self.store.end_session(&session.id, "lost", &reason);
+            ForgeError::Provider(reason)
+        };
 
         let mut cmd = Command::new(&node);
         cmd.arg(&script)
@@ -338,28 +450,23 @@ impl Core {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        let mut child = match cmd.spawn() {
+        let mut child = cmd.spawn().map_err(|e| fail_session(format!("could not start the engine: {e}")))?;
+        let pid = child.id();
+
+        // Containment first. The engine is idle until it receives `start`, so nothing it spawns can predate this.
+        let containment = match proc::contain(&child) {
             Ok(c) => c,
             Err(e) => {
-                let _ = self.store.end_session(&session.id, "lost", &format!("spawn failed: {e}"));
-                return Err(ForgeError::Provider(format!("could not start the engine: {e}")));
+                proc::kill_tree(pid);
+                let _ = child.wait();
+                return Err(fail_session(format!("refusing to run an agent that cannot be contained: {e}")));
             }
         };
-        let pid = child.id();
-        let containment = proc::contain(&child);
         let mut stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
 
         let (tx, rx) = channel::<String>();
-        std::thread::Builder::new().name(format!("forge-writer-{}", &session.id[..8])).spawn(move || {
-            for line in rx {
-                if stdin.write_all(line.as_bytes()).and_then(|_| stdin.write_all(b"\n")).and_then(|_| stdin.flush()).is_err() {
-                    break;
-                }
-            }
-        })?;
-
         let handle = Arc::new(SessionHandle {
             session_id: session.id.clone(),
             mission_id: m.id.clone(),
@@ -370,13 +477,76 @@ impl Core {
             stopping: AtomicBool::new(false),
             completed: AtomicBool::new(false),
             core_seq: AtomicI64::new(0),
+            life: Mutex::new(()),
             waiters: Mutex::new(HashMap::new()),
             fatal: Mutex::new(None),
             stderr_tail: Mutex::new(String::new()),
-            _containment: containment,
+            containment: Mutex::new(Some(containment)),
         });
-        self.sessions().insert(session.id.clone(), handle.clone());
+        self.reg().sessions.insert(session.id.clone(), handle.clone());
         self.store.audit("system", "session.spawn", Some(&session.id), &json!({"mission": m.id, "provider": m.provider, "pid": pid}));
+
+        // Start the I/O threads; if any cannot start, unwind everything instead of leaving a half-session.
+        let sid8 = session.id[..8].to_string();
+        let (done_tx, done_rx) = channel::<()>();
+        let core = self.clone();
+        let setup: std::io::Result<()> = (|| {
+            std::thread::Builder::new().name(format!("forge-writer-{sid8}")).spawn(move || {
+                for line in rx {
+                    if stdin.write_all(line.as_bytes()).and_then(|_| stdin.write_all(b"\n")).and_then(|_| stdin.flush()).is_err() {
+                        break;
+                    }
+                }
+            })?;
+            let h2 = handle.clone();
+            std::thread::Builder::new().name(format!("forge-stderr-{sid8}")).spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(|l| l.ok()) {
+                    let mut t = lock(&h2.stderr_tail);
+                    t.push_str(&redact::redact_str(&line));
+                    t.push('\n');
+                    if t.len() > 8192 {
+                        let cut = t.len() - 8192;
+                        let cut = (cut..t.len()).find(|i| t.is_char_boundary(*i)).unwrap_or(t.len());
+                        t.drain(..cut);
+                    }
+                }
+            })?;
+            let (c2, h3) = (core.clone(), handle.clone());
+            std::thread::Builder::new().name(format!("forge-reader-{sid8}")).spawn(move || {
+                for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<EngineMsg>(&line) {
+                        Ok(msg) => c2.on_engine_msg(&h3, msg),
+                        Err(e) => eprintln!("[forge] malformed engine line ({e}): {}", redact::truncate(&line, 200).0),
+                    }
+                }
+                let _ = done_tx.send(());
+            })?;
+            Ok(())
+        })();
+        if let Err(e) = setup {
+            handle.terminate_tree();
+            let _ = child.wait();
+            self.finalize(&handle, None);
+            return Err(ForgeError::Provider(format!("could not start session threads: {e}")));
+        }
+
+        // The waiter owns the child. Finalisation is driven by process exit, never by pipe EOF.
+        let (c3, h4) = (self.clone(), handle.clone());
+        let waiter = std::thread::Builder::new().name(format!("forge-waiter-{sid8}")).spawn(move || {
+            let code = child.wait().ok().and_then(|s| s.code());
+            // Let the reader drain what the engine wrote before it exited; a lingering descendant holding the pipe
+            // open must not delay us, so this wait is bounded and the Job is terminated right after.
+            let _ = done_rx.recv_timeout(Duration::from_secs(2));
+            c3.finalize(&h4, code);
+        });
+        if let Err(e) = waiter {
+            handle.terminate_tree();
+            self.finalize(&handle, None);
+            return Err(ForgeError::Provider(format!("could not start session monitor: {e}")));
+        }
 
         handle.send(json!({
             "t": "start",
@@ -390,41 +560,9 @@ impl Core {
             "claudePath": self.cfg.claude.as_ref().map(|p| p.to_string_lossy().into_owned()),
             "appendSystemPrompt": MISSION_GUIDANCE,
             "allowApiBilling": false,
+            "localEndpoint": if local { Some(self.cfg.ollama_url.clone()) } else { None },
         }));
-
-        let core = self.clone();
-        let h2 = handle.clone();
-        std::thread::Builder::new().name(format!("forge-stderr-{}", &session.id[..8])).spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(|l| l.ok()) {
-                let mut t = h2.stderr_tail.lock().unwrap_or_else(|p| p.into_inner());
-                t.push_str(&redact::redact_str(&line));
-                t.push('\n');
-                if t.len() > 8192 {
-                    let cut = t.len() - 8192;
-                    let cut = (cut..t.len()).find(|i| t.is_char_boundary(*i)).unwrap_or(t.len());
-                    t.drain(..cut);
-                }
-            }
-        })?;
-        std::thread::Builder::new().name(format!("forge-reader-{}", &session.id[..8])).spawn(move || {
-            core.read_session(handle, BufReader::new(stdout), child);
-        })?;
         Ok(())
-    }
-
-    fn read_session(self: &Arc<Self>, h: Arc<SessionHandle>, stdout: impl BufRead, mut child: Child) {
-        for line in stdout.lines() {
-            let Ok(line) = line else { break };
-            if line.trim().is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<EngineMsg>(&line) {
-                Ok(msg) => self.on_engine_msg(&h, msg),
-                Err(e) => eprintln!("[forge] malformed engine line ({e}): {}", redact::truncate(&line, 200).0),
-            }
-        }
-        let status = child.wait();
-        self.finalize(&h, status.ok().and_then(|s| s.code()));
     }
 
     fn on_engine_msg(self: &Arc<Self>, h: &Arc<SessionHandle>, msg: EngineMsg) {
@@ -454,8 +592,9 @@ impl Core {
                 let _ = self.store.set_mission_provider_session(&h.mission_id, &provider_session_id);
             }
             EngineMsg::Permission { request_id, tool, input, tool_use_id, source, blocked_path, reason } => {
-                self.on_permission(h, request_id, tool, input, tool_use_id, source, blocked_path, reason);
+                self.on_permission(h, PermissionRequest { request_id, tool, input, tool_use_id, source, blocked_path, reason });
             }
+            EngineMsg::PermissionCancelled { request_id } => self.on_permission_cancelled(h, &request_id),
             EngineMsg::TurnComplete { status, message, provider_session_id, usage, permission_denials } => {
                 h.completed.store(true, Ordering::SeqCst);
                 if let Some(id) = provider_session_id {
@@ -479,23 +618,26 @@ impl Core {
                 }
             }
             EngineMsg::Fatal { message } => {
-                *h.fatal.lock().unwrap_or_else(|p| p.into_inner()) = Some(redact::redact_str(&message));
+                *lock(&h.fatal) = Some(redact::redact_str(&message));
                 self.core_event(h, "error", json!({"message": message, "source": "engine"}));
             }
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn on_permission(&self, h: &Arc<SessionHandle>, request_id: String, tool: String, input: Value, tool_use_id: String, source: String, blocked_path: Option<String>, reason: Option<String>) {
+    fn on_permission(&self, h: &Arc<SessionHandle>, req: PermissionRequest) {
         let reply = |behavior: &str, message: Option<&str>| {
-            h.send(json!({"t": "permission_result", "requestId": request_id, "behavior": behavior, "message": message}));
+            h.send(json!({"t": "permission_result", "requestId": req.request_id, "behavior": behavior, "message": message}));
         };
+        // Everything below happens under the lifecycle lock: insert, register waiter, change state, announce.
+        let _life = lock(&h.life);
+        let key = request_key(&req.tool_use_id, &req.tool, &req.input);
 
-        // A hook and the provider's own prompt can both ask about the same tool use.
-        match self.store.approval_by_provider_request(&h.session_id, &tool_use_id) {
+        // A hook and the provider's own prompt can both ask about the same tool use. Only an IDENTICAL call
+        // (same id, tool and input) reuses an earlier answer; a changed input is a new request.
+        match self.store.approval_by_provider_request(&h.session_id, &key) {
             Ok(Some(existing)) => {
                 match existing.state.as_str() {
-                    "pending" => h.waiters.lock().unwrap_or_else(|p| p.into_inner()).entry(existing.id).or_default().push(request_id),
+                    "pending" => lock(&h.waiters).entry(existing.id).or_default().push(req.request_id.clone()),
                     "approved" | "auto_allowed" => reply("allow", None),
                     _ => reply("deny", existing.decision_note.as_deref().or(Some("Denied by FORGE"))),
                 }
@@ -508,17 +650,17 @@ impl Core {
             }
         }
 
-        let mut detail = json!({"tool": tool, "input": input, "source": source, "blockedPath": blocked_path, "providerReason": reason});
+        let mut detail = json!({"tool": req.tool, "input": req.input, "source": req.source, "blockedPath": req.blocked_path, "providerReason": req.reason});
         redact::redact_value(&mut detail);
 
-        match policy::evaluate(&tool, &input, &h.worktree, h.profile) {
+        match policy::evaluate(&req.tool, &req.input, &h.worktree, h.profile) {
             Decision::Allow => reply("allow", None),
             Decision::Deny { reason } => {
                 let note = format!("Blocked by FORGE policy: {reason}");
-                match self.store.create_approval(&h.mission_id, &h.session_id, &tool_use_id, &tool, &format!("{tool} (blocked)"), &detail, "high", &[], "auto_denied", Some("policy"), Some(&note)) {
+                match self.store.create_approval(&h.mission_id, &h.session_id, &key, &req.tool, &format!("{} (blocked)", req.tool), &detail, "high", &[], "auto_denied", Some("policy"), Some(&note)) {
                     Ok(a) => {
-                        self.emit(UiEvent::Approval { approval: a.clone() });
-                        self.core_event(h, "approval.decided", json!({"approvalId": a.id, "tool": tool, "decision": "auto_denied", "note": note}));
+                        self.core_event(h, "approval.decided", json!({"approvalId": a.id, "tool": req.tool, "decision": "auto_denied", "note": note}));
+                        self.emit(UiEvent::Approval { approval: a });
                     }
                     Err(e) => self.notice("error", format!("could not record policy denial: {e}")),
                 }
@@ -530,12 +672,12 @@ impl Core {
                     Risk::Medium => "medium",
                     Risk::High => "high",
                 };
-                match self.store.create_approval(&h.mission_id, &h.session_id, &tool_use_id, &tool, &redact::redact_str(&summary), &detail, risk_s, &warnings, "pending", None, None) {
+                match self.store.create_approval(&h.mission_id, &h.session_id, &key, &req.tool, &redact::redact_str(&summary), &detail, risk_s, &warnings, "pending", None, None) {
                     Ok(a) => {
-                        h.waiters.lock().unwrap_or_else(|p| p.into_inner()).entry(a.id.clone()).or_default().push(request_id);
-                        self.core_event(h, "approval.requested", json!({"approvalId": a.id, "tool": tool, "summary": a.summary, "risk": risk_s}));
-                        self.emit(UiEvent::Approval { approval: a });
+                        lock(&h.waiters).entry(a.id.clone()).or_default().push(req.request_id.clone());
+                        self.core_event(h, "approval.requested", json!({"approvalId": a.id, "tool": req.tool, "summary": a.summary, "risk": risk_s}));
                         self.settle(&h.mission_id, MissionState::AwaitingApproval, "waiting for approval");
+                        self.emit(UiEvent::Approval { approval: a });
                     }
                     Err(e) => {
                         self.notice("error", format!("could not record approval request, denying for safety: {e}"));
@@ -546,47 +688,71 @@ impl Core {
         }
     }
 
+    /// The provider withdrew a tool call (interrupt/timeout): drop its prompt instead of leaving it stale.
+    fn on_permission_cancelled(&self, h: &Arc<SessionHandle>, request_id: &str) {
+        let _life = lock(&h.life);
+        let mut waiters = lock(&h.waiters);
+        let Some(approval_id) = waiters.iter().find(|(_, v)| v.iter().any(|r| r == request_id)).map(|(k, _)| k.clone()) else { return };
+        if let Some(list) = waiters.get_mut(&approval_id) {
+            list.retain(|r| r != request_id);
+            if !list.is_empty() {
+                return;
+            }
+        }
+        waiters.remove(&approval_id);
+        drop(waiters);
+        if let Ok(Some(a)) = self.store.expire_approval(&approval_id, "the agent withdrew this request") {
+            self.emit(UiEvent::Approval { approval: a });
+        }
+        self.after_approval_change(&h.mission_id);
+    }
+
+    fn after_approval_change(&self, mission_id: &str) {
+        if self.store.pending_count_for_mission(mission_id).unwrap_or(1) == 0 {
+            if let Ok(m) = self.store.get_mission(mission_id) {
+                if m.state == MissionState::AwaitingApproval.as_str() {
+                    self.settle(mission_id, MissionState::Running, "approval answered");
+                }
+            }
+        }
+    }
+
     /// The human's answer. Single-shot; fails if the request is no longer pending or its session is gone.
     pub fn decide_approval(&self, approval_id: &str, approved: bool, note: Option<&str>) -> Result<Approval> {
         let existing = self.store.get_approval(approval_id)?;
         let handle = self
-            .sessions()
+            .reg()
+            .sessions
             .get(&existing.session_id)
             .cloned()
             .ok_or_else(|| ForgeError::InvalidState("the agent session for this request has ended".into()))?;
+        let _life = lock(&handle.life);
         let a = self.store.decide_approval(approval_id, approved, "user", note)?;
         self.store.audit("user", if approved { "approval.approve" } else { "approval.deny" }, Some(&a.id), &json!({"tool": a.tool, "summary": a.summary, "risk": a.risk}));
         self.core_event(&handle, "approval.decided", json!({"approvalId": a.id, "tool": a.tool, "decision": a.state, "note": note}));
-        let waiting = handle.waiters.lock().unwrap_or_else(|p| p.into_inner()).remove(&a.id).unwrap_or_default();
+        let waiting = lock(&handle.waiters).remove(&a.id).unwrap_or_default();
         let message = if approved { None } else { Some(note.map(str::to_string).unwrap_or_else(|| "Denied by the user".into())) };
         for r in waiting {
             handle.send(json!({"t": "permission_result", "requestId": r, "behavior": if approved { "allow" } else { "deny" }, "message": message}));
         }
-        if self.store.pending_count_for_mission(&a.mission_id)? == 0 {
-            if let Ok(m) = self.store.get_mission(&a.mission_id) {
-                if m.state == MissionState::AwaitingApproval.as_str() {
-                    self.settle(&a.mission_id, MissionState::Running, "approval answered");
-                }
-            }
-        }
+        self.after_approval_change(&a.mission_id);
         self.emit(UiEvent::Approval { approval: a.clone() });
         Ok(a)
     }
 
-    /// Ask the agent to stop; force-kill its process tree if it does not exit promptly.
+    /// Ask the agent to stop; terminate its process tree if it does not exit promptly.
     pub fn stop_mission(self: &Arc<Self>, mission_id: &str) -> Result<()> {
         let h = self.handle_for_mission(mission_id).ok_or_else(|| ForgeError::InvalidState("this mission has no running session".into()))?;
         h.stopping.store(true, Ordering::SeqCst);
         h.send(json!({"t": "cancel"}));
         self.store.audit("user", "mission.stop", Some(mission_id), &json!({}));
         let core = self.clone();
-        let sid = h.session_id.clone();
-        let pid = h.pid;
+        let h2 = h.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(8));
-            if core.sessions().contains_key(&sid) {
+            if core.reg().sessions.contains_key(&h2.session_id) {
                 core.notice("warn", "the agent did not stop in time; terminating its process tree");
-                proc::kill_tree(pid);
+                h2.terminate_tree();
             }
         });
         Ok(())
@@ -594,40 +760,46 @@ impl Core {
 
     /// Runs exactly once per session, after its process has exited.
     fn finalize(&self, h: &Arc<SessionHandle>, exit_code: Option<i32>) {
-        let completed = h.completed.load(Ordering::SeqCst);
-        let stopping = h.stopping.load(Ordering::SeqCst);
-        if !completed {
-            let tail = h.stderr_tail.lock().unwrap_or_else(|p| p.into_inner()).clone();
-            let fatal = h.fatal.lock().unwrap_or_else(|p| p.into_inner()).clone();
-            if stopping {
-                self.settle(&h.mission_id, MissionState::Interrupted, "stopped by user");
-            } else {
-                let mut msg = fatal.unwrap_or_else(|| format!("the agent process exited unexpectedly (exit code {})", exit_code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into())));
-                let tail = tail.trim();
-                if !tail.is_empty() {
-                    msg.push_str("\n--- last diagnostic output ---\n");
-                    msg.push_str(&redact::truncate(tail, 2048).0);
+        {
+            let _life = lock(&h.life);
+            let completed = h.completed.load(Ordering::SeqCst);
+            let stopping = h.stopping.load(Ordering::SeqCst);
+            if !completed {
+                let tail = lock(&h.stderr_tail).clone();
+                let fatal = lock(&h.fatal).clone();
+                if stopping {
+                    self.settle(&h.mission_id, MissionState::Interrupted, "stopped by user");
+                } else {
+                    let mut msg = fatal.unwrap_or_else(|| format!("the agent process exited unexpectedly (exit code {})", exit_code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into())));
+                    let tail = tail.trim();
+                    if !tail.is_empty() {
+                        msg.push_str("\n--- last diagnostic output ---\n");
+                        msg.push_str(&redact::truncate(tail, 2048).0);
+                    }
+                    let _ = self.store.set_mission_error(&h.mission_id, Some(&msg));
+                    self.core_event(h, "error", json!({"message": msg, "source": "supervisor", "exitCode": exit_code}));
+                    self.settle(&h.mission_id, MissionState::Failed, "agent process ended without a result");
                 }
-                let _ = self.store.set_mission_error(&h.mission_id, Some(&msg));
-                self.core_event(h, "error", json!({"message": msg, "source": "supervisor", "exitCode": exit_code}));
-                self.settle(&h.mission_id, MissionState::Failed, "agent process ended without a result");
             }
-        }
-        let reason = if completed { "completed" } else if stopping { "stopped by user" } else { "process exited unexpectedly" };
-        let _ = self.store.end_session(&h.session_id, if completed || stopping { "ended" } else { "lost" }, reason);
-        if let Ok(n) = self.store.expire_pending_for_session(&h.session_id, "the agent session ended before this was answered") {
-            if n > 0 {
-                if let Ok(list) = self.store.approvals_for_mission(&h.mission_id) {
-                    for a in list.into_iter().filter(|a| a.state == "expired" && a.session_id == h.session_id) {
-                        self.emit(UiEvent::Approval { approval: a });
+            let reason = if completed { "completed" } else if stopping { "stopped by user" } else { "process exited unexpectedly" };
+            let _ = self.store.end_session(&h.session_id, if completed || stopping { "ended" } else { "lost" }, reason);
+            if let Ok(n) = self.store.expire_pending_for_session(&h.session_id, "the agent session ended before this was answered") {
+                if n > 0 {
+                    if let Ok(list) = self.store.approvals_for_mission(&h.mission_id) {
+                        for a in list.into_iter().filter(|a| a.state == "expired" && a.session_id == h.session_id) {
+                            self.emit(UiEvent::Approval { approval: a });
+                        }
                     }
                 }
             }
+            lock(&h.waiters).clear();
+            if let Ok(s) = self.store.get_session(&h.session_id) {
+                self.emit(UiEvent::Session { session: s });
+            }
+            self.reg().sessions.remove(&h.session_id);
         }
-        if let Ok(s) = self.store.get_session(&h.session_id) {
-            self.emit(UiEvent::Session { session: s });
-        }
-        self.sessions().remove(&h.session_id); // drops the job object: any straggler descendants die here
+        // Outside the lock: kill anything the agent left behind (and unblock any reader holding a pipe).
+        h.terminate_tree();
     }
 
     // ---- startup recovery ------------------------------------------------------------------
@@ -655,32 +827,35 @@ impl Core {
 
     pub fn worktree_safety(&self, mission_id: &str) -> Result<git::WorktreeSafety> {
         let m = self.store.get_mission(mission_id)?;
-        match (&m.worktree_path, &m.base_commit) {
-            (Some(wt), Some(base)) => git::worktree_safety(Path::new(wt), base),
-            _ => Ok(git::WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: 0 }),
-        }
+        let Some(base) = m.base_commit.as_deref() else {
+            return Ok(git::WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: 0 });
+        };
+        let project = self.store.get_project(&m.project_id)?;
+        git::worktree_safety(Path::new(&project.root_path), m.worktree_path.as_deref().map(Path::new), m.branch.as_deref(), base)
     }
 
-    /// Discard a mission and its worktree/branch. Refuses to destroy uncommitted or unmerged work
-    /// unless `confirm_loss` is set.
-    pub fn discard_mission(&self, mission_id: &str, confirm_loss: bool) -> Result<Mission> {
-        if self.handle_for_mission(mission_id).is_some() {
-            return Err(ForgeError::InvalidState("stop the running agent before discarding the mission".into()));
-        }
+    /// Discard a mission and its worktree/branch. Refuses to destroy uncommitted or unmerged work unless
+    /// `confirm_loss` is set. Holds the mission reservation, so it cannot race a start.
+    pub fn discard_mission(self: &Arc<Self>, mission_id: &str, confirm_loss: bool) -> Result<Mission> {
+        let _res = self.reserve(mission_id, false)?;
         let m = self.store.get_mission(mission_id)?;
         let project = self.store.get_project(&m.project_id)?;
+        let root = Path::new(&project.root_path);
         let safety = self.worktree_safety(mission_id)?;
-        if safety.exists && (safety.dirty_files > 0 || safety.unmerged_commits > 0) && !confirm_loss {
+        if (safety.dirty_files > 0 || safety.unmerged_commits > 0) && !confirm_loss {
             return Err(ForgeError::InvalidState(format!(
                 "discarding would permanently delete {} uncommitted file change(s) and {} unmerged commit(s) on branch {}",
                 safety.dirty_files, safety.unmerged_commits, m.branch.as_deref().unwrap_or("?")
             )));
         }
         if let Some(wt) = &m.worktree_path {
-            git::worktree_remove(Path::new(&project.root_path), Path::new(wt), true)?;
+            // Without confirmation git itself refuses to remove a dirty tree; with it, the user accepted the stated loss.
+            git::worktree_remove(root, Path::new(wt), confirm_loss)?;
         }
         if let Some(b) = &m.branch {
-            let _ = git::delete_branch(Path::new(&project.root_path), b, true);
+            if let Err(e) = git::delete_branch(root, b, safety.unmerged_commits > 0) {
+                self.notice("warn", format!("the worktree was removed but branch {b} could not be deleted: {e}"));
+            }
         }
         self.store.audit("user", "mission.discard", Some(mission_id), &json!({"lostDirtyFiles": safety.dirty_files, "lostCommits": safety.unmerged_commits}));
         self.set_state(mission_id, MissionState::Cancelled, "discarded by user")
@@ -694,276 +869,4 @@ fn derive_title(objective: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex as StdMutex;
-    use std::time::Instant;
-
-    struct Fixture {
-        core: Arc<Core>,
-        repo: tempfile::TempDir,
-        _home: tempfile::TempDir,
-        events: Arc<StdMutex<Vec<UiEvent>>>,
-        project: Project,
-    }
-
-    fn engine_script() -> PathBuf {
-        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../packages/engine/dist/main.js");
-        dunce::canonicalize(&p).unwrap_or_else(|_| panic!("engine not built at {}; run `npm run build:engine` first", p.display()))
-    }
-
-    fn fixture() -> Fixture {
-        let repo = git::testutil::init_repo();
-        let home = tempfile::tempdir().unwrap();
-        let events: Arc<StdMutex<Vec<UiEvent>>> = Arc::new(StdMutex::new(vec![]));
-        let ev2 = events.clone();
-        let core = Core::new(
-            Store::in_memory(),
-            Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: None, allow_fake: true, max_concurrent: 2 },
-            Arc::new(move |e| ev2.lock().unwrap().push(e)),
-        );
-        let project = core.add_project(repo.path()).unwrap();
-        Fixture { core, repo, _home: home, events, project }
-    }
-
-    fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
-        let t0 = Instant::now();
-        while !f() {
-            assert!(t0.elapsed() < Duration::from_secs(25), "timed out waiting for: {what}");
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-
-    fn state(f: &Fixture, id: &str) -> String {
-        f.core.store.get_mission(id).unwrap().state
-    }
-
-    fn new_mission(f: &Fixture, objective: &str, profile: PermissionProfile) -> Mission {
-        f.core.create_mission(&f.project.id, objective, None, "fake", None, profile).unwrap()
-    }
-
-    fn pending(f: &Fixture, id: &str) -> Vec<Approval> {
-        f.core.store.pending_approvals(Some(id)).unwrap()
-    }
-
-    #[test]
-    fn full_mission_with_approval_isolates_changes_in_a_worktree() {
-        let f = fixture();
-        let m = new_mission(&f, "add a scripted note", PermissionProfile::Default);
-        f.core.start_mission(&m.id, None).unwrap();
-        wait_until("approval request", || !pending(&f, &m.id).is_empty());
-        assert_eq!(state(&f, &m.id), "awaiting_approval");
-
-        let a = pending(&f, &m.id).remove(0);
-        assert_eq!(a.tool, "Write");
-        let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
-        assert!(!wt.join("FORGE_TEST.md").exists(), "nothing may be written before approval");
-
-        f.core.decide_approval(&a.id, true, None).unwrap();
-        wait_until("awaiting_review", || state(&f, &m.id) == "awaiting_review");
-
-        assert!(wt.join("FORGE_TEST.md").exists());
-        assert!(!f.repo.path().join("FORGE_TEST.md").exists(), "main checkout must stay untouched");
-        assert!(!git::status(f.repo.path()).unwrap().dirty);
-
-        let base = f.core.store.get_mission(&m.id).unwrap().base_commit.unwrap();
-        let files = git::changed_files(&wt, &base).unwrap();
-        assert!(files.iter().any(|c| c.path == "FORGE_TEST.md"));
-
-        // history is persisted and ordered
-        let kinds: Vec<String> = f.core.store.events(&m.id, 0, 1000).unwrap().into_iter().map(|e| e.kind).collect();
-        for k in ["session.started", "tool.call", "approval.requested", "approval.decided", "file.changed", "turn.completed"] {
-            assert!(kinds.iter().any(|x| x == k), "missing {k} in {kinds:?}");
-        }
-        wait_until("session finalised", || f.core.live_session_count() == 0);
-        let sessions = f.core.store.sessions_for_mission(&m.id).unwrap();
-        assert_eq!(sessions[0].state, "ended");
-        assert!(f.core.store.audit_count("approval.approve").unwrap() == 1);
-    }
-
-    #[test]
-    fn denying_an_approval_keeps_the_worktree_clean() {
-        let f = fixture();
-        let m = new_mission(&f, "add a note", PermissionProfile::Default);
-        f.core.start_mission(&m.id, None).unwrap();
-        wait_until("approval", || !pending(&f, &m.id).is_empty());
-        let a = pending(&f, &m.id).remove(0);
-        f.core.decide_approval(&a.id, false, Some("not now")).unwrap();
-        wait_until("awaiting_review", || state(&f, &m.id) == "awaiting_review");
-        let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
-        assert!(!wt.join("FORGE_TEST.md").exists());
-        assert!(f.core.decide_approval(&a.id, true, None).is_err(), "decisions are single-shot");
-    }
-
-    #[test]
-    fn policy_blocks_writes_outside_the_worktree_without_asking_the_user() {
-        let f = fixture();
-        let m = new_mission(&f, "FAKE:deny try to escape", PermissionProfile::AcceptEdits);
-        f.core.start_mission(&m.id, None).unwrap();
-        wait_until("awaiting_review", || state(&f, &m.id) == "awaiting_review");
-        assert!(pending(&f, &m.id).is_empty(), "a policy denial must never reach the human as a prompt");
-        let all = f.core.store.approvals_for_mission(&m.id).unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].state, "auto_denied");
-        let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
-        assert!(!wt.parent().unwrap().join("outside-worktree.txt").exists());
-    }
-
-    #[test]
-    fn protected_files_stay_protected_even_with_accept_edits() {
-        let f = fixture();
-        let m = new_mission(&f, "FAKE:env write secrets", PermissionProfile::AcceptEdits);
-        f.core.start_mission(&m.id, None).unwrap();
-        wait_until("awaiting_review", || state(&f, &m.id) == "awaiting_review");
-        let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
-        assert!(!wt.join(".env").exists());
-        assert_eq!(f.core.store.approvals_for_mission(&m.id).unwrap()[0].state, "auto_denied");
-    }
-
-    #[test]
-    fn accept_edits_profile_auto_allows_ordinary_edits() {
-        let f = fixture();
-        let m = new_mission(&f, "make a note", PermissionProfile::AcceptEdits);
-        f.core.start_mission(&m.id, None).unwrap();
-        wait_until("awaiting_review", || state(&f, &m.id) == "awaiting_review");
-        let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
-        assert!(wt.join("FORGE_TEST.md").exists());
-        assert!(pending(&f, &m.id).is_empty());
-    }
-
-    #[test]
-    fn stopping_a_hung_agent_marks_it_interrupted_and_cleans_up_the_process() {
-        let f = fixture();
-        let m = new_mission(&f, "FAKE:hang", PermissionProfile::Default);
-        f.core.start_mission(&m.id, None).unwrap();
-        wait_until("running", || state(&f, &m.id) == "running");
-        let pid = f.core.handle_for_mission(&m.id).unwrap().pid;
-        f.core.stop_mission(&m.id).unwrap();
-        wait_until("interrupted", || state(&f, &m.id) == "interrupted");
-        wait_until("session removed", || f.core.live_session_count() == 0);
-        wait_until("process gone", || !proc::is_alive(pid));
-    }
-
-    #[test]
-    fn stopping_while_an_approval_is_pending_expires_it() {
-        let f = fixture();
-        let m = new_mission(&f, "add a note", PermissionProfile::Default);
-        f.core.start_mission(&m.id, None).unwrap();
-        wait_until("approval", || !pending(&f, &m.id).is_empty());
-        let a = pending(&f, &m.id).remove(0);
-        f.core.stop_mission(&m.id).unwrap();
-        wait_until("interrupted", || state(&f, &m.id) == "interrupted");
-        wait_until("finalised", || f.core.live_session_count() == 0);
-        assert!(["denied", "expired"].contains(&f.core.store.get_approval(&a.id).unwrap().state.as_str()));
-        assert!(pending(&f, &m.id).is_empty());
-        assert!(f.core.decide_approval(&a.id, true, None).is_err(), "cannot approve after the session ended");
-    }
-
-    #[test]
-    fn agent_crash_fails_the_mission_honestly_with_diagnostics() {
-        let f = fixture();
-        let m = new_mission(&f, "FAKE:crash", PermissionProfile::Default);
-        f.core.start_mission(&m.id, None).unwrap();
-        wait_until("failed", || state(&f, &m.id) == "failed");
-        let got = f.core.store.get_mission(&m.id).unwrap();
-        assert!(got.last_error.unwrap().contains("exit code 7"));
-        wait_until("finalised", || f.core.live_session_count() == 0);
-        assert_eq!(f.core.store.sessions_for_mission(&m.id).unwrap()[0].state, "lost");
-    }
-
-    #[test]
-    fn restart_recovery_marks_active_missions_interrupted_not_running() {
-        let f = fixture();
-        let m = new_mission(&f, "x", PermissionProfile::Default);
-        // Simulate a FORGE that died mid-run: persisted as running with a live session and a pending approval.
-        f.core.store.transition(&m.id, MissionState::Preparing, "t").unwrap();
-        f.core.store.transition(&m.id, MissionState::Running, "t").unwrap();
-        let s = f.core.store.create_session(&m.id, "fake", None).unwrap();
-        f.core.store.session_live(&s.id, Some(999_999), None, &json!({})).unwrap();
-        f.core.store.create_approval(&m.id, &s.id, "r", "Bash", "x", &json!({}), "low", &[], "pending", None, None).unwrap();
-
-        let r = f.core.recover().unwrap();
-        assert_eq!((r.lost_sessions, r.expired_approvals, r.interrupted_missions.len()), (1, 1, 1));
-        assert_eq!(state(&f, &m.id), "interrupted");
-        assert_eq!(f.core.store.get_session(&s.id).unwrap().state, "lost");
-        assert!(pending(&f, &m.id).is_empty());
-        // idempotent
-        assert_eq!(f.core.recover().unwrap().interrupted_missions.len(), 0);
-    }
-
-    #[test]
-    fn concurrency_limit_is_enforced() {
-        let f = fixture();
-        let ms: Vec<_> = (0..3).map(|i| new_mission(&f, &format!("FAKE:hang {i}"), PermissionProfile::Default)).collect();
-        f.core.start_mission(&ms[0].id, None).unwrap();
-        f.core.start_mission(&ms[1].id, None).unwrap();
-        let err = f.core.start_mission(&ms[2].id, None).unwrap_err().to_string();
-        assert!(err.contains("concurrency limit"), "{err}");
-        assert_eq!(state(&f, &ms[2].id), "ready", "a refused start must not change mission state");
-        for m in &ms[..2] {
-            f.core.stop_mission(&m.id).unwrap();
-        }
-        wait_until("all stopped", || f.core.live_session_count() == 0);
-    }
-
-    #[test]
-    fn parallel_missions_get_separate_worktrees_and_branches() {
-        let f = fixture();
-        let a = new_mission(&f, "FAKE:hang a", PermissionProfile::Default);
-        let b = new_mission(&f, "FAKE:hang b", PermissionProfile::Default);
-        f.core.start_mission(&a.id, None).unwrap();
-        f.core.start_mission(&b.id, None).unwrap();
-        let (ma, mb) = (f.core.store.get_mission(&a.id).unwrap(), f.core.store.get_mission(&b.id).unwrap());
-        assert_ne!(ma.worktree_path, mb.worktree_path);
-        assert_ne!(ma.branch, mb.branch);
-        assert!(PathBuf::from(ma.worktree_path.unwrap()).join("README.md").exists());
-        for m in [&a, &b] {
-            f.core.stop_mission(&m.id).unwrap();
-        }
-        wait_until("stopped", || f.core.live_session_count() == 0);
-    }
-
-    #[test]
-    fn discard_refuses_to_destroy_unsaved_work_without_confirmation() {
-        let f = fixture();
-        let m = new_mission(&f, "make a note", PermissionProfile::AcceptEdits);
-        f.core.start_mission(&m.id, None).unwrap();
-        wait_until("awaiting_review", || state(&f, &m.id) == "awaiting_review");
-        wait_until("finalised", || f.core.live_session_count() == 0);
-        let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
-
-        let err = f.core.discard_mission(&m.id, false).unwrap_err().to_string();
-        assert!(err.contains("permanently delete") && err.contains("uncommitted"), "{err}");
-        assert!(wt.join("FORGE_TEST.md").exists(), "refusal must leave the work intact");
-        assert_eq!(state(&f, &m.id), "awaiting_review");
-
-        f.core.discard_mission(&m.id, true).unwrap();
-        assert!(!wt.exists());
-        assert_eq!(state(&f, &m.id), "cancelled");
-    }
-
-    #[test]
-    fn ui_receives_events_after_they_are_persisted() {
-        let f = fixture();
-        let m = new_mission(&f, "make a note", PermissionProfile::AcceptEdits);
-        f.core.start_mission(&m.id, None).unwrap();
-        wait_until("awaiting_review", || state(&f, &m.id) == "awaiting_review");
-        let evs = f.events.lock().unwrap();
-        for e in evs.iter() {
-            if let UiEvent::Activity { event } = e {
-                let stored = f.core.store.events(&event.mission_id, event.id - 1, 1).unwrap();
-                assert_eq!(stored.first().map(|s| s.id), Some(event.id), "UI saw an event that is not in the database");
-            }
-        }
-        assert!(evs.iter().any(|e| matches!(e, UiEvent::Delta { .. })), "streaming deltas reach the UI");
-    }
-
-    #[test]
-    fn invalid_projects_and_empty_objectives_are_rejected() {
-        let f = fixture();
-        let plain = tempfile::tempdir().unwrap();
-        assert!(f.core.add_project(plain.path()).is_err(), "non-repo");
-        assert!(f.core.create_mission(&f.project.id, "   ", None, "fake", None, PermissionProfile::Default).is_err());
-        assert!(f.core.create_mission(&f.project.id, "x", None, "codex", None, PermissionProfile::Default).is_err(), "unavailable provider is refused, not faked");
-    }
-}
+mod tests;

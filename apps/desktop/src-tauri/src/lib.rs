@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod contract;
 pub mod db;
 pub mod error;
 pub mod git;
@@ -9,6 +10,7 @@ pub mod proc;
 pub mod providers;
 pub mod redact;
 pub mod store;
+pub mod verify;
 pub mod supervisor;
 
 use std::path::PathBuf;
@@ -62,6 +64,7 @@ pub fn run() {
                 claude: which::which("claude").ok(),
                 allow_fake: cfg!(debug_assertions) || std::env::var("FORGE_ALLOW_FAKE_PROVIDER").as_deref() == Ok("1"),
                 max_concurrent: 3,
+                ollama_url: std::env::var("FORGE_OLLAMA_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into()),
             };
             let core = Core::new(store, cfg, Arc::new(move |ev| {
                 let _ = handle.emit("forge://event", &ev);

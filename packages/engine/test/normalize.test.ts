@@ -50,6 +50,16 @@ describe('ClaudeNormalizer', () => {
     expect(r!.usage).toEqual({ inputTokens: 10, outputTokens: 20, cacheReadTokens: 5, cacheCreationTokens: 2, costUsdEstimate: 0.0123, durationMs: 4200, numTurns: 3 });
   });
 
+  it('never reports a cost for a local-model session', () => {
+    const events: any[] = [];
+    const n = new ClaudeNormalizer({ event: (k, p) => events.push({ k, p }), delta: () => undefined, providerSession: () => undefined }, { credentialSource: 'local-endpoint', endpoint: 'http://127.0.0.1:11434' });
+    n.handle({ type: 'system', subtype: 'init', session_id: 's', apiKeySource: 'ANTHROPIC_AUTH_TOKEN', tools: [] });
+    const r = n.handle({ type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.0772, usage: { input_tokens: 5, output_tokens: 6 } });
+    expect(r!.usage.costUsdEstimate).toBeUndefined();
+    expect(r!.usage.inputTokens).toBe(5);
+    expect(events[0].p.credentialSource).toBe('local-endpoint');
+  });
+
   it('treats error subtypes and is_error successes as errors with a message', () => {
     const h = harness();
     expect(h.n.handle({ type: 'result', subtype: 'error_max_turns', is_error: true, errors: ['too many turns'], usage: {} })).toMatchObject({ status: 'error', message: 'too many turns' });

@@ -9,8 +9,10 @@ pub struct Containment {
     _job: Option<win32job::Job>,
 }
 
+/// Place a freshly spawned process in a kill-on-close containment. Callers must treat failure as fatal for the
+/// session: an uncontained agent could outlive FORGE. (Dropping the returned value terminates the process tree.)
 #[cfg(windows)]
-pub fn contain(child: &Child) -> Containment {
+pub fn contain(child: &Child) -> Result<Containment, String> {
     use std::os::windows::io::AsRawHandle;
     let job = (|| -> Result<win32job::Job, win32job::JobError> {
         let job = win32job::Job::create()?;
@@ -19,16 +21,16 @@ pub fn contain(child: &Child) -> Containment {
         job.set_extended_limit_info(&info)?;
         job.assign_process(child.as_raw_handle() as isize)?;
         Ok(job)
-    })();
-    if let Err(e) = &job {
-        eprintln!("[forge] could not place process {} in a job object: {e}", child.id());
-    }
-    Containment { _job: job.ok() }
+    })()
+    .map_err(|e| format!("job object setup failed for pid {}: {e}", child.id()))?;
+    Ok(Containment { _job: Some(job) })
 }
 
 #[cfg(not(windows))]
-pub fn contain(_child: &Child) -> Containment {
-    Containment {}
+pub fn contain(_child: &Child) -> Result<Containment, String> {
+    // No kill-on-close primitive is wired up on this platform yet; sessions rely on the engine exiting when its
+    // stdin closes plus an explicit tree kill.
+    Ok(Containment {})
 }
 
 /// Forcefully terminate a process and its whole tree.

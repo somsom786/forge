@@ -33,6 +33,11 @@ pub fn is_within(root: &Path, candidate: &Path) -> bool {
     c.len() >= r.len() && c[..r.len()] == r[..]
 }
 
+fn short_name_re() -> &'static regex::Regex {
+    static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    R.get_or_init(|| regex::Regex::new(r"(?i)^[^.~]{1,8}~[0-9]+(\.[^.]{0,3})?$").unwrap())
+}
+
 const DEVICE_NAMES: &[&str] = &[
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
@@ -56,10 +61,18 @@ fn reject_suspicious(candidate: &Path) -> Result<()> {
         }
         for comp in candidate.components() {
             if let Component::Normal(n) = comp {
-                let lower = n.to_string_lossy().to_lowercase();
+                let name = n.to_string_lossy();
+                let lower = name.to_lowercase();
                 let stem = lower.split('.').next().unwrap_or("");
                 if DEVICE_NAMES.contains(&stem) {
                     return Err(ForgeError::PathRejected(format!("reserved device name: {stem}")));
+                }
+                // Windows silently strips trailing dots/spaces, so `.claude.` names `.claude`.
+                if name.ends_with('.') || name.ends_with(' ') {
+                    return Err(ForgeError::PathRejected(format!("ambiguous path component \"{name}\" (trailing dot or space)")));
+                }
+                if short_name_re().is_match(&name) {
+                    return Err(ForgeError::PathRejected(format!("8.3 short-name alias \"{name}\" is not accepted; use the full name")));
                 }
             }
         }
@@ -82,23 +95,40 @@ pub fn resolve_within(root: &Path, candidate: &Path) -> Result<PathBuf> {
             canon_root.display()
         )));
     }
+    // Canonicalise the deepest existing ancestor (resolving junctions, symlinks and short names) and
+    // re-attach the not-yet-existing tail. Callers must reason about THIS path, not the spelled one.
     let mut probe = lex.clone();
+    let mut tail: Vec<std::ffi::OsString> = vec![];
     while !probe.exists() {
+        match probe.file_name() {
+            Some(n) => tail.push(n.to_os_string()),
+            None => break,
+        }
         if !probe.pop() {
             break;
         }
     }
-    if probe.exists() {
-        let real = dunce::canonicalize(&probe)?;
-        if !is_within(&canon_root, &real) {
-            return Err(ForgeError::PathRejected(format!(
-                "{} resolves outside {}",
-                probe.display(),
-                canon_root.display()
-            )));
-        }
+    let mut real = if probe.exists() { dunce::canonicalize(&probe)? } else { probe };
+    if !is_within(&canon_root, &real) {
+        return Err(ForgeError::PathRejected(format!(
+            "{} resolves outside {}",
+            real.display(),
+            canon_root.display()
+        )));
     }
-    Ok(lex)
+    for n in tail.iter().rev() {
+        real.push(n);
+    }
+    Ok(real)
+}
+
+/// Components of `path` below `root` (original case), or None if it is not inside. Case-insensitive on Windows.
+pub fn relative_components(root: &Path, path: &Path) -> Option<Vec<String>> {
+    if !is_within(root, path) {
+        return None;
+    }
+    let skip = lexical_normalize(root).components().count();
+    Some(lexical_normalize(path).components().skip(skip).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect())
 }
 
 /// Normalise a user-supplied directory to a canonical absolute form without `\\?\`.

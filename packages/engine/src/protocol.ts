@@ -2,7 +2,7 @@
 // One engine process hosts exactly one agent session. Transport: newline-delimited JSON
 // on stdin (commands) / stdout (events). stderr is diagnostics only and is never parsed.
 
-export type ProviderId = 'claude' | 'codex' | 'fake';
+export type ProviderId = 'claude' | 'claude-local' | 'codex' | 'fake';
 
 /** Honest per-provider capability matrix. `false` means the control must not be shown. */
 export interface Capability {
@@ -40,6 +40,8 @@ export interface StartCommand {
   /** Extra guidance appended to the provider's system prompt (mission contract, memory). */
   appendSystemPrompt?: string;
   maxTurns?: number;
+  /** `claude-local`: loopback Anthropic-compatible endpoint (e.g. Ollama). Never a remote URL. */
+  localEndpoint?: string;
   /** When false (default) ANTHROPIC_API_KEY & co are stripped so a mission can never silently bill the API. */
   allowApiBilling?: boolean;
 }
@@ -101,6 +103,7 @@ export type EngineEvent =
       blockedPath?: string;
       reason?: string;
     }
+  | { t: 'permission_cancelled'; requestId: string }
   | {
       t: 'turn_complete';
       status: TurnStatus;

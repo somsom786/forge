@@ -13,13 +13,42 @@ pub fn git_binary() -> Result<PathBuf> {
     which::which("git").map_err(|_| ForgeError::Git("Git is not installed or not on PATH".into()))
 }
 
+/// Variables that could redirect git at a different repository, index, config or helper program.
+const REDIRECTING_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_ASKPASS",
+    "GIT_SSH_COMMAND",
+    "GIT_PAGER",
+];
+
 fn base_command(dir: &Path) -> Result<Command> {
     let mut c = Command::new(git_binary()?);
     c.current_dir(dir)
-        .args(["-c", "core.quotepath=false", "-c", "core.longpaths=true", "--no-optional-locks"])
+        .args([
+            "-c", "core.quotepath=false",
+            "-c", "core.longpaths=true",
+            // Repo-level config is writable by an approved agent shell command; never let it name a program we run.
+            "-c", "core.fsmonitor=false",
+            "-c", "core.pager=cat",
+            "-c", "protocol.ext.allow=never",
+            "--no-optional-locks",
+        ])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("LC_ALL", "C");
+    for k in REDIRECTING_ENV {
+        c.env_remove(k);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -235,18 +264,52 @@ pub fn worktree_add(repo: &Path, path: &Path, branch: &str, base: &str) -> Resul
 pub struct WorktreeSafety {
     pub exists: bool,
     pub dirty_files: u32,
+    /// Commits on the mission branch (or the worktree HEAD) that are not in the base.
     pub unmerged_commits: u32,
 }
 
-/// What would be lost by removing this worktree and branch?
-pub fn worktree_safety(worktree: &Path, base_commit: &str) -> Result<WorktreeSafety> {
-    if !worktree.exists() {
-        return Ok(WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: 0 });
+fn count_range(dir: &Path, range: &str) -> u32 {
+    run(dir, &["rev-list", "--count", range]).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0)
+}
+
+/// What would be lost by removing this worktree and branch? Commits are counted from the *branch ref* in the
+/// main repository (independent of whether the worktree directory still exists or what it has checked out),
+/// and also from the worktree's own HEAD in case it was switched elsewhere; the larger number wins.
+pub fn worktree_safety(repo: &Path, worktree: Option<&Path>, branch: Option<&str>, base_commit: &str) -> Result<WorktreeSafety> {
+    let mut unmerged = 0;
+    if let Some(b) = branch {
+        if run(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).is_ok() {
+            unmerged = count_range(repo, &format!("{base_commit}..refs/heads/{b}"));
+        }
     }
-    let st = status(worktree)?;
-    let range = format!("{base_commit}..HEAD");
-    let n: u32 = run(worktree, &["rev-list", "--count", &range])?.trim().parse().unwrap_or(0);
-    Ok(WorktreeSafety { exists: true, dirty_files: st.files.len() as u32, unmerged_commits: n })
+    let Some(wt) = worktree.filter(|w| w.exists()) else {
+        return Ok(WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: unmerged });
+    };
+    let st = status(wt)?;
+    unmerged = unmerged.max(count_range(wt, &format!("{base_commit}..HEAD")));
+    Ok(WorktreeSafety { exists: true, dirty_files: st.files.len() as u32, unmerged_commits: unmerged })
+}
+
+/// Prove that `worktree` is the registered worktree of `repo` for `expected_branch` before acting on it.
+/// Defends against a replaced directory/junction or a tampered `.git` file redirecting git elsewhere.
+pub fn verify_worktree(repo: &Path, worktree: &Path, expected_branch: Option<&str>) -> Result<()> {
+    let top = toplevel(worktree)?;
+    if !crate::paths::is_within(&top, worktree) || !crate::paths::is_within(worktree, &top) {
+        return Err(ForgeError::Git(format!("{} is not the root of its own working tree (found {})", worktree.display(), top.display())));
+    }
+    let common = run(worktree, &["rev-parse", "--git-common-dir"])?;
+    let common = dunce::canonicalize(worktree.join(common.trim()))?;
+    let expected = dunce::canonicalize(repo.join(".git"))?;
+    if !crate::paths::is_within(&expected, &common) || !crate::paths::is_within(&common, &expected) {
+        return Err(ForgeError::Git(format!("worktree {} belongs to a different repository ({})", worktree.display(), common.display())));
+    }
+    if let Some(b) = expected_branch {
+        let cur = current_branch(worktree)?;
+        if cur != b {
+            return Err(ForgeError::Git(format!("worktree is on branch \"{cur}\" but this mission owns \"{b}\"; refusing to continue")));
+        }
+    }
+    Ok(())
 }
 
 /// Remove a worktree. Refuses when there is uncommitted work unless `force`.
@@ -287,16 +350,51 @@ pub struct ChangedFile {
     pub binary: bool,
 }
 
-/// Mark untracked files intent-to-add so they appear in diffs. Only ever called on a
-/// mission worktree, which FORGE owns.
-fn intent_to_add(worktree: &Path) -> Result<()> {
-    run(worktree, &["add", "-A", "-N", "--", "."])?;
-    Ok(())
+/// Build a throwaway index containing the worktree's complete current state (tracked + untracked, honouring
+/// .gitignore). The worktree's real index is never touched, so previewing a diff cannot change what the agent sees.
+struct PreviewIndex {
+    path: PathBuf,
+}
+
+impl PreviewIndex {
+    fn build(worktree: &Path) -> Result<Self> {
+        let path = std::env::temp_dir().join(format!("forge-idx-{}", uuid::Uuid::now_v7()));
+        let idx = path.to_string_lossy().into_owned();
+        let me = Self { path };
+        let go = |args: &[&str]| -> Result<()> {
+            let out = base_command(worktree)?.env("GIT_INDEX_FILE", &idx).args(args).output()?;
+            if out.status.success() {
+                Ok(())
+            } else {
+                Err(ForgeError::Git(format!("git {} failed: {}", args[0], String::from_utf8_lossy(&out.stderr).trim())))
+            }
+        };
+        if has_commits(worktree) {
+            go(&["read-tree", "HEAD"])?;
+        }
+        go(&["add", "-A", "--", "."])?;
+        Ok(me)
+    }
+
+    fn run(&self, worktree: &Path, args: &[&str]) -> Result<String> {
+        let out = base_command(worktree)?.env("GIT_INDEX_FILE", &self.path).args(args).output()?;
+        if !out.status.success() {
+            return Err(ForgeError::Git(format!("git {} failed: {}", args[0], String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+impl Drop for PreviewIndex {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(self.path.with_extension("lock"));
+    }
 }
 
 pub fn changed_files(worktree: &Path, base: &str) -> Result<Vec<ChangedFile>> {
-    intent_to_add(worktree)?;
-    let raw = run(worktree, &["diff", "--numstat", "-z", base])?;
+    let idx = PreviewIndex::build(worktree)?;
+    let raw = idx.run(worktree, &["diff", "--cached", "--numstat", "-z", "--no-ext-diff", "--no-textconv", base])?;
     let mut out = vec![];
     let mut it = raw.split('\0').peekable();
     while let Some(rec) = it.next() {
@@ -312,20 +410,29 @@ pub fn changed_files(worktree: &Path, base: &str) -> Result<Vec<ChangedFile>> {
         } else {
             path.to_string()
         };
-        out.push(ChangedFile {
-            path,
-            added: a.parse().ok(),
-            removed: r.parse().ok(),
-            binary: a == "-",
-        });
+        out.push(ChangedFile { path, added: a.parse().ok(), removed: r.parse().ok(), binary: a == "-" });
     }
     Ok(out)
 }
 
 /// Unified diff of everything the mission changed relative to its base commit.
 pub fn diff(worktree: &Path, base: &str) -> Result<String> {
-    intent_to_add(worktree)?;
-    run(worktree, &["diff", "--no-color", "--find-renames", "-U4", base])
+    let idx = PreviewIndex::build(worktree)?;
+    idx.run(worktree, &["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "-U4", base])
+}
+
+/// Stable identity of the mission's current changes: base-relative content of every changed path.
+/// Evidence (check results, manual verdicts, approvals) is only valid for the fingerprint it was recorded against.
+pub fn fingerprint(worktree: &Path, base: &str) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let idx = PreviewIndex::build(worktree)?;
+    // The tree object of the full current state is a content hash of exactly what a merge would bring.
+    let tree = idx.run(worktree, &["write-tree"])?;
+    let mut h = Sha256::new();
+    h.update(base.as_bytes());
+    h.update(b"\0");
+    h.update(tree.trim().as_bytes());
+    Ok(format!("{:x}", h.finalize())[..32].to_string())
 }
 
 #[cfg(test)]
@@ -406,7 +513,7 @@ u UU N... 100644 100644 100644 100644 a b c conflicted.rs\0\
         let d = diff(&wt, &base).unwrap();
         assert!(d.contains("+hello") && d.contains("+three"), "{d}");
 
-        let safety = worktree_safety(&wt, &base).unwrap();
+        let safety = worktree_safety(repo.path(), Some(&wt), Some("forge/m1"), &base).unwrap();
         assert_eq!(safety.dirty_files, 2);
 
         // Dirty worktree must not be removed without force.
@@ -429,6 +536,69 @@ u UU N... 100644 100644 100644 100644 a b c conflicted.rs\0\
         assert!(worktree_add(repo.path(), &wt, "forge/w2", &base).is_err());
         worktree_remove(repo.path(), &wt, false).unwrap();
         assert!(!wt.exists());
+    }
+
+    #[test]
+    fn previewing_a_diff_never_touches_the_worktrees_real_index() {
+        let repo = init_repo();
+        let parent = tempfile::tempdir().unwrap();
+        let wt = parent.path().join("w");
+        let base = head_commit(repo.path()).unwrap();
+        worktree_add(repo.path(), &wt, "forge/idx", &base).unwrap();
+        std::fs::write(wt.join("new.txt"), "n\n").unwrap();
+        std::fs::remove_file(wt.join("README.md")).unwrap();
+        let before = status(&wt).unwrap();
+        assert_eq!((before.staged, before.untracked), (0, 1));
+
+        let files = changed_files(&wt, &base).unwrap();
+        assert!(files.iter().any(|f| f.path == "new.txt") && files.iter().any(|f| f.path == "README.md"));
+        let d = diff(&wt, &base).unwrap();
+        assert!(d.contains("+n") && d.contains("-# t"));
+        let fp1 = fingerprint(&wt, &base).unwrap();
+
+        let after = status(&wt).unwrap();
+        assert_eq!(before, after, "status must be identical: nothing staged, new.txt still untracked");
+        assert_eq!(fingerprint(&wt, &base).unwrap(), fp1, "fingerprint is stable for unchanged content");
+        std::fs::write(wt.join("new.txt"), "changed\n").unwrap();
+        assert_ne!(fingerprint(&wt, &base).unwrap(), fp1, "any content change moves the fingerprint");
+        worktree_remove(repo.path(), &wt, true).unwrap();
+    }
+
+    #[test]
+    fn a_worktree_redirected_to_another_repository_is_detected() {
+        let repo = init_repo();
+        let other = init_repo();
+        let parent = tempfile::tempdir().unwrap();
+        let wt = parent.path().join("w");
+        let base = head_commit(repo.path()).unwrap();
+        worktree_add(repo.path(), &wt, "forge/ok", &base).unwrap();
+        verify_worktree(repo.path(), &wt, Some("forge/ok")).unwrap();
+        assert!(verify_worktree(repo.path(), &wt, Some("forge/other")).unwrap_err().to_string().contains("refusing"));
+
+        // Tamper with the `.git` file so the directory now belongs to a different repository.
+        let other_wt = parent.path().join("w2");
+        let obase = head_commit(other.path()).unwrap();
+        worktree_add(other.path(), &other_wt, "forge/x", &obase).unwrap();
+        std::fs::copy(other_wt.join(".git"), wt.join(".git")).unwrap();
+        let err = verify_worktree(repo.path(), &wt, Some("forge/ok")).unwrap_err().to_string();
+        assert!(err.contains("different repository") || err.contains("branch"), "{err}");
+    }
+
+    #[test]
+    fn safety_counts_commits_from_the_branch_even_without_a_worktree() {
+        let repo = init_repo();
+        let parent = tempfile::tempdir().unwrap();
+        let wt = parent.path().join("w");
+        let base = head_commit(repo.path()).unwrap();
+        worktree_add(repo.path(), &wt, "forge/c", &base).unwrap();
+        std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+        run(&wt, &["add", "-A"]).unwrap();
+        run(&wt, &["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-m", "w"]).unwrap();
+        std::fs::remove_dir_all(&wt).unwrap();
+        let s = worktree_safety(repo.path(), Some(&wt), Some("forge/c"), &base).unwrap();
+        assert_eq!((s.exists, s.dirty_files, s.unmerged_commits), (false, 0, 1));
+        let none = worktree_safety(repo.path(), None, Some("forge/never-existed"), &base).unwrap();
+        assert_eq!(none.unmerged_commits, 0);
     }
 
     #[test]

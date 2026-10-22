@@ -6,7 +6,7 @@ export type MissionState =
   | 'approved' | 'merged' | 'rejected' | 'failed' | 'cancelled' | 'interrupted';
 
 export type PermissionProfile = 'default' | 'accept_edits';
-export type ProviderId = 'claude' | 'codex' | 'fake';
+export type ProviderId = 'claude' | 'claude-local' | 'codex' | 'fake';
 export type Risk = 'low' | 'medium' | 'high';
 
 export interface Project {
@@ -159,6 +159,8 @@ export interface ProviderInfo {
   /** As reported by the CLI, e.g. "claude.ai" (subscription) or "chatgpt". */
   authMethod: string | null;
   plan: string | null;
+  /** Selectable models when the provider can enumerate them (claude-local lists the local Ollama models). */
+  models: string[];
   /** False means missions cannot use this provider in this build. */
   adapterAvailable: boolean;
   notes: string[];

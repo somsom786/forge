@@ -66,7 +66,10 @@ export class ClaudeNormalizer {
   private streamingMessageId: string | null = null;
   private lastSessionId: string | undefined;
 
-  constructor(private readonly sink: Sink) {}
+  constructor(
+    private readonly sink: Sink,
+    private readonly override?: { credentialSource: string; endpoint?: string },
+  ) {}
 
   /** Handle one SDK message. Returns a TurnResult when the message is the turn's `result`. */
   handle(msg: Json): TurnResult | null {
@@ -118,7 +121,8 @@ export class ClaudeNormalizer {
         cwd: msg.cwd,
         permissionMode: msg.permissionMode,
         // 'none' means OAuth / subscription login; anything else indicates API-key billing.
-        credentialSource: msg.apiKeySource,
+        credentialSource: this.override?.credentialSource ?? msg.apiKeySource,
+        localEndpoint: this.override?.endpoint,
         toolCount: Array.isArray(msg.tools) ? msg.tools.length : undefined,
         tools: Array.isArray(msg.tools) ? msg.tools : undefined,
         skills: Array.isArray(msg.skills) ? msg.skills : undefined,
@@ -199,7 +203,8 @@ export class ClaudeNormalizer {
       outputTokens: Number(u.output_tokens ?? 0),
       cacheReadTokens: Number(u.cache_read_input_tokens ?? 0),
       cacheCreationTokens: Number(u.cache_creation_input_tokens ?? 0),
-      costUsdEstimate: typeof msg.total_cost_usd === 'number' ? msg.total_cost_usd : undefined,
+      // A local model has no price: Claude Code's price-table figure for it would be invented, so never report one.
+      costUsdEstimate: !this.override && typeof msg.total_cost_usd === 'number' ? msg.total_cost_usd : undefined,
       durationMs: typeof msg.duration_ms === 'number' ? msg.duration_ms : undefined,
       numTurns: typeof msg.num_turns === 'number' ? msg.num_turns : undefined,
     };

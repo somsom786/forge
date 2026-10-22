@@ -8,6 +8,8 @@ export interface PermissionRequest {
   source: 'hook' | 'can_use_tool';
   blockedPath?: string;
   reason?: string;
+  /** Aborts when the provider withdraws the tool call (e.g. interrupted). */
+  signal?: AbortSignal;
 }
 
 export interface PermissionDecision {

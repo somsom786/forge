@@ -65,7 +65,11 @@ pub async fn recovery_report(core: CoreState<'_>) -> Result<RecoveryReport> {
 #[tauri::command]
 pub async fn providers_detect(core: CoreState<'_>) -> Result<Vec<ProviderInfo>> {
     blocking(&core, |c| {
-        let mut v = vec![providers::detect_claude(c.cfg.claude.as_ref()), providers::detect_codex(which::which("codex").ok())];
+        let mut v = vec![
+            providers::detect_claude(c.cfg.claude.as_ref()),
+            providers::detect_claude_local(c.cfg.claude.as_ref(), &c.cfg.ollama_url),
+            providers::detect_codex(which::which("codex").ok()),
+        ];
         if c.cfg.allow_fake {
             v.push(ProviderInfo {
                 id: "fake".into(),
@@ -84,6 +88,7 @@ pub async fn providers_detect(core: CoreState<'_>) -> Result<Vec<ProviderInfo>> 
                     "approvals": {"supported": true}, "usageReporting": {"supported": false}, "modelSelection": {"supported": false},
                     "worktreeIntegration": {"supported": true}
                 }),
+                models: vec![],
             });
         }
         Ok(v)
@@ -230,13 +235,14 @@ pub struct MissionChanges {
 pub async fn mission_changes(core: CoreState<'_>, mission_id: String) -> Result<MissionChanges> {
     blocking(&core, move |c| {
         let m = c.store.get_mission(&mission_id)?;
+        let safety = c.worktree_safety(&mission_id)?;
         let (Some(wt), Some(base)) = (m.worktree_path.as_deref(), m.base_commit.as_deref()) else {
-            return Ok(MissionChanges { files: vec![], safety: git::WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: 0 } });
+            return Ok(MissionChanges { files: vec![], safety });
         };
         if !Path::new(wt).exists() {
-            return Ok(MissionChanges { files: vec![], safety: git::WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: 0 } });
+            return Ok(MissionChanges { files: vec![], safety });
         }
-        Ok(MissionChanges { files: git::changed_files(Path::new(wt), base)?, safety: git::worktree_safety(Path::new(wt), base)? })
+        Ok(MissionChanges { files: git::changed_files(Path::new(wt), base)?, safety })
     })
     .await
 }

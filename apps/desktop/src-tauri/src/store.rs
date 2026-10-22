@@ -505,6 +505,15 @@ impl Store {
         )?)
     }
 
+    /// Withdraw a single still-pending request (the provider cancelled the tool call it was for).
+    pub fn expire_approval(&self, id: &str, reason: &str) -> Result<Option<Approval>> {
+        let n = self.c().execute(
+            "UPDATE approval_request SET state='expired', decision_note=?2, decided_at=?3 WHERE id=?1 AND state='pending'",
+            params![id, reason, now()],
+        )?;
+        if n == 0 { Ok(None) } else { Ok(Some(self.get_approval(id)?)) }
+    }
+
     pub fn pending_count_for_mission(&self, mission_id: &str) -> Result<i64> {
         Ok(self.c().query_row("SELECT count(*) FROM approval_request WHERE mission_id=?1 AND state='pending'", [mission_id], |r| r.get(0))?)
     }

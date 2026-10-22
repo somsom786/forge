@@ -1,0 +1,17 @@
+# FORGE — Decisions
+
+| # | Decision | Alternatives considered | Why |
+|---|---|---|---|
+| 1 | **Tauri 2 + React/TS + Rust core**; Node engine only for provider SDKs | Electron (heavier, no Rust boundary); all-Rust (no official Claude SDK in Rust; would mean re-implementing the control protocol) | Privileged work stays in Rust; Windows-native webview (WebView2 present); small footprint. |
+| 2 | **Claude via the official Agent SDK** pointed at the user's installed `claude` | Parse CLI text output (rejected: brief forbids); raw `stream-json` control protocol (SDK implements it supported-ly) | Gets structured events, `interrupt`, resume, hooks, permission callbacks without guessing a wire format. SDK licence is Anthropic's own ("see LICENSE.md"), not OSS — acceptable for local use; review before any redistribution. |
+| 3 | **One engine process per session**, JSONL over stdio | One shared multiplexed engine | Cancellation = kill a tree; crash isolation; Job Object per session. |
+| 4 | **PreToolUse hook is the enforcement point**, `canUseTool` fallback | `canUseTool` alone | SDK docs: `canUseTool` fires only when a call falls through to a prompt, so user allow-rules would skip FORGE entirely. |
+| 5 | **`settingSources:['project']`** (exclude user settings) | CLI default (all sources) | Reproducible missions; user's global allow-rules / `bypassPermissions` can't widen approvals. Trade-off: user-level CLAUDE.md is not loaded (to be revisited with the Context Inspector). |
+| 6 | **Git via the Git CLI**, not libgit2 | `git2` crate | Identical behaviour to the developer's git on NTFS (worktrees, long paths, hooks); no native build burden. |
+| 7 | **Worktrees under `~/.forge/worktrees`**, branch `forge/<slug>-<id>` from current HEAD | Inside the repo; sibling dir | Keeps repos clean; short paths; no `.gitignore` edits. Known gap: fresh worktrees lack `node_modules`/build caches (per-project setup commands later). |
+| 8 | **"Stop" → `interrupted` (resumable); "Discard" → `cancelled`** | Single cancel | Stopping an agent should not destroy its work. |
+| 9 | **Core-originated events use negative `seq`** | Separate table | One ordered flight recorder per mission; unique key keeps idempotency. |
+| 10 | **SQLite + FTS5 first, embeddings later only if measured** | Vector DB now | Brief requirement; FTS5 confirmed available in bundled SQLite (test). |
+| 11 | **Scripted test agent** is gated to debug builds / env flag and labelled "not a real agent" | Mock inside Rust tests only | Lets approvals, crashes, cancel, recovery be tested end-to-end through the real process boundary without spending quota. Live provider behaviour is proven separately by an opt-in live test. |
+| 12 | **Docs live in `docs/`**, not the repo root | Root-level docs | Brief: avoid cluttering the root. |
+| 13 | **Medium-effort subagent for isolated UI work; high effort for architecture, security, integrations** | Do everything inline | User instruction; UI is isolated behind a frozen contract (`types.ts`/`api.ts`). |

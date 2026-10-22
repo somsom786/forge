@@ -3,6 +3,11 @@
 //!
 //! Layering with provider-native permissions: FORGE can only *narrow* what the
 //! provider would allow (deny, or require a human). It never widens it.
+//!
+//! Strength of each rule: path rules (worktree containment, protected files) are enforced on the *real*
+//! resolved path and are firm for the file tools. Shell rules (push, destructive patterns) are heuristics that
+//! a determined shell command can obfuscate around; for shell the real control is the human reading the prompt,
+//! which is why every shell call asks. Do not treat a shell-pattern denial as a security boundary.
 
 use crate::paths;
 use regex::Regex;
@@ -137,18 +142,21 @@ pub fn evaluate(tool: &str, input: &Value, worktree: &Path, profile: PermissionP
             Ok(r) => r,
             Err(e) => return Decision::Deny { reason: format!("write outside the mission worktree: {e}") },
         };
+        // `resolved` is the real path (links and short names resolved), so protection cannot be dodged by spelling.
         let canon_root = dunce::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
-        let rel = resolved.strip_prefix(&canon_root).unwrap_or(&resolved);
-        let rel_lower = rel.to_string_lossy().replace('\\', "/").to_lowercase();
-        if let Some(reason) = protected_reason(&rel_lower) {
-            return Decision::Deny { reason: format!("{} is protected: {reason}", rel.display()) };
+        let Some(parts) = paths::relative_components(&canon_root, &resolved) else {
+            return Decision::Deny { reason: "write outside the mission worktree".into() };
+        };
+        let rel = parts.join("/");
+        if let Some(reason) = protected_reason(&rel.to_lowercase()) {
+            return Decision::Deny { reason: format!("{rel} is protected: {reason}") };
         }
         if profile == PermissionProfile::AcceptEdits {
             return Decision::Allow;
         }
         return Decision::Ask {
             risk: Risk::Low,
-            summary: format!("{tool} {}", rel.display()),
+            summary: format!("{tool} {rel}"),
             warnings: vec![],
         };
     }
@@ -235,6 +243,37 @@ mod tests {
             );
         }
         let ok = json!({"file_path": "src/env.rs"});
+        assert_eq!(evaluate("Edit", &ok, d.path(), PermissionProfile::AcceptEdits), Decision::Allow);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn protection_follows_the_real_path_not_the_spelling() {
+        let d = wt();
+        std::fs::create_dir_all(d.path().join(".claude")).unwrap();
+        // A junction inside the worktree that points at the protected directory.
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(d.path().join("docs"))
+            .arg(d.path().join(".claude"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let via_junction = json!({"file_path": "docs/settings.json"});
+        assert!(matches!(evaluate("Edit", &via_junction, d.path(), PermissionProfile::AcceptEdits), Decision::Deny { .. }), "junction into .claude");
+
+        for spelled in [".claude./settings.json", ".CLAUDE/settings.json", ".claude /settings.json", "CLAUDE~1/settings.json"] {
+            let input = json!({"file_path": spelled});
+            assert!(
+                matches!(evaluate("Write", &input, d.path(), PermissionProfile::AcceptEdits), Decision::Deny { .. }),
+                "{spelled} must be denied"
+            );
+        }
+        // A different casing of the worktree root itself must not change the outcome.
+        let upper = d.path().to_string_lossy().to_uppercase();
+        let abs = json!({"file_path": format!("{upper}\\.claude\\settings.json")});
+        assert!(matches!(evaluate("Edit", &abs, d.path(), PermissionProfile::AcceptEdits), Decision::Deny { .. }));
+        let ok = json!({"file_path": format!("{upper}\\src\\fine.rs")});
         assert_eq!(evaluate("Edit", &ok, d.path(), PermissionProfile::AcceptEdits), Decision::Allow);
     }
 

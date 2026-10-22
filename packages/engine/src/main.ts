@@ -20,7 +20,7 @@ function send(ev: EngineEvent): void {
 }
 
 function adapterFor(start: StartCommand): ProviderAdapter {
-  if (start.provider === 'claude') return claudeAdapter;
+  if (start.provider === 'claude' || start.provider === 'claude-local') return claudeAdapter;
   if (start.provider === 'fake') {
     if (process.env.FORGE_ALLOW_FAKE_PROVIDER !== '1') throw new Error('the scripted test agent is disabled');
     return fakeAdapter;
@@ -49,11 +49,22 @@ function makeContext(start: StartCommand): RunContext {
     emit: (kind, payload) => send({ t: 'event', seq: ++seq, kind, payload }),
     delta: (messageId, text) => send({ t: 'delta', messageId, text }),
     providerSession: (id) => send({ t: 'provider_session', providerSessionId: id }),
-    requestPermission: (req: PermissionRequest) =>
+    requestPermission: ({ signal, ...req }: PermissionRequest) =>
       new Promise<PermissionDecision>((resolve) => {
         if (abort.signal.aborted) return resolve({ behavior: 'deny', message: 'Mission was cancelled' });
         const requestId = `p${++permCounter}`;
         pending.set(requestId, resolve);
+        // The provider may withdraw a tool call (interrupt, timeout). Tell the core so a stale prompt does not linger.
+        signal?.addEventListener(
+          'abort',
+          () => {
+            if (pending.delete(requestId)) {
+              send({ t: 'permission_cancelled', requestId });
+              resolve({ behavior: 'deny', message: 'The tool call was withdrawn' });
+            }
+          },
+          { once: true },
+        );
         send({ t: 'permission', requestId, ...req });
       }),
     turnComplete: (r: TurnResult) => {
