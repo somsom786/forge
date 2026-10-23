@@ -68,7 +68,7 @@ pub async fn providers_detect(core: CoreState<'_>) -> Result<Vec<ProviderInfo>> 
         let mut v = vec![
             providers::detect_claude(c.cfg.claude.as_ref()),
             providers::detect_claude_local(c.cfg.claude.as_ref(), &c.cfg.ollama_url),
-            providers::detect_codex(which::which("codex").ok()),
+            providers::detect_codex(c.cfg.codex.clone().or_else(|| which::which("codex").ok())),
         ];
         if c.cfg.allow_fake {
             v.push(ProviderInfo {

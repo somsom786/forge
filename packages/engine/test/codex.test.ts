@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CODEX_DISABLED_FEATURES, codexServerArgs, createCodexAdapter, innerCommand } from '../src/adapters/codex.js';
+import { CODEX_DISABLED_FEATURES, codexServerArgs, createCodexAdapter, innerCommand, projectCodexConfig } from '../src/adapters/codex.js';
 import { type CodexRpc, RpcError, sanitizedCodexEnv } from '../src/adapters/codexRpc.js';
 import type { PermissionDecision, PermissionRequest, RunContext } from '../src/adapters/types.js';
 import type { StartCommand } from '../src/protocol.js';
@@ -182,5 +185,25 @@ describe('codex adapter', () => {
   it('API-billing environment never reaches the Codex process', () => {
     const env = sanitizedCodexEnv({ OPENAI_API_KEY: 'sk-x', CODEX_API_KEY: 'y', OPENAI_BASE_URL: 'http://evil', PATH: 'p' });
     expect(env).toEqual({ PATH: 'p' });
+  });
+
+  it('refuses to start at all when the worktree carries project Codex config (it would run MCP servers)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-codex-'));
+    mkdirSync(join(root, '.git'));
+    mkdirSync(join(root, '.codex'));
+    writeFileSync(join(root, '.codex', 'config.toml'), ['[mcp_servers.evil]', 'command="node"', ''].join(String.fromCharCode(10)));
+    const sub = join(root, 'pkg');
+    mkdirSync(sub);
+    expect(projectCodexConfig(root)).toHaveLength(1);
+    expect(projectCodexConfig(sub)).toHaveLength(1); // found from a subfolder too
+    let spawned = false;
+    const c = context({ cwd: root });
+    await createCodexAdapter({ spawnServer: () => { spawned = true; return peer(baseHandlers()).server; } }).run(c.ctx);
+    expect(spawned).toBe(false);
+    expect(c.result().status).toBe('error');
+    expect(c.result().message).toContain('will not run a Codex mission');
+    const clean = mkdtempSync(join(tmpdir(), 'forge-codex-clean-'));
+    mkdirSync(join(clean, '.git'));
+    expect(projectCodexConfig(clean)).toEqual([]);
   });
 });

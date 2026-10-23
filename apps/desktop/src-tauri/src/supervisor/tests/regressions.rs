@@ -199,7 +199,7 @@ fn a_verbatim_engine_path_still_launches() {
     assert!(verbatim.to_string_lossy().starts_with(r"\\?\"), "precondition: this is the hostile form");
     let core = Core::new(
         Store::in_memory(),
-        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(verbatim), claude: None, allow_fake: true, max_concurrent: 1, ollama_url: "http://127.0.0.1:11434".into() },
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(verbatim), claude: None, codex: None, allow_fake: true, max_concurrent: 1, ollama_url: "http://127.0.0.1:11434".into() },
         Arc::new(|_| {}),
     );
     let project = core.add_project(repo.path()).unwrap();

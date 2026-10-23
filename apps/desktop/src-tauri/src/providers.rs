@@ -76,13 +76,29 @@ pub fn claude_capabilities() -> Value {
 }
 
 pub fn codex_capabilities() -> Value {
-    let n = "Adapter not implemented yet (planned: Codex app-server).";
     json!({
-        "sessionStart": unsupported(n), "resume": unsupported(n), "streaming": unsupported(n),
-        "interrupt": unsupported(n), "toolEvents": unsupported(n), "fileChanges": unsupported(n),
-        "approvals": unsupported(n), "usageReporting": unsupported(n), "modelSelection": unsupported(n),
-        "worktreeIntegration": unsupported(n)
+        "sessionStart": {"supported": true},
+        "resume": {"supported": true, "note": "Resumes the Codex thread transcript, not process state."},
+        "streaming": {"supported": true},
+        "interrupt": {"supported": true},
+        "toolEvents": {"supported": true},
+        "fileChanges": {"supported": true, "note": "Derived from Codex file-change items; the git diff is authoritative."},
+        "approvals": {"supported": true, "note": "Every command and file change is decided by FORGE; Codex's own sandbox stays on."},
+        "usageReporting": {"supported": true, "note": "Token counts only; no cost is reported for a ChatGPT login."},
+        "modelSelection": {"supported": true},
+        "worktreeIntegration": {"supported": true}
     })
+}
+
+/// The Codex executable FORGE can spawn directly. `which` may find an npm `.cmd`/`.ps1` shim, which modern Node/Rust cannot
+/// start without a shell (and FORGE never uses a shell for agents), so only a real `.exe` counts.
+pub fn locate_codex() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("FORGE_CODEX_PATH") {
+        return dunce::canonicalize(PathBuf::from(p)).ok();
+    }
+    let found = which::which("codex").ok()?;
+    let is_exe = found.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")) || !cfg!(windows);
+    is_exe.then(|| dunce::simplified(&found).to_path_buf())
 }
 
 pub fn detect_claude(path: Option<&PathBuf>) -> ProviderInfo {
@@ -131,8 +147,8 @@ pub fn detect_codex(path: Option<PathBuf>) -> ProviderInfo {
         signed_in: None,
         auth_method: None,
         plan: None,
-        adapter_available: false,
-        notes: vec!["Detected for visibility only; missions cannot use Codex until its adapter ships.".into()],
+        adapter_available: path.is_some(),
+        notes: vec!["Missions run `codex app-server` with approvals decided by FORGE, Codex's sandbox on, and MCP servers, plugins, apps and hooks disabled. Your ChatGPT login is used; no API key is.".into()],
         capabilities: codex_capabilities(),
         models: vec![],
     };

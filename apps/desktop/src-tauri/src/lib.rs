@@ -95,6 +95,7 @@ pub fn run() {
                 node: locate_node(app),
                 engine_script: locate_engine(app),
                 claude: which::which("claude").ok(),
+                codex: providers::locate_codex(),
                 allow_fake: cfg!(debug_assertions) || std::env::var("FORGE_ALLOW_FAKE_PROVIDER").as_deref() == Ok("1"),
                 max_concurrent: 3,
                 ollama_url: std::env::var("FORGE_OLLAMA_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into()),

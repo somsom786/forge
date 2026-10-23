@@ -95,6 +95,10 @@ export function spawnCodexServer(exe: string, args: string[], cwd: string, env: 
     });
     child.on('error', (e) => {
       stderrTail += `\n${e.message}`;
+      for (const [id, p] of pending) {
+        pending.delete(id);
+        p.reject(new Error(`could not run codex: ${e.message}`));
+      }
       resolve({ code: null, stderrTail });
     });
   });

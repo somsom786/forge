@@ -10,6 +10,8 @@
 //     with `config/read` and each one is disabled by name, and any server that still reports starting aborts the session.
 //   * The child gets no API-key environment, so a mission can never silently bill an API.
 
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { CapabilityMatrix, UsageReport } from '../protocol.js';
 import { MAX_FIELD_BYTES } from '../protocol.js';
 import { errMessage, truncate, truncateDeep } from '../util.js';
@@ -48,6 +50,23 @@ export function innerCommand(command: string): string {
   return command;
 }
 
+/** Project-level Codex files that can start programs (MCP servers run even though Codex calls project config "untrusted"). */
+const PROJECT_CODEX_FILES = ['.codex/config.toml', '.codex/hooks.json', '.codex/hooks.toml', '.codex/requirements.toml'];
+
+/** Project Codex config in `cwd` or any parent up to and including the repository root. Empty when the folder is clean. */
+export function projectCodexConfig(cwd: string): string[] {
+  const found: string[] = [];
+  let dir = cwd;
+  for (let i = 0; i < 12; i++) {
+    for (const f of PROJECT_CODEX_FILES) if (existsSync(join(dir, f))) found.push(join(dir, f));
+    if (existsSync(join(dir, '.git'))) break; // the worktree/repository root
+    const up = dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return found;
+}
+
 export interface CodexDeps {
   /** Tests inject a scripted peer; production spawns the real `codex app-server`. */
   spawnServer?: (ctx: RunContext) => CodexServer;
@@ -58,6 +77,16 @@ export function createCodexAdapter(deps: CodexDeps = {}): ProviderAdapter {
     id: 'codex',
     capabilities: () => CODEX_CAPABILITIES,
     async run(ctx) {
+      // Fail closed before anything is started. `config/read` cannot be trusted to list what Codex will load from the project
+      // (inside a git worktree it omits servers that `thread/start` then still starts), so the only safe rule is: no project
+      // Codex config at all. Review or remove it, then run the mission again.
+      const hostile = projectCodexConfig(ctx.start.cwd);
+      if (hostile.length > 0) {
+        const message = `This repository contains Codex project configuration (${hostile.map((h) => h.replace(ctx.start.cwd, '.')).join(', ')}). Codex starts MCP servers from it even when it calls the project untrusted, so FORGE will not run a Codex mission here. Review or remove the file, or use Claude for this repository.`;
+        ctx.emit('status', { message, provider: 'codex', refused: true });
+        ctx.turnComplete({ status: 'error', message, usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, permissionDenials: 0 });
+        return;
+      }
       const server = (deps.spawnServer ?? defaultSpawn)(ctx);
       try {
         await runSession(ctx, server);

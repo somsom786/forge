@@ -27,7 +27,7 @@ fn fixture() -> Fixture {
     let ev2 = events.clone();
     let core = Core::new(
         Store::in_memory(),
-        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: None, allow_fake: true, max_concurrent: 2, ollama_url: "http://127.0.0.1:11434".into() },
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: None, codex: None, allow_fake: true, max_concurrent: 2, ollama_url: "http://127.0.0.1:11434".into() },
         Arc::new(move |e| ev2.lock().unwrap().push(e)),
     );
     let project = core.add_project(repo.path()).unwrap();
@@ -277,7 +277,7 @@ fn live_claude_mission_end_to_end() {
     let home = tempfile::tempdir().unwrap();
     let core = Core::new(
         Store::in_memory(),
-        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: Some(claude), allow_fake: false, max_concurrent: 1, ollama_url: "http://127.0.0.1:11434".into() },
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: Some(claude), codex: None, allow_fake: false, max_concurrent: 1, ollama_url: "http://127.0.0.1:11434".into() },
         Arc::new(|_| {}),
     );
     let project = core.add_project(repo.path()).unwrap();

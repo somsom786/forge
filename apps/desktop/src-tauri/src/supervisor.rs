@@ -72,6 +72,8 @@ pub struct Config {
     pub node: Option<PathBuf>,
     pub engine_script: Option<PathBuf>,
     pub claude: Option<PathBuf>,
+    /// A real Codex executable (never an npm shim, which cannot be spawned without a shell).
+    pub codex: Option<PathBuf>,
     /// Allow the scripted test agent (dev/test only).
     pub allow_fake: bool,
     pub max_concurrent: usize,
@@ -293,7 +295,7 @@ impl Core {
         if provider == "fake" && !self.cfg.allow_fake {
             return Err(ForgeError::Provider("the scripted test agent is not enabled".into()));
         }
-        if !matches!(provider, "claude" | "claude-local" | "fake") {
+        if !matches!(provider, "claude" | "claude-local" | "codex" | "fake") {
             return Err(ForgeError::Provider(format!("provider \"{provider}\" is not available in this build")));
         }
         if provider == "claude-local" && model.map(str::trim).unwrap_or("").is_empty() {
@@ -451,6 +453,9 @@ impl Core {
         if matches!(m.provider.as_str(), "claude" | "claude-local") && self.cfg.claude.is_none() {
             return Err(ForgeError::Provider("Claude Code was not found on PATH; install it and sign in with `claude`".into()));
         }
+        if m.provider == "codex" && self.cfg.codex.is_none() {
+            return Err(ForgeError::Provider("Codex was not found (or only an npm shim was found); install the Codex app/CLI and sign in with `codex login`".into()));
+        }
         let session = self.store.create_session(&m.id, &m.provider, resume)?;
         let fail_session = |reason: String| {
             let _ = self.store.end_session(&session.id, "lost", &reason);
@@ -581,6 +586,7 @@ impl Core {
             "permissionMode": if profile == PermissionProfile::AcceptEdits { "acceptEdits" } else { "default" },
             "resume": resume,
             "claudePath": self.cfg.claude.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            "codexPath": self.cfg.codex.as_ref().map(|p| p.to_string_lossy().into_owned()),
             "appendSystemPrompt": MISSION_GUIDANCE,
             "allowApiBilling": false,
             "localEndpoint": if local { Some(self.cfg.ollama_url.clone()) } else { None },
