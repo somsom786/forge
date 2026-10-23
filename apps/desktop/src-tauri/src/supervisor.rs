@@ -184,6 +184,8 @@ pub struct Core {
     checks: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// project ids with a merge in progress (merges into one checkout are serialised).
     merging: Mutex<HashSet<String>>,
+    /// experiment id -> cancel flag of its running attempt.
+    experiments: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -217,7 +219,7 @@ fn request_key(tool_use_id: &str, tool: &str, input: &Value) -> String {
 
 impl Core {
     pub fn new(store: Store, cfg: Config, emit: Emitter) -> Arc<Self> {
-        Arc::new(Self { store, cfg, emit, reg: Mutex::new(Registry::default()), checks: Mutex::new(HashMap::new()), merging: Mutex::new(HashSet::new()) })
+        Arc::new(Self { store, cfg, emit, reg: Mutex::new(Registry::default()), checks: Mutex::new(HashMap::new()), merging: Mutex::new(HashSet::new()), experiments: Mutex::new(HashMap::new()) })
     }
 
     fn emit(&self, e: UiEvent) {
@@ -851,6 +853,7 @@ impl Core {
         // Interrupted knowledge writes are resolved by inspecting what is actually on disk.
         self.recover_knowledge();
         self.recover_harness();
+        self.recover_experiments();
         let orphaned = self.store.fail_orphaned_runs()?;
         if orphaned > 0 {
             self.store.audit("system", "recovery.checks", None, &json!({"orphanedRuns": orphaned}));
@@ -909,9 +912,11 @@ fn derive_title(objective: &str) -> String {
     if first.chars().count() > 72 { format!("{t}…") } else { t }
 }
 
+mod experiment;
 mod harness;
 mod memory;
 mod review;
+pub use experiment::ExperimentDetail;
 pub use harness::{BackupUsage, DEFAULT_KEEP_BACKUPS_PER_FILE, HookSpec, PruneReport, RollbackPreview};
 pub use memory::{KnowledgeStatus, NewKnowledgeArgs, PageDetail};
 pub use review::{MergeOutcome, ReviewDecision, Seen};

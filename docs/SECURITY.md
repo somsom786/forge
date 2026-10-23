@@ -73,6 +73,16 @@ certification, and no remote service. Treat everything below as the implemented 
 * Cleanup on Windows runs `%SystemRoot%\System32\taskkill.exe` (absolute; a non-absolute `SystemRoot` falls back to `C:\Windows`) with `SystemRoot` as cwd; tested with an injected spawn and a hostile worktree full of `taskkill` sentinels, and on Linux with real processes. The Windows branch has **not been run on Windows** by this change.
 * Not verified on a real Codex: that a widened user config is reported in the `thread/start` response the way the schema says (the refusal logic is unit-tested only).
 
+## Experiments (Phase 6, backend only)
+
+* **Running an experiment executes the user's command against code from every revision it compares** (any branch, tag or commit of the
+  project, which may contain agent-written code) with the user's privileges, exactly like a verification check (limit 4). It only runs
+  on an explicit user action. Revisions are pinned to the commit they resolved to when the experiment was defined.
+* Each revision runs in its own detached worktree under the FORGE home, never in the user's checkout; repositories configuring external
+  git programs are refused before any checkout; git runs with the same hardening as missions. References are validated (no options,
+  ranges or reflog expressions) before they reach git.
+* Run output is redacted (tail and log) like checks; containment is the check runner's (best-effort, limit 5).
+
 ## Known limits (do not assume these are solved)
 
 1. **An approved shell command runs with the user's privileges and no sandbox.** FORGE shows risk warnings but cannot

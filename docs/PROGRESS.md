@@ -13,7 +13,7 @@ UI 100 (vitest); `npm run typecheck` clean. Live tests that spend provider quota
 | Codex adapter (`codex app-server`) | A for the happy path and the refusal, B otherwise | real mission: FORGE approved a write, file created in the worktree, turn succeeded; hostile `.codex/config.toml` refused before anything starts; engine tests (25 Codex tests). review 5 fixed; follow-up on `cloud/codex-hardening` (Linux, unit tests only): effective sandbox/approval settings recorded and constrained, approval scope validated, ungated items abort, taskkill sentinel test. Open: allow-rules refuse the session unless `FORGE_CODEX_ALLOW_USER_RULES=1` |
 | Parallel missions + concurrency limit | B | tests with the scripted agent |
 | Windows installer (`npm run package`, NSIS, per-user, bundled Node + engine bundle) | A | silent install to a scratch folder, launched, a full scripted mission through the real window incl. merge and Proof Pack; the engine ran on the bundled Node with Node removed from PATH (a user's own *check* commands still need their tools on PATH). Uninstalled afterwards. Not tested: upgrade over an older install, code signing (unsigned: SmartScreen will warn) |
-| Experiments (Phase 6) | — | |
+| Experiments (Phase 6): backend only (`cloud/experiments-backend`) | B | 7 tests on real temporary git repos (winner, pinned commits, fewer than 3 runs → no winner, failed correctness, worktree-changing command, duration metric, cancel, crash recovery) + 7 unit tests + migration test from every earlier version. Linux only; compiles for Windows (`cargo check --target x86_64-pc-windows-gnu`), not run on Windows. **No UI, no progress events.** |
 | Enterprise (Phase 7) | — design only | no claims made |
 
 ## Platforms
@@ -31,7 +31,7 @@ providers, no installer). No macOS build or test exists.
 * Codex: the effective-settings refusal and approval-scope checks (`cloud/codex-hardening`) are tested only against a scripted app-server on Linux; the Windows `taskkill` branch is tested with an injected spawn, not on Windows; no real Codex run with every permission denied. Resume of a thread, command approvals through FORGE (verified with a probe against the real app-server, and by unit tests, but not in a FORGE mission), Windows sandbox behaviour (`workspace-write` is requested; whether the user's `elevated` sandbox actually confines a command was not tested), usage numbers.
 * Harness: handle-pinned write path (a concurrent local process could win a microsecond race when *replacing* a file; creating one is now exclusive). `cloud/harness-hardening` adds backup usage/pruning (Core + Tauri commands + TS contract, no UI yet; Linux unit tests) and suspended-start for dry-run hooks on Windows (**compiled for Windows only, not run on Windows**).
 * The mission workspace tab strip scrolls horizontally with 7 tabs; it was not re-screenshotted after the last change.
-* Multi-agent review missions, conflict detection between concurrent missions, experiments.
+* Multi-agent review missions, conflict detection between concurrent missions. Experiments: no screen, no progress events while an attempt runs, nothing proposes variants (the user names existing branches/commits), not run on Windows.
 
 ## History of findings by running things (not by reading code)
 
