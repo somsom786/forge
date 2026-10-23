@@ -119,7 +119,9 @@ pub fn set_vault(ctx: Ctx, project_id: &str, path: Option<&Path>, write: bool) -
         None => ctx.store.set_project_vault(project_id, None, false),
         Some(p) => {
             let canon = crate::paths::canonical_dir(p)?;
-            if crate::paths::is_within(ctx.home, &canon) || crate::paths::is_within(&canon, ctx.home) {
+            // Both sides as real paths: a home spelled with an 8.3 alias or another case must not let a vault slip inside it.
+            let home = dunce::canonicalize(ctx.home).unwrap_or_else(|_| ctx.home.to_path_buf());
+            if crate::paths::is_within(&home, &canon) || crate::paths::is_within(&canon, &home) {
                 return Err(ForgeError::PathRejected("the vault may not contain or live inside FORGE's own data directory".into()));
             }
             if canon.parent().is_none() {
