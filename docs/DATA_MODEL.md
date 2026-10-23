@@ -94,6 +94,11 @@ sessions have ended; they can no longer be decided).
 at most one active (unrevoked) row per project and server name (partial unique index). Re-authorizing revokes the previous row,
 so history is kept. `definition_json` holds env variable *names* only.
 
+## Implemented (migration 11 — ACP agents)
+
+`acp_agent(id, name, command, args_json, added_at, removed_at)`; at most one active agent per name. `command` is the absolute
+path resolved at registration. An ACP mission has `provider = 'acp'` and `model = <agent name>`.
+
 ## Designed, not yet implemented
 
 | Entity | Purpose | Phase |

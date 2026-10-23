@@ -319,7 +319,10 @@ impl Core {
         if provider == "fake" && !self.cfg.allow_fake {
             return Err(ForgeError::Provider("the scripted test agent is not enabled".into()));
         }
-        if !matches!(provider, "claude" | "claude-local" | "codex" | "fake") {
+        if provider == "acp" {
+            self.store.acp_by_name(model.map(str::trim).unwrap_or(""))?;
+        }
+        if !matches!(provider, "claude" | "claude-local" | "codex" | "acp" | "fake") {
             return Err(ForgeError::Provider(format!("provider \"{provider}\" is not available in this build")));
         }
         if provider == "claude-local" && model.map(str::trim).unwrap_or("").is_empty() {
@@ -480,6 +483,15 @@ impl Core {
         // Only servers the user authorized for this project, from their stored (reviewed) definitions; never the repo's .mcp.json.
         // Codex receives none: its MCP configuration lives in the user's own ~/.codex/config.toml, which FORGE does not touch.
         let mcp_servers = if m.provider == "codex" { serde_json::Map::new() } else { self.mcp_servers_for_mission(&m.project_id)? };
+        let acp_agent = if m.provider == "acp" {
+            let a = self.store.acp_by_name(m.model.as_deref().unwrap_or(""))?;
+            if !Path::new(&a.command).is_file() {
+                return Err(ForgeError::Provider(format!("the ACP agent \"{}\" ({}) no longer exists; register it again", a.name, a.command)));
+            }
+            Some(json!({"name": a.name, "command": a.command, "args": a.args}))
+        } else {
+            None
+        };
         if m.provider == "codex" && self.cfg.codex.is_none() {
             return Err(ForgeError::Provider("Codex was not found (or only an npm shim was found); install the Codex app/CLI and sign in with `codex login`".into()));
         }
@@ -630,6 +642,7 @@ impl Core {
             "allowApiBilling": false,
             "localEndpoint": if local { Some(self.cfg.ollama_url.clone()) } else { None },
             "mcpServers": mcp_servers,
+            "acp": acp_agent,
         }));
         Ok(())
     }
@@ -1037,6 +1050,7 @@ fn derive_title(objective: &str) -> String {
     if first.chars().count() > 72 { format!("{t}…") } else { t }
 }
 
+mod acp;
 mod execution;
 mod mcp;
 mod agents;

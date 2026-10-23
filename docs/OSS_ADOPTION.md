@@ -10,8 +10,9 @@ dependencies to vendoring. Licences below were read from the installed artefacts
 | Component | Upstream | Version | Licence | Strategy | Why | Security notes | Update process | Attribution | Local changes |
 |---|---|---|---|---|---|---|---|---|---|
 | bubblewrap | github.com/containers/bubblewrap | 0.9.0 (as installed by the distribution) | LGPL-2.0-or-later | **INTEGRATE** (executed as `bwrap`, not linked, not bundled) | The namespace sandbox behind the `linux_namespaces` execution backend; used by Flatpak, maintained, small | Security depends on the kernel's user namespaces and on bubblewrap itself; FORGE probes it and reports it unavailable rather than falling back | The user's distribution updates it; FORGE does not ship it | None required for invoking an LGPL program; name it in third-party notices if it is ever bundled | None |
+| @agentclientprotocol/sdk | github.com/agentclientprotocol/typescript-sdk | 1.8.0 (exact; published 2026-10-09; 2.x was days old and skipped) | Apache-2.0 (LICENSE file in the package) | **DEPEND** (npm, bundled into the engine by esbuild) | The official ACP implementation: FORGE is the client; the test fixture agent uses its agent side | Peer dependency `zod` already present (MIT, via the Claude Agent SDK); no install scripts; protocol version pinned to 1 and checked at `initialize` | Bump deliberately; re-run `packages/engine/test/acp.test.ts` and the Rust `tests::acp` suite | Apache-2.0 NOTICE/attribution in third-party notices when distributed | None |
 
-Evaluated, not adopted yet (to be decided in the stage that needs them): ACP SDKs, tree-sitter, ast-grep, ripgrep, Gitleaks,
+Evaluated, not adopted yet (to be decided in the stage that needs them): tree-sitter, ast-grep, ripgrep, Gitleaks,
 OSV-Scanner, Trivy, Playwright, hyperfine, Monaco, xyflow, xterm.js, Graphiti. Each will get a row with the fields above
 before any code depends on it.
 
@@ -39,6 +40,7 @@ tauri, tauri-plugin-dialog, thiserror, uuid, which, win32job, windows-sys. All M
 | react, react-dom, zustand, cmdk, @radix-ui/*, tailwindcss, vite, vitest, esbuild | see lockfile | MIT |
 | lucide-react | 1.61.0 | ISC |
 | @tauri-apps/api, @tauri-apps/plugin-dialog | 2.x | MIT OR Apache-2.0 |
+| @agentclientprotocol/sdk | 1.8.0 | Apache-2.0 (adopted in Milestone 3, row above) |
 | typescript | 6.0.3 | Apache-2.0 |
 
 ### External programs FORGE invokes (not bundled)

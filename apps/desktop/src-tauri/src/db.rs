@@ -387,6 +387,18 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE UNIQUE INDEX mcp_authorization_active ON mcp_authorization(project_id, name) WHERE revoked_at IS NULL;
     "#,
+    // v11 - ACP agents the user registered (command pinned to an absolute path).
+    r#"
+    CREATE TABLE acp_agent (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        command TEXT NOT NULL,
+        args_json TEXT NOT NULL DEFAULT '[]',
+        added_at TEXT NOT NULL,
+        removed_at TEXT
+    );
+    CREATE UNIQUE INDEX acp_agent_active ON acp_agent(name) WHERE removed_at IS NULL;
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

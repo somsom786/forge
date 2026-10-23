@@ -9,6 +9,7 @@ pub mod execution;
 mod execution_tests;
 pub mod experiment;
 pub mod git;
+pub mod acp;
 pub mod mcp;
 pub mod merge;
 pub mod harness;
@@ -197,6 +198,9 @@ pub fn run() {
             commands::mcp_authorize,
             commands::mcp_revoke,
             commands::mcp_authorizations,
+            commands::acp_agents,
+            commands::acp_agent_register,
+            commands::acp_agent_remove,
             commands::agents_overview,
             commands::knowledge_open_in_obsidian,
             commands::context_preview,

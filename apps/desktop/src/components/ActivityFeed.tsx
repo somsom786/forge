@@ -245,6 +245,7 @@ function EventRow({ ev, approvals, onFocusApprovals, onSave }: { ev: ActivityEve
                 </Badge>
               )}
               {chip.kind === 'scripted' && <Badge tone="idle">Scripted test agent · no provider billing</Badge>}
+              {chip.kind === 'agent' && <Badge tone="idle" title="FORGE removed API keys from its environment; how it bills depends on how you signed it in">ACP agent · its own sign-in</Badge>}
               {chip.kind === 'unreported' && <span className="text-muted">credential source not reported</span>}
             </div>
             {chip.kind === 'api-warning' && (

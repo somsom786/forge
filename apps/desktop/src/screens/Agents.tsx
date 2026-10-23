@@ -6,6 +6,7 @@ import { capabilityList, costText, formatTokens } from '../lib/agents';
 import { errMsg, providerLabel, relTime } from '../lib/format';
 import { useStore } from '../lib/store';
 import type { AgentsOverview, ProviderInfo } from '../lib/types';
+import { AcpAgentsPanel } from '../components/AcpAgentsPanel';
 import { billingNote, providerAvailability } from '../components/NewMissionDialog';
 import { Badge, Callout, EmptyState, Mono, PageHeader, useNow } from '../components/ui';
 
@@ -57,6 +58,8 @@ export function AgentsScreen() {
             </div>
           )}
         </section>
+
+        <AcpAgentsPanel />
 
         <section aria-label="Running now" className="space-y-2">
           <h2 className="m-0 text-[11px] font-medium uppercase tracking-wide text-faint">Running now ({live.length})</h2>

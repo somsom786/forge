@@ -6,7 +6,7 @@ export type MissionState =
   | 'approved' | 'merged' | 'rejected' | 'failed' | 'cancelled' | 'interrupted';
 
 export type PermissionProfile = 'default' | 'accept_edits';
-export type ProviderId = 'claude' | 'claude-local' | 'codex' | 'fake';
+export type ProviderId = 'claude' | 'claude-local' | 'codex' | 'acp' | 'fake';
 export type Risk = 'low' | 'medium' | 'high';
 
 export interface Project {
@@ -581,6 +581,17 @@ export interface McpServerDef {
   sourceItem: string;
   scope: string;
   runsInForgeMissions: boolean;
+}
+
+/** An Agent Client Protocol agent the user registered. Missions name it in their `model` field. */
+export interface AcpAgent {
+  id: string;
+  name: string;
+  /** Absolute path pinned at registration. */
+  command: string;
+  args: string[];
+  addedAt: string;
+  removedAt: string | null;
 }
 
 /** A server definition as FORGE pins it: env *names* only, never values. */

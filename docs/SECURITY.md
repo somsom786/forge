@@ -113,6 +113,23 @@ mission starts (not in an execution backend, not before any approval); FORGE can
 of its tools the agent may call and with whose approval. Package-runner commands (`npx`, `uvx`) without a pinned version can
 change between runs; the dialog says so.
 
+## ACP agents (Milestone 3)
+
+FORGE is the ACP **client** (official SDK `@agentclientprotocol/sdk` 1.8.0); an ACP agent is a program the user registered.
+
+| Control | Where | Test |
+|---|---|---|
+| Agents run only if registered by the user; the command is pinned to an absolute, existing file at registration; `.cmd`/`.bat`/`.ps1` wrappers are refused (no shell); registration/removal audited. Missions name a registered agent. | `acp.rs`, `supervisor/acp.rs`, `create_mission` | `acp::tests`, `tests::acp::acp_missions_need_a_registered_agent` |
+| Every `session/request_permission` is mapped onto FORGE policy (`edit`/`delete`/`move` → one `Edit` per location, `read`/`search` → `Read`, `execute` → `Bash`, `fetch` → `WebFetch`, anything else → `acp_<kind>`, which asks). A write-like call without a location is denied by policy. | `adapters/acp.ts` `forgeRequests` | `acp.test.ts`, `tests::acp::policy_denies…` |
+| FORGE answers only with *once* options (`allow_once`, `reject_once`); if the agent offers no `allow_once`, the call is refused rather than granting standing permission. | `chooseOption` | `acp.test.ts` (never grants standing permission) |
+| File access the agent asks for (`fs/read_text_file`, `fs/write_text_file`) is brokered: policy decides (reads inside the worktree are allowed, outside ask; writes ask unless covered by the edit just approved, consumed once), and FORGE performs the write after re-checking the **real** path is inside the worktree and not a link. A target swapped for a link after approval is not written through (mutation-checked). | `writeTextFile`, `safeTarget` | `acp.test.ts`, `tests::acp::an_acp_agents_edit…` |
+| No terminal capability is offered. MCP servers: only the project's authorized ones (http only if the agent supports it). | `initialize`, `toAcpMcpServers` | `acp.test.ts` |
+| The agent process gets FORGE's environment minus API keys/base URLs of every provider and minus `FORGE_*`; FORGE never calls `authenticate` (an agent that needs sign-in fails with a message telling the user to sign in outside FORGE). A protocol version other than 1 is refused. | `acpEnv`, `runAcp` | `acp.test.ts` |
+
+**Limit (important):** ACP permission requests are *agent-initiated*. An agent that runs a tool or writes a file itself without
+asking is not mediated by FORGE (same trust class as limit 1). The worktree diff remains the authoritative record and is
+reviewed before merge. FORGE prepends its mission guidance to the prompt (ACP has no system prompt).
+
 ## Execution backends (Stage B; docs/EXECUTION.md)
 
 * Checks and experiment runs execute through the project's **execution backend**. `trusted_local` (the default, unchanged

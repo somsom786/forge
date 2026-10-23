@@ -69,6 +69,7 @@ pub async fn providers_detect(core: CoreState<'_>) -> Result<Vec<ProviderInfo>> 
             providers::detect_claude(c.cfg.claude.as_ref()),
             providers::detect_claude_local(c.cfg.claude.as_ref(), &c.cfg.ollama_url),
             providers::detect_codex(c.cfg.codex.clone()),
+            crate::acp::provider_info(&c.acp_agents()?),
         ];
         if c.cfg.allow_fake {
             v.push(ProviderInfo {
@@ -712,4 +713,24 @@ pub async fn mcp_revoke(core: CoreState<'_>, authorization_id: String) -> Result
 #[tauri::command]
 pub async fn mcp_authorizations(core: CoreState<'_>, project_id: String) -> Result<Vec<McpAuthorizationStatus>> {
     blocking(&core, move |c| c.mcp_authorizations(&project_id)).await
+}
+
+// ---- ACP agents ------------------------------------------------------------------------------------------------------
+
+use crate::acp::AcpAgent;
+
+#[tauri::command]
+pub async fn acp_agents(core: CoreState<'_>) -> Result<Vec<AcpAgent>> {
+    blocking(&core, |c| c.acp_agents()).await
+}
+
+/// Registers a program FORGE will start for ACP missions. Explicit user action only.
+#[tauri::command]
+pub async fn acp_agent_register(core: CoreState<'_>, name: String, command: String, args: Vec<String>) -> Result<AcpAgent> {
+    blocking(&core, move |c| c.acp_agent_register(&name, &command, &args)).await
+}
+
+#[tauri::command]
+pub async fn acp_agent_remove(core: CoreState<'_>, id: String) -> Result<AcpAgent> {
+    blocking(&core, move |c| c.acp_agent_remove(&id)).await
 }

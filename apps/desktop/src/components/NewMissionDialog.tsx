@@ -15,6 +15,7 @@ import { defaultModel, modelRequired, modelSatisfied } from '../lib/provider';
 import { Kbd } from './ui';
 
 export function providerAvailability(p: ProviderInfo): { ok: boolean; reason: string | null } {
+  if (p.id === 'acp' && p.models.length === 0) return { ok: false, reason: 'No ACP agent is registered. Register one on the Agents screen first.' };
   if (!p.adapterAvailable) return { ok: false, reason: `${p.name} has no adapter in this build yet, so missions cannot use it.` };
   if (!p.installed) return { ok: false, reason: `${p.name} is not available: ${p.notes.length ? p.notes.join(' ') : 'not found on this machine.'}` };
   if (p.signedIn === false) return { ok: false, reason: `${p.name} is installed but not signed in. Sign in with its CLI first.` };
@@ -23,6 +24,7 @@ export function providerAvailability(p: ProviderInfo): { ok: boolean; reason: st
 
 export function billingNote(p: ProviderInfo): string {
   if (p.id === 'claude-local') return 'Runs on this machine: no provider billing.';
+  if (p.id === 'acp') return 'Each ACP agent signs in on its own. FORGE removes API keys from its environment but cannot tell how it bills.';
   const m = (p.authMethod ?? '').toLowerCase();
   if (!p.authMethod) return 'Auth method not reported. FORGE cannot confirm how usage is billed.';
   if (m.includes('claude.ai') || m.includes('subscription') || m.includes('chatgpt') || m.includes('oauth')) {
@@ -244,7 +246,7 @@ export function NewMissionDialog() {
             <div>
               {hasList ? (
                 <>
-                  <label className="label" htmlFor="nm-model">Model{modelRequired(selected) ? ' (required)' : ''}</label>
+                  <label className="label" htmlFor="nm-model">{selected?.id === 'acp' ? 'ACP agent' : 'Model'}{modelRequired(selected) ? ' (required)' : ''}</label>
                   <select id="nm-model" className="input mono" value={model} onChange={(e) => setModel(e.target.value)}>
                     {!modelRequired(selected) && <option value="">Provider default</option>}
                     {selected!.models.map((m) => (

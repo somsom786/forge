@@ -7,7 +7,7 @@ import { handleP3 } from './devPreviewP3';
 import { handleP4 } from './devPreviewP4';
 import { handleP6 } from './devPreviewP6';
 import type {
-  ActivityEvent, AgentSession, Approval, CapabilityMatrix, Mission, MissionDetail, Project, ProviderInfo, RepoStatus,
+  AcpAgent, ActivityEvent, AgentSession, Approval, CapabilityMatrix, Mission, MissionDetail, Project, ProviderInfo, RepoStatus,
 } from './types';
 
 const w = window as any;
@@ -233,6 +233,17 @@ const providers: ProviderInfo[] = [
   { id: 'codex', name: 'Codex', installed: true, path: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd', version: '0.40.0', signedIn: true, authMethod: 'chatgpt', plan: null, adapterAvailable: false, notes: ['Detected, but FORGE has no Codex adapter in this build.'], models: [], capabilities: codexCaps },
 ];
 
+const acpCaps: CapabilityMatrix = {
+  sessionStart: cap(true), resume: cap(false, 'Only if the agent advertises loadSession; negotiated per session.'), streaming: cap(true), interrupt: cap(true), toolEvents: cap(true), fileChanges: cap(true),
+  approvals: cap(true, 'Agent-initiated: FORGE decides every request it receives; a tool run without asking is not seen.'), usageReporting: cap(false, 'ACP defines no usage reporting.'), modelSelection: cap(false), worktreeIntegration: cap(true),
+};
+let acpAgents: AcpAgent[] = [{ id: 'acp1', name: 'gemini', command: 'C:\\Program Files\\nodejs\\node.exe', args: ['C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\@google\\gemini-cli\\dist\\index.js', '--experimental-acp'], addedAt: '2026-10-20T09:00:00Z', removedAt: null }];
+const acpProvider = (): ProviderInfo => ({
+  id: 'acp', name: 'ACP agent', installed: acpAgents.length > 0, path: null, version: null, signedIn: null, authMethod: 'agent-managed', plan: null, adapterAvailable: acpAgents.length > 0,
+  notes: acpAgents.length ? ['Each agent signs in and bills on its own; FORGE never authenticates for it and strips API keys from its environment.'] : ['Register an Agent Client Protocol agent (Agents screen) to run missions with it.'],
+  models: acpAgents.map((a) => a.name), capabilities: acpCaps,
+});
+
 const statusFor = (id: string): RepoStatus =>
   id === 'p1'
     ? { branch: 'main', head: '9c1e4f7', upstream: 'origin/main', ahead: 0, behind: 2, files: [], staged: 0, unstaged: 3, untracked: 1, conflicted: 0, dirty: true }
@@ -271,7 +282,20 @@ async function invoke(cmd: string, args: any = {}): Promise<any> {
     case 'recovery_report':
       return { interruptedMissions: ['m4'], lostSessions: 2, expiredApprovals: 0 };
     case 'providers_detect':
-      return providers;
+      return [...providers, acpProvider()];
+    case 'acp_agents':
+      return acpAgents;
+    case 'acp_agent_register': {
+      if (acpAgents.some((a) => a.name === args.name)) throw new Error(`an ACP agent named "${args.name}" is already registered`);
+      const a: AcpAgent = { id: `acp${acpAgents.length + 2}`, name: args.name, command: /^[A-Za-z]:\\/.test(args.command) ? args.command : `C:\\Tools\\${args.command}.exe`, args: args.args, addedAt: new Date().toISOString(), removedAt: null };
+      acpAgents = [...acpAgents, a];
+      return a;
+    }
+    case 'acp_agent_remove': {
+      const a = acpAgents.find((x) => x.id === args.id)!;
+      acpAgents = acpAgents.filter((x) => x.id !== args.id);
+      return { ...a, removedAt: new Date().toISOString() };
+    }
     case 'project_list':
       return projects;
     case 'project_add': {
