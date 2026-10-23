@@ -72,9 +72,6 @@ jobs:
           echo "${OSV_SCANNER_SHA256}  $dir/osv-scanner" | sha256sum -c -
           chmod +x "$dir/osv-scanner"
           echo "$dir" >> "$GITHUB_PATH"
-          # The osv test runs offline; fetch the npm advisory database once (a scan of a one-package lockfile does it).
-          mkdir -p "$dir/seed" && printf '%s' '{"name":"s","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"s","version":"1.0.0"},"node_modules/lodash":{"version":"4.17.20"}}}' > "$dir/seed/package-lock.json"
-          "$dir/osv-scanner" scan source --offline-vulnerabilities --download-offline-databases --format json -r "$dir/seed" > /dev/null || true
           "$dir/gitleaks" version; "$dir/osv-scanner" --version
 
       - name: Install

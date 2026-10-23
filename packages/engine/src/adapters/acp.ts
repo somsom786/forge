@@ -11,7 +11,7 @@
 // worktree diff stays the authoritative record and is reviewed before anything is merged.
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, realpathSync } from 'node:fs';
 import { lstat, mkdir, open, readFile, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -112,10 +112,20 @@ export function chooseOption(options: acp.PermissionOption[], allow: boolean, ca
  */
 export async function safeTarget(cwd: string, p: string): Promise<string> {
   if (!isAbsolute(p)) throw new Error('ACP requires absolute paths');
-  const root = await realpath(cwd);
   const target = resolve(p);
-  const rel = relative(root, target);
-  if (rel === '' || isAbsolute(rel) || rel.split(sep)[0] === '..') throw new Error(`${p} is outside the mission worktree`);
+  // The worktree root may be spelled several ways (as given, with Windows 8.3 short names, or fully resolved); the agent may
+  // echo any of them. Only the part *below* the root is the agent's choice, and that part is checked component by component.
+  const roots = [...new Set([resolve(cwd), realpathSync(cwd), await realpath(cwd)])];
+  const inside = (root: string) => {
+    const win = process.platform === 'win32';
+    const rel = win ? relative(root.toLowerCase(), target.toLowerCase()) : relative(root, target);
+    if (rel === '' || isAbsolute(rel) || rel.split(sep)[0] === '..') return null;
+    // Keep the agent's spelling of the part below the root (only its case may differ from the root's on Windows).
+    return win ? target.slice(target.length - rel.length) : rel;
+  };
+  const root = roots.find((r) => inside(r) !== null);
+  if (!root) throw new Error(`${p} is outside the mission worktree`);
+  const rel = inside(root)!;
   let cur = root;
   const parts = rel.split(sep);
   for (const [i, part] of parts.entries()) {

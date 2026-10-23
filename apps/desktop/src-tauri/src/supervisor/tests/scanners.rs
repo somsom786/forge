@@ -82,8 +82,9 @@ fn real_osv_scanner_reports_a_known_vulnerable_dependency() {
         r#"{"name":"fx","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"fx","version":"1.0.0","dependencies":{"lodash":"4.17.20"}},"node_modules/lodash":{"version":"4.17.20","resolved":"https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz","license":"MIT"}}}"#,
     )
     .unwrap();
-    // Offline database (CI downloads it in a step; locally `--download-offline-databases` once), so the test does not depend on api.osv.dev.
-    let r = run(&f, &m, spec("osv-scanner", "osv-scanner scan source --offline-vulnerabilities --format json -r ."));
+    // Offline matching against OSV's downloadable database (fetched by the scan itself), so the result does not depend on the
+    // api.osv.dev query endpoint.
+    let r = run(&f, &m, spec("osv-scanner", "osv-scanner scan source --offline-vulnerabilities --download-offline-databases --format json -r ."));
     let ev = r.evidence.clone().expect("evidence");
     assert_eq!((r.state, ev.outcome), (RunState::Failed, Outcome::Findings), "{ev:?}\n{}", r.output_tail);
     assert!(ev.findings.iter().any(|x| x.rule_id == "GHSA-35jh-r3h4-6jhm" && x.package.as_deref() == Some("lodash@4.17.20")), "{ev:?}");
