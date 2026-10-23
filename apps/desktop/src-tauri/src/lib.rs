@@ -187,6 +187,7 @@ pub fn run() {
             commands::experiment_run,
             commands::experiment_cancel,
             commands::mission_conflicts,
+            commands::agents_overview,
             commands::knowledge_open_in_obsidian,
             commands::context_preview,
             commands::context_for_mission,

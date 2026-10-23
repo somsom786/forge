@@ -87,6 +87,20 @@ export function handleP6(cmd: string, args: any): Promise<any> | undefined {
     }
     case 'experiment_cancel': return done(null);
     case 'mission_conflicts': return done(conflicts(args.projectId));
+    case 'agents_overview': {
+      const s = (id: string, missionId: string, title: string, provider: string, state: string, startMin: number, usage: any, endReason: string | null = null) =>
+        ({ session: { id, missionId, provider, providerSessionId: null, state, pid: state === 'live' ? 18432 : null, startedAt: ago(startMin), endedAt: state === 'live' ? null : ago(startMin - 20), endReason, usage }, missionTitle: title, projectId: 'p1' });
+      const sessions = [
+        s('s1', 'm1', 'Add retry with exponential backoff to the HTTP client', 'claude', 'live', 41, null),
+        s('s2', 'm2', 'Fix flaky date parsing test', 'claude', 'ended', 90, { inputTokens: 48210, outputTokens: 6120, cacheReadTokens: 210400, cacheCreationTokens: 9100, costUsdEstimate: 0.412, numTurns: 14 }, 'completed'),
+        s('s9', 'm4', 'Refactor logger to structured output', 'codex', 'ended', 300, { inputTokens: 22100, outputTokens: 3400, cacheReadTokens: 80000, cacheCreationTokens: 0 }, 'completed'),
+        s('s4', 'm4', 'Refactor logger to structured output', 'claude', 'lost', 420, null, 'agent process disappeared'),
+      ];
+      return done({ since: ago(60 * 24 * args.days), days: args.days, sessions, usage: [
+        { provider: 'claude', sessions: 3, live: 1, inputTokens: 48210, outputTokens: 6120, cacheReadTokens: 210400, cacheCreationTokens: 9100, turns: 14, costUsdEstimate: 0.412, sessionsWithUsage: 1 },
+        { provider: 'codex', sessions: 1, live: 0, inputTokens: 22100, outputTokens: 3400, cacheReadTokens: 80000, cacheCreationTokens: 0, turns: 0, costUsdEstimate: null, sessionsWithUsage: 1 },
+      ] });
+    }
     default: return undefined;
   }
 }

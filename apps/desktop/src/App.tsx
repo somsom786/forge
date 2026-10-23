@@ -9,6 +9,7 @@ import { NewMissionDialog } from './components/NewMissionDialog';
 import { Shell } from './components/Shell';
 import { Toasts } from './components/ui';
 import { CommandCenter } from './screens/CommandCenter';
+import { AgentsScreen } from './screens/Agents';
 import { ExperimentsScreen } from './screens/Experiments';
 import { HarnessStudio } from './screens/HarnessStudio';
 import { KnowledgeScreen } from './screens/Knowledge';
@@ -34,6 +35,8 @@ function Screen() {
       return <HarnessStudio />;
     case 'experiments':
       return <ExperimentsScreen />;
+    case 'agents':
+      return <AgentsScreen />;
     case 'settings':
       return <SettingsScreen />;
   }

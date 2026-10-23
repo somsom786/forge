@@ -912,10 +912,12 @@ fn derive_title(objective: &str) -> String {
     if first.chars().count() > 72 { format!("{t}…") } else { t }
 }
 
+mod agents;
 mod experiment;
 mod harness;
 mod memory;
 mod review;
+pub use agents::{AgentsOverview, ProviderUsage, SessionRow};
 pub use experiment::ExperimentDetail;
 pub use harness::{BackupUsage, DEFAULT_KEEP_BACKUPS_PER_FILE, HookSpec, PruneReport, RollbackPreview};
 mod conflicts;

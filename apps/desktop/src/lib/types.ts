@@ -867,3 +867,32 @@ export interface ConflictReport {
   drift: MissionBaseDrift[];
   skipped: { missionId: string; reason: string }[];
 }
+
+// ---- Agents overview ----
+
+export interface AgentSessionRow {
+  session: AgentSession;
+  missionTitle: string;
+  projectId: string;
+}
+
+/** Provider-reported figures for sessions FORGE launched; not a bill, and nothing from sessions outside FORGE. */
+export interface ProviderUsage {
+  provider: string;
+  sessions: number;
+  live: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  turns: number;
+  costUsdEstimate: number | null;
+  sessionsWithUsage: number;
+}
+
+export interface AgentsOverview {
+  since: string;
+  days: number;
+  sessions: AgentSessionRow[];
+  usage: ProviderUsage[];
+}
