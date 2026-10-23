@@ -202,6 +202,8 @@ export type UiEvent =
   | { type: 'approval'; approval: Approval }
   | { type: 'session'; session: AgentSession }
   | { type: 'verification'; run: VerificationRun }
+  | { type: 'proofPack'; missionId: string }
+  | { type: 'knowledge'; projectId: string }
   | { type: 'notice'; level: 'info' | 'warn' | 'error'; message: string };
 
 // ---- Phase 2: contracts, verification, review, proof -----------------------------------------
@@ -298,15 +300,25 @@ export interface CriterionReport {
 export interface CheckReport {
   spec: CheckSpec;
   latest: VerificationRun | null;
-  /** The latest run is about the changes as they are now. */
+  /** The latest run is about the changes as they are now, under the check's CURRENT definition, and did not modify files. */
   fresh: boolean;
   runs: number;
+  /** Changed files that define or configure this check (its script, package.json, test configs, CI). A pass is weaker evidence when these changed. */
+  touchedInputs: string[];
+}
+
+/** What the reviewer's screen showed. Approving is only valid for exactly this state. */
+export interface Seen {
+  fingerprint: string;
+  contractSha256: string;
 }
 
 export interface ScopeReport { outsideInScope: string[]; inOutOfScope: string[] }
 
 export interface VerificationReport {
   fingerprint: string;
+  /** Revision hash of the contract this report was computed for. Pass it back (with `fingerprint`) as `Seen` when approving. */
+  contractSha256: string;
   headCommit: string | null;
   files: ChangedFile[];
   scope: ScopeReport;
@@ -424,6 +436,8 @@ export interface KnowledgePageDetail {
   page: KnowledgePage;
   /** The file exactly as on disk. */
   text: string;
+  /** Hash of exactly `text`. Verify against THIS (not `page.currentSha256`) so what a person reads is what they verify. */
+  textSha256: string;
   links: KnowledgeLink[];
   backlinks: KnowledgePage[];
   sources: KnowledgeSource[];

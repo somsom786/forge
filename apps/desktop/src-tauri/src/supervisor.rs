@@ -51,6 +51,12 @@ pub enum UiEvent {
     Approval { approval: Approval },
     Session { session: AgentSession },
     Verification { run: crate::store_review::VerificationRun },
+    /// A Proof Pack was sealed for this mission (e.g. at merge): lists should look again.
+    #[serde(rename_all = "camelCase")]
+    ProofPack { mission_id: String },
+    /// Knowledge changed in this project (page created/verified/forgotten, vault scanned...): lists and counts should look again.
+    #[serde(rename_all = "camelCase")]
+    Knowledge { project_id: String },
     Notice { level: String, message: String },
 }
 

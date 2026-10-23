@@ -6,7 +6,7 @@ import type {
   ActivityEvent, AppInfo, Approval, Mission, MissionChanges, MissionDetail, MissionDiff, NewMissionArgs,
   Project, ProviderInfo, RecoveryReport, RepoStatus, UiEvent,
   ContextPackage, ContextPackageRow, KnowledgePage, KnowledgePageDetail, KnowledgeRevision, KnowledgeStatus, LintIssue, NewKnowledgeArgs, ScanResult,
-  CheckSpec, Contract, MergeOutcome, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
+  CheckSpec, Contract, MergeOutcome, Seen, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
 } from './types';
 
 export const api = {
@@ -39,10 +39,12 @@ export const api = {
   verificationRuns: (missionId: string) => invoke<VerificationRun[]>('verification_runs', { missionId }),
   checkStart: (missionId: string, checkId: string) => invoke<VerificationRun>('check_start', { missionId, checkId }),
   checkCancel: (missionId: string) => invoke<void>('check_cancel', { missionId }),
-  verdictSet: (missionId: string, criterionId: string, pass: boolean, note?: string) =>
-    invoke<void>('verdict_set', { missionId, criterionId, pass, note: note ?? null }),
-  reviewSubmit: (missionId: string, decision: ReviewDecisionKind, note?: string, overrideReason?: string) =>
-    invoke<Mission>('review_submit', { missionId, decision, note: note ?? null, overrideReason: overrideReason ?? null }),
+  /** `expectedFingerprint` = the report's `fingerprint` the reviewer was looking at; refused if the changes moved. */
+  verdictSet: (missionId: string, criterionId: string, pass: boolean, expectedFingerprint: string, note?: string) =>
+    invoke<void>('verdict_set', { missionId, criterionId, pass, note: note ?? null, expectedFingerprint }),
+  /** Approving REQUIRES `seen` (the report's fingerprint + contractSha256 the reviewer looked at); the core refuses if either moved. */
+  reviewSubmit: (missionId: string, decision: ReviewDecisionKind, note?: string, overrideReason?: string, seen?: Seen) =>
+    invoke<Mission>('review_submit', { missionId, decision, note: note ?? null, overrideReason: overrideReason ?? null, seen: seen ?? null }),
   missionMerge: (missionId: string, squash: boolean) => invoke<MergeOutcome>('mission_merge', { missionId, squash }),
   missionCleanup: (missionId: string, confirmLoss: boolean) => invoke<WorktreeSafety>('mission_cleanup', { missionId, confirmLoss }),
   proofpackGenerate: (missionId: string) => invoke<ProofPack>('proofpack_generate', { missionId }),

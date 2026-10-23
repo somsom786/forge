@@ -3,7 +3,8 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { api, subscribe } from './api';
 import { errMsg } from './format';
 import { useStore } from './store';
-import type { Mission, NewMissionArgs, Project } from './types';
+import type { Mission, NewMissionArgs, Project, Seen } from './types';
+import { isStaleReviewRefusal } from './verification';
 
 const st = () => useStore.getState();
 
@@ -202,15 +203,31 @@ export async function cancelCheck(missionId: string) {
   await guarded(api.checkCancel(missionId), 'Could not cancel check');
 }
 
-export async function setVerdict(missionId: string, criterionId: string, pass: boolean, note?: string) {
-  const ok = await guarded(api.verdictSet(missionId, criterionId, pass, note?.trim() || undefined).then(() => true), 'Could not record verdict');
-  return !!ok;
+/** Returns 'ok', or 'stale' when the core refused because the screen was out of date. */
+export async function setVerdict(missionId: string, criterionId: string, pass: boolean, expectedFingerprint: string, note?: string): Promise<'ok' | 'stale' | 'error'> {
+  try {
+    await api.verdictSet(missionId, criterionId, pass, expectedFingerprint, note?.trim() || undefined);
+    return 'ok';
+  } catch (e) {
+    const msg = errMsg(e);
+    if (isStaleReviewRefusal(msg)) {
+      st().notify('warn', `${msg}\nThe report has been reloaded: review it and decide again.`);
+      return 'stale';
+    }
+    st().notify('error', `Could not record verdict: ${msg}`);
+    return 'error';
+  }
 }
 
-export async function submitReview(missionId: string, decision: 'approve' | 'reject' | 'request_changes', note?: string, overrideReason?: string) {
-  const m = await guarded(api.reviewSubmit(missionId, decision, note?.trim() || undefined, overrideReason?.trim() || undefined), 'Review not recorded');
-  if (m) st().upsertMission(m);
-  return m;
+/** Errors are returned so the dialog can show them verbatim and keep the user text. */
+export async function submitReview(missionId: string, decision: 'approve' | 'reject' | 'request_changes', note?: string, overrideReason?: string, seen?: Seen) {
+  try {
+    const m = await api.reviewSubmit(missionId, decision, note?.trim() || undefined, overrideReason?.trim() || undefined, decision === 'approve' ? seen : undefined);
+    st().upsertMission(m);
+    return { mission: m as Mission | null, error: null as string | null };
+  } catch (e) {
+    return { mission: null as Mission | null, error: errMsg(e) };
+  }
 }
 
 /** Errors are returned (not toasted) so the caller can show them verbatim next to the action. */

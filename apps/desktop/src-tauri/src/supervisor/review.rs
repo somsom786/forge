@@ -426,6 +426,7 @@ Branch: {}", m.title, m.id, branch);
         let content_sha = proof::sha256_hex(content.to_string().as_bytes());
         let row = self.store.insert_proof_pack(mission_id, &content, &content_sha, &markdown, Some(&diff_path_s))?;
         self.store.audit("user", "proofpack.generate", Some(mission_id), &json!({"sha256": content_sha}));
+        self.emit(UiEvent::ProofPack { mission_id: mission_id.to_string() });
         Ok(row)
     }
 }

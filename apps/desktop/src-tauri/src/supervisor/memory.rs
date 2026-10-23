@@ -154,6 +154,9 @@ impl Core {
         let root = self.project_root(project_id)?;
         let scan = service::scan(self.kctx(), project_id)?;
         let fresh = service::refresh_sources(self.kctx(), project_id, &root)?;
+        if scan.indexed > 0 || scan.removed > 0 {
+            self.emit(UiEvent::Knowledge { project_id: project_id.to_string() });
+        }
         Ok((scan, fresh))
     }
 
@@ -170,6 +173,7 @@ impl Core {
     pub fn knowledge_set_vault(&self, project_id: &str, path: Option<&Path>, write: bool) -> Result<KnowledgeStatus> {
         service::set_vault(self.kctx(), project_id, path, write)?;
         service::scan(self.kctx(), project_id)?;
+        self.emit(UiEvent::Knowledge { project_id: project_id.to_string() });
         self.knowledge_status(project_id)
     }
 
@@ -208,7 +212,9 @@ impl Core {
     pub fn knowledge_create(&self, project_id: &str, a: NewKnowledgeArgs) -> Result<KPage> {
         let root = self.project_root(project_id)?;
         let sources = a.sources.iter().map(source_spec).collect::<Result<Vec<_>>>()?;
-        service::create_page(self.kctx(), project_id, &root, NewPage { title: a.title, kind: a.kind, body: a.body, files: a.files, tags: a.tags, topic: a.topic, author: Author::User, sources })
+        let p = service::create_page(self.kctx(), project_id, &root, NewPage { title: a.title, kind: a.kind, body: a.body, files: a.files, tags: a.tags, topic: a.topic, author: Author::User, sources })?;
+        self.emit(UiEvent::Knowledge { project_id: project_id.to_string() });
+        Ok(p)
     }
 
     /// Save something an agent said during a mission as a *proposal*, sourced to that exact event.
@@ -217,13 +223,15 @@ impl Core {
         let ev = self.store.events(mission_id, event_id - 1, 1)?.into_iter().find(|e| e.id == event_id).ok_or_else(|| ForgeError::NotFound(format!("event {event_id}")))?;
         let text = ev.payload.get("text").and_then(|t| t.as_str()).filter(|_| matches!(ev.kind.as_str(), "agent.text" | "agent.thinking")).ok_or_else(|| ForgeError::Other("only an agent message can be saved as knowledge".into()))?;
         let root = self.project_root(&m.project_id)?;
-        service::create_page(
+        let p = service::create_page(
             self.kctx(), &m.project_id, &root,
             NewPage {
                 title: title.to_string(), kind: kind.to_string(), body: text.to_string(), files: vec![], tags: vec![], topic: None, author: Author::Agent,
                 sources: vec![SourceSpec::Mission { id: mission_id.to_string(), event_seq: Some(ev.seq) }],
             },
-        )
+        )?;
+        self.emit(UiEvent::Knowledge { project_id: m.project_id.clone() });
+        Ok(p)
     }
 
     pub fn knowledge_propose_revision(&self, page_id: &str, text: &str, note: Option<&str>) -> Result<KRevision> {
@@ -231,7 +239,9 @@ impl Core {
     }
 
     pub fn knowledge_apply_revision(&self, revision_id: &str) -> Result<KPage> {
-        service::apply_revision(self.kctx(), revision_id)
+        let p = service::apply_revision(self.kctx(), revision_id)?;
+        self.emit(UiEvent::Knowledge { project_id: p.project_id.clone() });
+        Ok(p)
     }
 
     pub fn knowledge_reject_revision(&self, revision_id: &str) -> Result<()> {
@@ -246,6 +256,7 @@ impl Core {
         let out = self.store.k_verify(page_id, expected_sha256, note)?;
         self.store.audit("user", "knowledge.verify", Some(page_id), &json!({"sha256": expected_sha256, "title": fresh.title, "author": fresh.author}));
         service::regenerate_catalogue(self.kctx(), &out.project_id)?;
+        self.emit(UiEvent::Knowledge { project_id: out.project_id.clone() });
         Ok(out)
     }
 
@@ -253,6 +264,7 @@ impl Core {
         let out = self.store.k_set_status(page_id, action, note)?;
         self.store.audit("user", &format!("knowledge.{action}"), Some(page_id), &json!({"title": out.title}));
         service::regenerate_catalogue(self.kctx(), &out.project_id)?;
+        self.emit(UiEvent::Knowledge { project_id: out.project_id.clone() });
         Ok(out)
     }
 
@@ -260,11 +272,15 @@ impl Core {
         let out = self.store.k_supersede(old_id, new_id, note)?;
         self.store.audit("user", "knowledge.supersede", Some(old_id), &json!({"by": new_id}));
         service::regenerate_catalogue(self.kctx(), &out.project_id)?;
+        self.emit(UiEvent::Knowledge { project_id: out.project_id.clone() });
         Ok(out)
     }
 
     pub fn knowledge_forget(&self, page_id: &str) -> Result<()> {
-        service::forget_page(self.kctx(), page_id)
+        let project_id = self.store.k_get(page_id)?.project_id;
+        service::forget_page(self.kctx(), page_id)?;
+        self.emit(UiEvent::Knowledge { project_id });
+        Ok(())
     }
 
     pub fn knowledge_open_in_obsidian(&self, page_id: &str) -> Result<String> {
@@ -331,10 +347,12 @@ impl Core {
             sources.push(SourceSpec::Commit { sha: c.to_string() });
         }
         files.truncate(40);
-        service::create_page(
+        let p = service::create_page(
             self.kctx(), &project.id, Path::new(&project.root_path),
             NewPage { title: format!("Mission: {}", m.title), kind: "mission_record".into(), body, files, tags: vec!["mission".into()], topic: None, author: Author::System, sources },
-        )
+        )?;
+        self.emit(UiEvent::Knowledge { project_id: project.id.clone() });
+        Ok(p)
     }
 
     /// Resolve interrupted knowledge writes after a restart.

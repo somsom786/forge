@@ -6,13 +6,14 @@ import { errMsg, shortSha } from '../lib/format';
 import { isLossWarning } from '../lib/actions';
 import { useStore } from '../lib/store';
 import type { MergeOutcome, Mission, VerificationReport } from '../lib/types';
-import { approvalGate, OVERRIDE_MIN } from '../lib/verification';
+import { approvalGate, classifyApproveError, OVERRIDE_MIN, seenFrom, STALE_REVIEW_NOTICE, isStaleReviewRefusal } from '../lib/verification';
 import { Callout } from './ui';
 import { Modal } from './Modal';
 
 type Which = null | 'approve' | 'changes' | 'reject' | 'cleanup';
 
-export function ReviewBar({ mission, report }: { mission: Mission; report: VerificationReport | null }) {
+export function ReviewBar({ mission, report, onReload }: { mission: Mission; report: VerificationReport | null; onReload: () => void }) {
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const [which, setWhich] = useState<Which>(null);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -28,13 +29,20 @@ export function ReviewBar({ mission, report }: { mission: Mission; report: Verif
 
   if (state !== 'awaiting_review' && state !== 'approved' && !canCleanup && !outcome) return null;
 
-  const close = () => { setWhich(null); setText(''); setLossMessage(null); };
+  const close = () => { setWhich(null); setText(''); setLossMessage(null); setReviewError(null); };
 
   const doReview = async (decision: 'approve' | 'reject' | 'request_changes') => {
     setBusy(true);
-    const m = await submitReview(mission.id, decision, decision === 'approve' ? undefined : text, decision === 'approve' && gate.needsOverride ? text : undefined);
+    setReviewError(null);
+    // `seen` comes from the report on screen, not a fresh fetch.
+    const r = await submitReview(mission.id, decision, decision === 'approve' ? undefined : text, decision === 'approve' && gate.needsOverride ? text : undefined, seenFrom(report) ?? undefined);
     setBusy(false);
-    if (m) close();
+    if (r.mission) { close(); return; }
+    if (r.error) {
+      const o = classifyApproveError(r.error);
+      setReviewError(o.message);
+      if (o.reload) onReload();
+    }
   };
 
   const doMerge = async (squash: boolean) => {
@@ -111,6 +119,12 @@ export function ReviewBar({ mission, report }: { mission: Mission; report: Verif
           </>
         }
       >
+        {reviewError && (
+          <Callout tone="bad" title={isStaleReviewRefusal(reviewError) ? 'The review state changed' : 'Review not recorded'}>
+            {isStaleReviewRefusal(reviewError) && <div className="mb-1">{STALE_REVIEW_NOTICE}</div>}
+            <pre className="whitespace-pre-wrap break-words text-[12px]">{reviewError}</pre>
+          </Callout>
+        )}
         {gate.blockers.length > 0 && (
           <Callout tone="bad" title="Cannot approve yet (not overridable)"><ul className="m-0 list-disc pl-4">{gate.blockers.map((b, i) => <li key={i}>{b}</li>)}</ul></Callout>
         )}
@@ -138,6 +152,7 @@ export function ReviewBar({ mission, report }: { mission: Mission; report: Verif
           </>
         }
       >
+        {reviewError && <Callout tone="bad" title="Review not recorded"><pre className="whitespace-pre-wrap break-words text-[12px]">{reviewError}</pre></Callout>}
         <label className="label" htmlFor="rc">What should change? This is sent to the agent as a follow-up and starts a new turn.</label>
         <textarea id="rc" className="input min-h-[100px]" value={text} onChange={(e) => setText(e.target.value)} autoFocus />
       </Modal>

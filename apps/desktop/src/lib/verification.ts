@@ -1,5 +1,6 @@
 // Pure helpers for the Phase 2 verification / review UI.
 import type {
+  Seen,
   CheckKind, CheckSpec, Contract, Criterion, CriterionStatus, MergeOutcome, VerificationReport, VerificationRun,
 } from './types';
 import type { Tone } from './format';
@@ -164,4 +165,43 @@ export function summarizeRun(r: VerificationRun): string {
   const parts: string[] = [r.state];
   if (r.exitCode !== null) parts.push(`exit ${r.exitCode}`);
   return parts.join(', ');
+}
+
+/** The `Seen` token for approving: taken from the report the reviewer is looking at, never a fresh fetch. */
+export function seenFrom(report: Pick<VerificationReport, 'fingerprint' | 'contractSha256'> | null): Seen | null {
+  return report ? { fingerprint: report.fingerprint, contractSha256: report.contractSha256 } : null;
+}
+
+/** The core refuses decisions about state the reviewer did not see. */
+export function isStaleReviewRefusal(message: string): boolean {
+  return /not the ones you (reviewed|were looking at)/i.test(message);
+}
+
+export const STALE_REVIEW_NOTICE = 'The changes or success criteria changed since you opened this review. The report has been reloaded: review the new state, then decide again.';
+
+export interface ApproveOutcome {
+  /** Keep the dialog (and its typed text) open. */
+  keepDialog: boolean;
+  /** Reload the verification report. */
+  reload: boolean;
+  /** Text to show persistently in the dialog; always the core message verbatim. */
+  message: string | null;
+}
+
+export function classifyApproveError(message: string): ApproveOutcome {
+  return { keepDialog: true, reload: isStaleReviewRefusal(message), message };
+}
+
+/** Text for the amber chip on a check whose defining files were changed by the agent. */
+export function touchedInputsChip(touched: string[]): { text: string; tooltip: string } | null {
+  if (touched.length === 0) return null;
+  return {
+    text: `inputs changed: ${touched.join(', ')}`,
+    tooltip: 'A passing result is weaker evidence: the agent edited files that define or configure this check.',
+  };
+}
+
+/** Blocking core errors (git filters, merge refusals) that must stay visible in the panel, not only as a toast. */
+export function isPersistentBlock(message: string): boolean {
+  return /^this repository configures external git programs|^merging would overwrite|^the main checkout moved|^the merge produced a different tree/i.test(message.trim());
 }

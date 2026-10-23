@@ -59,6 +59,7 @@ export function SafeMarkdown({ text }: { text: string }) {
 
 export function ProofPackPanel({ mission }: { mission: Mission }) {
   const notify = useStore((s) => s.notify);
+  const tick = useStore((s) => s.proofTick[mission.id] ?? 0);
   const [packs, setPacks] = useState<ProofPack[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   const [raw, setRaw] = useState(false);
@@ -77,7 +78,7 @@ export function ProofPackPanel({ mission }: { mission: Mission }) {
     }
   }, [mission.id]);
   // Refetch on mount (tab activation) and whenever the mission changes state, e.g. the pack sealed by a merge.
-  useEffect(() => { void load(); }, [load, mission.state, mission.updatedAt]);
+  useEffect(() => { void load(); }, [load, tick, mission.state, mission.updatedAt]);
 
   const generate = async () => {
     setBusy(true);

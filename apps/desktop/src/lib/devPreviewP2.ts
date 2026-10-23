@@ -36,6 +36,7 @@ const contracts: Record<string, Contract> = {
 };
 
 const CUR = 'f3a9c01b77d2';
+const CSHA = 'c0ffee11aa22bb33cc44dd55ee66ff77';
 let ctxRef: P2Ctx;
 
 function vrun(checkId: string, name: string, command: string, state: VerificationRun['state'], exitCode: number | null, fingerprint: string, out: string, extra: Partial<VerificationRun> = {}): VerificationRun {
@@ -63,7 +64,7 @@ function reportFor(id: string): VerificationReport {
   const files = ctxRef.changesFor(id).files;
   if (id !== 'm2') {
     return {
-      fingerprint: 'none', headCommit: null, files, scope: { outsideInScope: [], inOutOfScope: [] }, scopeConfigured: false,
+      fingerprint: 'none', contractSha256: CSHA, headCommit: null, files, scope: { outsideInScope: [], inOutOfScope: [] }, scopeConfigured: false,
       criteria: [], checks: [], blockingChecks: [], unresolved: [], contract,
       hardBlockers: ctxRef.isRunning(id) ? ['The agent is still running.'] : [],
     };
@@ -71,7 +72,7 @@ function reportFor(id: string): VerificationReport {
   const latest = (cid: string) => [...allRuns()].reverse().find((r) => r.checkId === cid) ?? null;
   const checks: CheckReport[] = contract.checks.map((spec) => {
     const l = latest(spec.id);
-    return { spec, latest: l, fresh: !!l && l.fingerprint === CUR && !l.mutated, runs: allRuns().filter((r) => r.checkId === spec.id).length };
+    return { spec, latest: l, fresh: !!l && l.fingerprint === CUR && !l.mutated, runs: allRuns().filter((r) => r.checkId === spec.id).length, touchedInputs: spec.id === 'typecheck' ? ['package.json', 'tsconfig.json'] : [] };
   });
   const v = verdicts.docs ?? null;
   const c = contract.criteria;
@@ -92,7 +93,7 @@ function reportFor(id: string): VerificationReport {
     '1 changed file is outside the in-scope paths: docs/dates.md',
   ];
   return {
-    fingerprint: CUR + 'e1', headCommit: null, files, scope: { outsideInScope: ['docs/dates.md'], inOutOfScope: [] }, scopeConfigured: true,
+    fingerprint: CUR + 'e1', contractSha256: CSHA, headCommit: null, files, scope: { outsideInScope: ['docs/dates.md'], inOutOfScope: [] }, scopeConfigured: true,
     criteria, checks, blockingChecks: ['typecheck'], unresolved, hardBlockers: [], contract,
   };
 }
@@ -153,6 +154,9 @@ export function handleP2(cmd: string, args: any, ctx: P2Ctx): Promise<any> | und
       return done(null);
     case 'review_submit': {
       const m = ctx.find(args.missionId)!;
+      if (args.decision === 'approve' && (!args.seen || args.seen.fingerprint !== CUR + 'e1' || args.seen.contractSha256 !== CSHA)) {
+        return ctx.err('the changes (or the success criteria) are not the ones you reviewed; review them again');
+      }
       m.state = args.decision === 'approve' ? 'approved' : args.decision === 'reject' ? 'rejected' : 'running';
       m.updatedAt = new Date().toISOString();
       return done({ ...m });

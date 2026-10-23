@@ -22,6 +22,10 @@ export interface DataState {
   runs: Record<string, VerificationRun[]>;
   /** Bumped on every verification event so views can refresh their report. */
   verifyTick: Record<string, number>;
+  /** Bumped when the core seals a Proof Pack for a mission. */
+  proofTick: Record<string, number>;
+  /** Bumped when knowledge changes in a project, so lists and counts refetch. */
+  knowledgeTick: Record<string, number>;
   notices: Notice[];
   noticeSeq: number;
 }
@@ -30,7 +34,7 @@ export const NULL_MESSAGE = '__unkeyed__';
 const MAX_NOTICES = 6;
 
 export function emptyData(): DataState {
-  return { missions: {}, approvals: {}, sessions: {}, activity: {}, streams: {}, runs: {}, verifyTick: {}, notices: [], noticeSeq: 0 };
+  return { missions: {}, approvals: {}, sessions: {}, activity: {}, streams: {}, runs: {}, verifyTick: {}, proofTick: {}, knowledgeTick: {}, notices: [], noticeSeq: 0 };
 }
 
 /** Merge events into an ordered list, dropping duplicate ids. Returns the same array if nothing changed. */
@@ -151,6 +155,10 @@ export function reduceUiEvent(s: DataState, e: UiEvent): DataState {
         runs: { ...s.runs, [e.run.missionId]: upsertRun(s.runs[e.run.missionId], e.run) },
         verifyTick: { ...s.verifyTick, [e.run.missionId]: (s.verifyTick[e.run.missionId] ?? 0) + 1 },
       };
+    case 'proofPack':
+      return { ...s, proofTick: { ...s.proofTick, [e.missionId]: (s.proofTick[e.missionId] ?? 0) + 1 } };
+    case 'knowledge':
+      return { ...s, knowledgeTick: { ...s.knowledgeTick, [e.projectId]: (s.knowledgeTick[e.projectId] ?? 0) + 1 } };
     case 'notice':
       return { ...s, ...addNotice(s, e.level, e.message) };
     default:

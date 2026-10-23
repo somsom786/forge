@@ -6,7 +6,7 @@ import { cancelCheck, runCheck, setVerdict } from '../lib/actions';
 import { errMsg, formatDuration } from '../lib/format';
 import { useStore } from '../lib/store';
 import type { CheckReport, CriterionReport, Mission, VerificationReport } from '../lib/types';
-import { statusDetail, statusLabel, statusTone } from '../lib/verification';
+import { statusDetail, statusLabel, statusTone, touchedInputsChip } from '../lib/verification';
 import { EvidenceGraph } from './EvidenceGraph';
 import { Badge, Callout } from './ui';
 
@@ -64,16 +64,17 @@ function NotEstablished({ items, blockers }: { items: string[]; blockers: string
   );
 }
 
-function CriterionRow({ k, report, missionId, canJudge }: { k: CriterionReport; report: VerificationReport; missionId: string; canJudge: boolean }) {
+function CriterionRow({ k, report, missionId, canJudge, reload }: { k: CriterionReport; report: VerificationReport; missionId: string; canJudge: boolean; reload: () => void }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const names = (id: string) => report.checks.find((c) => c.spec.id === id)?.spec.name ?? id;
   const detail = statusDetail(k.status);
   const judge = async (pass: boolean) => {
     setBusy(true);
-    await setVerdict(missionId, k.id, pass, note);
+    const r = await setVerdict(missionId, k.id, pass, report.fingerprint, note);
     setBusy(false);
-    setNote('');
+    if (r === 'ok') setNote('');
+    else if (r === 'stale') reload();
   };
   return (
     <li className="border-b border-line px-3 py-2">
@@ -107,6 +108,7 @@ function CheckRow({ c, missionId, anyRunning, canRun }: { c: CheckReport; missio
   const r = c.latest;
   const stale = !!r && !c.fresh && r.state !== 'running';
   const running = r?.state === 'running';
+  const touched = touchedInputsChip(c.touchedInputs ?? []);
   return (
     <li className="border-b border-line px-3 py-2 last:border-b-0">
       <div className={stale ? 'opacity-60' : ''}>
@@ -127,6 +129,7 @@ function CheckRow({ c, missionId, anyRunning, canRun }: { c: CheckReport; missio
           )}
         </div>
         {stale && <div className="text-[11.5px] text-warn">ran against earlier changes — re-run</div>}
+        {touched && <div className="mt-0.5"><span className="badge border-warn/30 bg-warn-dim text-warn" title={touched.tooltip}>{touched.text}</span></div>}
         {r?.mutated && (
           <div className="flex items-center gap-1 text-[11.5px] text-warn">
             <AlertTriangle className="size-3 shrink-0" aria-hidden /> this check modified files in the worktree
@@ -209,7 +212,7 @@ export function VerificationPanel({ mission, report, error, loading, reload }: P
               <div className="text-muted">No acceptance criteria in the contract. Add some in the Contract tab.</div>
             ) : (
               <ul className="m-0 list-none rounded-md border border-line p-0">
-                {report.criteria.map((k) => <CriterionRow key={k.id} k={k} report={report} missionId={mission.id} canJudge={!finished} />)}
+                {report.criteria.map((k) => <CriterionRow key={k.id} k={k} report={report} missionId={mission.id} canJudge={!finished} reload={reload} />)}
               </ul>
             )}
           </section>

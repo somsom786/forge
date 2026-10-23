@@ -90,7 +90,7 @@ export function PageDetail({ pageId, pages, obsidianInstalled, onOpenPage, onCha
   const verify = async () => {
     setBusy(true);
     try {
-      await api.knowledgeVerify(p.id, p.currentSha256, note.trim() || undefined);
+      await api.knowledgeVerify(p.id, d.textSha256, note.trim() || undefined);
       notify('info', 'Page verified');
       close();
       await load();
@@ -124,7 +124,7 @@ export function PageDetail({ pageId, pages, obsidianInstalled, onOpenPage, onCha
           {p.rootKind === 'vault' && <Badge tone="run">in vault</Badge>}
           {p.missing && <Badge tone="bad">file missing</Badge>}
         </div>
-        <div className="mono mt-1.5 break-all text-[11.5px] text-muted">{p.rootKind}/{p.relPath} · sha256 {shortHash(p.currentSha256)}</div>
+        <div className="mono mt-1.5 break-all text-[11.5px] text-muted">{p.rootKind}/{p.relPath} · sha256 {shortHash(d.textSha256)}</div>
         {(p.topic || p.files.length > 0 || p.tags.length > 0) && (
           <dl className="m-0 mt-1.5 grid grid-cols-[60px_1fr] gap-x-2 gap-y-0.5 text-[12px]">
             {p.topic && <><dt className="text-faint">Topic</dt><dd className="m-0">{p.topic}</dd></>}
@@ -237,7 +237,7 @@ export function PageDetail({ pageId, pages, obsidianInstalled, onOpenPage, onCha
 
       <Modal open={dlg === 'verify'} onClose={close} title="Verify this exact text" wide
         footer={<><button className="btn" onClick={close} disabled={busy}>Cancel</button><button className="btn btn-primary" disabled={busy} onClick={() => void verify()}>Verify</button></>}>
-        <p className="m-0 text-muted">Verification is bound to this exact content (sha256 <span className="mono text-fg">{shortHash(p.currentSha256)}</span>). Only verified pages are attached to missions automatically. If the page changes before you confirm, verification is refused.</p>
+        <p className="m-0 text-muted">Verification is bound to this exact content (sha256 <span className="mono text-fg">{shortHash(d.textSha256)}</span>). Only verified pages are attached to missions automatically. If the page changes before you confirm, verification is refused.</p>
         <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-line bg-bg p-2 text-[12px]">{d.text}</pre>
         <label className="label" htmlFor="vnote">Note (optional)</label>
         <input id="vnote" className="input" value={note} onChange={(e) => setNote(e.target.value)} />

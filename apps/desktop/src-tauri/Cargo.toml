@@ -25,6 +25,7 @@ regex = "1"
 dunce = "1"
 globset = "0.4"
 sha2 = "0.10"
+similar = "2"
 which = "8"
 
 [target.'cfg(windows)'.dependencies]

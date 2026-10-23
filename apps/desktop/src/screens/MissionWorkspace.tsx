@@ -151,7 +151,7 @@ export function MissionWorkspace({ id }: { id: string }) {
         canDiscard={canDiscard}
         sessions={sessions}
       />
-      <ReviewBar mission={mission} report={report} />
+      <ReviewBar mission={mission} report={report} onReload={() => void reloadReport()} />
       <div className="min-h-0 flex-1">
         <SplitLayout storageKey="mission.right" fixed="end" defaultSize={500} min={340} max={1100}>
           <div className="flex min-h-0 flex-1 flex-col">

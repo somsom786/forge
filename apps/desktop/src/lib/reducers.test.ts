@@ -140,4 +140,12 @@ describe('buildFeed', () => {
     expect(filterFeed(items, new Set(['thinking', 'tools']))).toHaveLength(1);
     expect(filterFeed(items, new Set())).toHaveLength(3);
   });
+
+  it('bumps per-mission and per-project refresh ticks for pushed proof and knowledge events', () => {
+    let d = reduceUiEvent(emptyData(), { type: 'proofPack', missionId: 'm1' });
+    d = reduceUiEvent(d, { type: 'proofPack', missionId: 'm1' });
+    d = reduceUiEvent(d, { type: 'knowledge', projectId: 'p1' });
+    expect(d.proofTick).toEqual({ m1: 2 });
+    expect(d.knowledgeTick).toEqual({ p1: 1 });
+  });
 });

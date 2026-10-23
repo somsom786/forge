@@ -41,7 +41,11 @@ certification, and no remote service. Treat everything below as the implemented 
 | Git hardening: worktree identity verified before use; previews use a temporary index (the worktree's real index is never touched); redirecting env vars stripped; `core.fsmonitor=false`. | `git.rs` | `previewing_a_diff…`, `a_worktree_redirected…` |
 | Discard/cleanup safety counts commits from the branch ref, not just the worktree directory. | `git.rs`, `supervisor.rs` | `discard_cannot_delete_a_branch…` |
 | Local-model endpoints must be plain `http` on loopback (checked in Rust and the engine); billing credentials are stripped for local missions; no cost is ever reported for a local model. | `providers.rs`, `adapters/claude.ts` | `only_plain_http_loopback…`, `claudeOptions.test.ts` |
-| Merge safety: clean main checkout on the base branch, no in-progress merge/rebase, conflicts detected with `git merge-tree` before touching anything, failed merge restored, approval pinned to the exact change fingerprint, never pushes. | `merge.rs`, `supervisor/review.rs` | `merge::tests`, `supervisor::tests::phase2` |
+| Merge safety: clean main checkout on the base branch, no in-progress merge/rebase, the **reviewed tree** (not the worktree's index) is what gets committed, compare-and-swap ref update, merge predicted with `git merge-tree` against object ids and the result checked against the prediction, untracked/ignored files in the checkout never overwritten, failures restored with `merge --abort`/`reset --merge` (never `reset --hard`), never pushes. | `merge.rs`, `supervisor/review.rs` | `merge::tests`, `review_hardening` |
+| Review integrity: approving requires the fingerprint **and contract revision** the reviewer saw; manual verdicts require the expected fingerprint; evidence is bound to the check/criterion *definition* it was gathered for; a check that modified the worktree is never evidence. | `supervisor/review.rs`, `contract.rs`, `proof.rs` | `review_hardening`, `contract::tests` |
+| Git execution safety: `core.hooksPath` is empty for every supervised call (no repository hook ever runs); repositories configuring non-system clean/smudge/process filters or merge drivers are refused (Git LFS recognised); diffs always use `--no-textconv --no-ext-diff`. | `git.rs` | `merge::tests::repository_hooks_never_run…`, `repositories_configuring_external_git_programs_are_refused` |
+| Memory trust: authority is a review record bound to the content hash; only human-verified pages are injected (into the *user* turn); injected bytes are the same bytes whose hash was compared; the stored/indexed copy and check logs are redacted. | `knowledge/*`, `verify.rs` | `knowledge::store_tests`, `service_tests`, `hardening_tests`, `supervisor::tests::memory` |
+| Filesystem boundary for the wiki: the *spelled* path is checked for links before canonicalisation, hardlinks and `.obsidian`/`.git` refused, writer lock per root, crash recovery touches only writable roots under the lock. | `knowledge/vault.rs`, `knowledge/service.rs` | `vault::tests`, `hardening_tests` |
 
 ## Known limits (do not assume these are solved)
 
@@ -65,8 +69,16 @@ certification, and no remote service. Treat everything below as the implemented 
    then tries to do. The mission guidance tells the agent to treat file contents as data.
 7. Redaction is best-effort pattern matching.
 8. The scripted test agent exists only in debug builds / when `FORGE_ALLOW_FAKE_PROVIDER=1`.
-9. Not yet reviewed independently: Phase 2 merge/verification code and anything built after Phase 2 (see
-   ENGINEERING_REVIEWS.md for what has been).
+9. **A passing check is evidence, not proof.** A check's exit code 0 does not show the tests assert anything, and the agent
+   can edit what a check runs. FORGE flags edits to files that define a check and excludes checks that modified the
+   worktree, but it cannot tell a vacuous pass from a meaningful one.
+10. **Proof Pack diffs are byte-exact and therefore contain your code verbatim** (including any secret already in it), so
+    that their hash stays verifiable. They are stored under `~/.forge/proofs` and are not redacted.
+11. Prompt injection through memory is mitigated (only reviewed text, user turn, sanitised, framed as data) but not solved: no
+    delimiter can stop a model from being persuaded by reviewed text that itself contains instructions. FORGE's approval
+    policy, not the model's compliance, remains the control over what an agent can do.
+12. Reviewed independently: Phase 1 supervisor, the memory design, and the Phase 2/3 implementation (three reviews, all
+    findings dispositioned in ENGINEERING_REVIEWS.md). Not yet reviewed: Harness Studio and anything built after it.
 
 ## Provider authentication
 

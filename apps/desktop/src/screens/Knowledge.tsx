@@ -34,6 +34,7 @@ export function KnowledgeScreen({ filter, pageId, newPage }: { filter?: 'propose
   const [loadError, setLoadError] = useState<string | null>(null);
   const search = useRef<HTMLInputElement>(null);
 
+  const tick = useStore((s) => (projectId ? s.knowledgeTick[projectId] ?? 0 : 0));
   const loadStatus = useCallback(async () => {
     if (!projectId) return;
     try { setStatus(await api.knowledgeStatus(projectId)); setLoadError(null); } catch (e) { setLoadError(errMsg(e)); }
@@ -46,11 +47,11 @@ export function KnowledgeScreen({ filter, pageId, newPage }: { filter?: 'propose
 
   const refresh = useCallback(() => { void loadStatus(); void loadPages(query); }, [loadStatus, loadPages, query]);
 
-  useEffect(() => { void loadStatus(); }, [loadStatus]);
+  useEffect(() => { void loadStatus(); }, [loadStatus, tick]);
   useEffect(() => {
     const t = window.setTimeout(() => void loadPages(query), query ? 250 : 0);
     return () => window.clearTimeout(t);
-  }, [loadPages, query]);
+  }, [loadPages, query, tick]);
 
   const shown = useMemo(() => filterPages(pages, filters), [pages, filters]);
   const kinds = useMemo(() => Array.from(new Set([...PAGE_KINDS, ...pages.map((p) => p.kind)])).filter((k) => pages.some((p) => p.kind === k)), [pages]);

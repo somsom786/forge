@@ -59,7 +59,7 @@ function detail(id: string): KnowledgePageDetail {
     { id: 's2', projectId: 'p1', kind: 'repo_file', locator: 'src/http/retry.ts', gitBlob: null, rawSha256: SHA('r2'), normSha256: SHA('n2'), snapshot: 'export function backoff(attempt) { /* redacted */ }', extractor: 'repo_file@1', state: 'changed', capturedAt: c.iso(2100), checkedAt: c.iso(5) },
   ] : [];
   return {
-    page: p, text: texts[id] ?? '', writable: p.rootKind === 'managed', sources,
+    page: p, text: texts[id] ?? '', textSha256: p.currentSha256, writable: p.rootKind === 'managed', sources,
     links: id === 'k1' ? [{ kind: 'wikilink', target: 'Date parsing is UTC-only', toPage: 'k2', ambiguous: false }, { kind: 'wikilink', target: 'Release', toPage: null, ambiguous: true }, { kind: 'file', target: 'src/http/client.ts', toPage: null, ambiguous: false }] : [],
     backlinks: id === 'k2' ? [all()[0]] : [],
     reviews: p.verifiedAt ? [{ action: 'verify', revisionSha256: SHA(id), reviewer: 'user', note: p.verifiedNote, at: p.verifiedAt }] : [],
