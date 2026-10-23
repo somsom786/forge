@@ -74,19 +74,50 @@ pub fn validate_command(cmd: &str) -> Result<Vec<String>> {
 }
 
 /// Validate the whole `settings.json` text FORGE is about to write. Returns the parsed value and the risks of every
-/// command-type hook it contains.
+/// command-type hook it contains. Strict about everything: use [`validate_settings_change`] when editing an existing file.
 pub fn validate_settings(text: &str) -> Result<(Value, Vec<HookRisk>)> {
-    let v: Value = serde_json::from_str(text).map_err(|e| ForgeError::Other(format!("settings.json is not valid JSON: {e}")))?;
+    let (v, risks, _) = validate_settings_change(None, text)?;
+    Ok((v, risks))
+}
+
+fn hook_key(event: &str, hook: &Value) -> String {
+    format!("{event}::{hook}")
+}
+
+/// Validate the `settings.json` text FORGE is about to write over `before`. Hooks that are byte-for-byte unchanged from
+/// `before` are grandfathered: they were not authored by this edit, so their problems (a missing timeout, a risky command)
+/// are reported as warnings and do not block unrelated changes. New or modified hooks must pass in full.
+pub fn validate_settings_change(before: Option<&str>, after: &str) -> Result<(Value, Vec<HookRisk>, Vec<String>)> {
+    let v: Value = serde_json::from_str(after).map_err(|e| ForgeError::Other(format!("settings.json is not valid JSON: {e}")))?;
     let Some(obj) = v.as_object() else {
         return Err(ForgeError::Other("settings.json must be a JSON object".into()));
     };
+    let mut known: std::collections::HashSet<String> = Default::default();
+    let mut known_events: std::collections::HashSet<String> = Default::default();
+    if let Some(prev) = before.and_then(|b| serde_json::from_str::<Value>(b).ok()) {
+        if let Some(map) = prev.pointer("/hooks").and_then(Value::as_object) {
+            for (event, groups) in map {
+                known_events.insert(event.clone());
+                for g in groups.as_array().into_iter().flatten() {
+                    for h in g.get("hooks").and_then(Value::as_array).into_iter().flatten() {
+                        known.insert(hook_key(event, h));
+                    }
+                }
+            }
+        }
+    }
     let mut risks = vec![];
+    let mut warnings = vec![];
     if let Some(hooks) = obj.get("hooks") {
         let Some(map) = hooks.as_object() else {
             return Err(ForgeError::Other("`hooks` must be an object".into()));
         };
         for (event, groups) in map {
             if !CLAUDE_HOOK_EVENTS.contains(&event.as_str()) {
+                if known_events.contains(event) {
+                    warnings.push(format!("`{event}` is not a Claude hook event (names are exact and case-sensitive); it was already there and is left unchanged."));
+                    continue;
+                }
                 return Err(ForgeError::Other(format!("`{event}` is not a Claude hook event (names are exact and case-sensitive)")));
             }
             let Some(groups) = groups.as_array() else {
@@ -102,20 +133,32 @@ pub fn validate_settings(text: &str) -> Result<(Value, Vec<HookRisk>)> {
                         continue; // other hook types are preserved as-is, not authored by FORGE
                     }
                     let cmd = h.get("command").and_then(Value::as_str).unwrap_or("");
-                    let r = validate_command(cmd)?;
-                    match h.get("timeout") {
-                        Some(t) if t.as_u64().is_some_and(|n| (1..=MAX_TIMEOUT_SECS).contains(&n)) => {}
-                        Some(_) => return Err(ForgeError::Other(format!("hook timeout must be between 1 and {MAX_TIMEOUT_SECS} seconds"))),
-                        None => return Err(ForgeError::Other("every hook FORGE writes needs an explicit timeout so a hung hook cannot stall the agent".into())),
-                    }
-                    if !r.is_empty() {
+                    let grandfathered = known.contains(&hook_key(event, h));
+                    let checked = (|| -> Result<Vec<String>> {
+                        let r = validate_command(cmd)?;
+                        match h.get("timeout") {
+                            Some(t) if t.as_u64().is_some_and(|n| (1..=MAX_TIMEOUT_SECS).contains(&n)) => {}
+                            Some(_) => return Err(ForgeError::Other(format!("hook timeout must be between 1 and {MAX_TIMEOUT_SECS} seconds"))),
+                            None => return Err(ForgeError::Other("every hook FORGE writes needs an explicit timeout so a hung hook cannot stall the agent".into())),
+                        }
+                        Ok(r)
+                    })();
+                    let r = match checked {
+                        Ok(r) => r,
+                        Err(e) if grandfathered => {
+                            warnings.push(format!("Existing {event} hook `{}` has a problem and is left unchanged: {e}", display_command(cmd)));
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    if !r.is_empty() && !grandfathered {
                         risks.push(HookRisk { event: event.clone(), command: cmd.to_string(), display: display_command(cmd), risks: r });
                     }
                 }
             }
         }
     }
-    Ok((v, risks))
+    Ok((v, risks, warnings))
 }
 
 fn pretty(v: &Value) -> String {
@@ -163,7 +206,7 @@ pub fn add_hook(current: Option<&str>, event: &str, matcher: Option<&str>, comma
         }
     }
     let text = pretty(&v);
-    validate_settings(&text)?;
+    validate_settings_change(current, &text)?;
     Ok(text)
 }
 
@@ -499,5 +542,31 @@ mod tests {
         assert!(sample_event("PostToolUse", root).get("tool_response").is_some());
         assert!(sample_event("UserPromptSubmit", root).get("prompt").is_some());
         assert_eq!(sample_event("Stop", root)["stop_hook_active"], false);
+    }
+
+    #[test]
+    fn unchanged_hooks_are_grandfathered_but_new_ones_are_strict() {
+        let before = r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"echo old"}]}]}}"#;
+        // An untouched legacy hook without a timeout does not block an unrelated edit...
+        let unrelated = r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"echo old"}]}]},"model":"sonnet"}"#;
+        let (_, risks, warnings) = validate_settings_change(Some(before), unrelated).unwrap();
+        assert!(risks.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        // ...but the same hook written fresh, or a changed one, must pass in full.
+        assert!(validate_settings_change(None, unrelated).is_err());
+        let changed = r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"echo changed"}]}]}}"#;
+        assert!(validate_settings_change(Some(before), changed).is_err());
+        let added = r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"echo old"},{"type":"command","command":"echo new"}]}]}}"#;
+        assert!(validate_settings_change(Some(before), added).is_err());
+    }
+
+    #[test]
+    fn a_new_hook_can_be_added_to_a_file_that_already_has_legacy_hooks() {
+        let before = r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"echo old"}]}]}}"#;
+        let after = add_hook(Some(before), "Stop", None, "echo done", 10).unwrap();
+        assert!(after.contains("echo old") && after.contains("echo done"));
+        // But the new hook itself is still held to the full standard.
+        assert!(add_hook(Some(before), "Stop", None, "echo a
+echo b", 10).is_err());
     }
 }

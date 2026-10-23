@@ -275,6 +275,31 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE verification_run ADD COLUMN spec_rev TEXT NOT NULL DEFAULT '';
     ALTER TABLE manual_verdict ADD COLUMN criterion_rev TEXT NOT NULL DEFAULT '';
     "#,
+    // v5 - Harness Studio: journal of edits to agent configuration files, and what the user last reviewed
+    r#"
+    CREATE TABLE harness_change (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES project(id),
+        rel TEXT NOT NULL,
+        kind TEXT NOT NULL,                   -- edit | create | rollback
+        before_sha256 TEXT,                   -- NULL: the file did not exist
+        after_sha256 TEXT,                    -- NULL: the file was removed
+        backup_path TEXT,                     -- relative to the FORGE home; content before this change
+        rolls_back_id TEXT REFERENCES harness_change(id),
+        note TEXT,
+        state TEXT NOT NULL,                  -- started | applied | failed
+        created_at TEXT NOT NULL,
+        finished_at TEXT
+    );
+    CREATE INDEX harness_change_project ON harness_change(project_id, rel, created_at);
+    CREATE TABLE harness_review (
+        project_id TEXT NOT NULL REFERENCES project(id),
+        rel TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        reviewed_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, rel)
+    );
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

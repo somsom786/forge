@@ -35,7 +35,7 @@ fn is_reparse(meta: &std::fs::Metadata) -> bool {
 }
 
 #[cfg(windows)]
-fn link_count(path: &Path) -> std::io::Result<u32> {
+pub(crate) fn link_count(path: &Path) -> std::io::Result<u32> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
     let f = File::open(path)?;
@@ -46,7 +46,7 @@ fn link_count(path: &Path) -> std::io::Result<u32> {
 }
 
 #[cfg(not(windows))]
-fn link_count(path: &Path) -> std::io::Result<u32> {
+pub(crate) fn link_count(path: &Path) -> std::io::Result<u32> {
     use std::os::unix::fs::MetadataExt;
     Ok(std::fs::metadata(path)?.nlink() as u32)
 }

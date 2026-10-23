@@ -76,7 +76,8 @@ console.log('  file in the user checkout after merge:', existsSync(join(repo, 'F
 
 step('Proof Pack tab');
 await ui.clickTab('Proof Pack');
-await ui.waitFor("document.body.innerText.includes('Proof Pack')");
+// The pack sealed by the merge must appear without any manual refresh (the tab label itself says "Proof Pack").
+await ui.waitFor("/sha256 [0-9a-f]{10}/.test(document.body.innerText) && !document.body.innerText.includes('No Proof Pack has been generated')", { timeout: 15000 });
 await shot('26-proof-pack.png');
 console.log('  console errors:', ui.consoleLog.filter((l) => /^(error|EXCEPTION)/.test(l)));
 ui.close();

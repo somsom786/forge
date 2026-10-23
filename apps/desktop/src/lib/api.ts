@@ -6,6 +6,7 @@ import type {
   ActivityEvent, AppInfo, Approval, Mission, MissionChanges, MissionDetail, MissionDiff, NewMissionArgs,
   Project, ProviderInfo, RecoveryReport, RepoStatus, UiEvent,
   ContextPackage, ContextPackageRow, KnowledgePage, KnowledgePageDetail, KnowledgeRevision, KnowledgeStatus, LintIssue, NewKnowledgeArgs, ScanResult,
+  DoctorFinding, HarnessApplyArgs, HarnessChange, HarnessFile, HarnessInventory, HarnessPreview, HookDryRun, HookSpec, HookTemplate, RollbackPreview,
   CheckSpec, Contract, MergeOutcome, Seen, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
 } from './types';
 
@@ -75,6 +76,23 @@ export const api = {
   contextPreview: (projectId: string, objective: string, hints: string[], pins: string[]) => invoke<ContextPackage>('context_preview', { projectId, objective, hints, pins }),
   contextForMission: (missionId: string) => invoke<ContextPackageRow[]>('context_for_mission', { missionId }),
   missionMemorySet: (missionId: string, useMemory: boolean, pins: string[]) => invoke<Mission>('mission_memory_set', { missionId, useMemory, pins }),
+
+  // ---- Harness Studio (Phase 4). Every write is previewed, compare-and-swap, journaled and backed up by the core. ----
+  harnessInventory: (projectId: string) => invoke<HarnessInventory>('harness_inventory', { projectId }),
+  harnessDoctor: (projectId: string) => invoke<DoctorFinding[]>('harness_doctor', { projectId }),
+  harnessRead: (projectId: string, rel: string) => invoke<HarnessFile>('harness_read', { projectId, rel }),
+  harnessPreview: (projectId: string, rel: string, text: string) => invoke<HarnessPreview>('harness_preview', { projectId, rel, text }),
+  /** Save `preview.text` (not the raw editor text) with `expectedSha256 = file.sha256` and `expectedAfterSha256 = preview.afterSha256`. */
+  harnessApply: (args: HarnessApplyArgs) => invoke<HarnessChange>('harness_apply', { args }),
+  harnessHistory: (projectId: string, rel?: string) => invoke<HarnessChange[]>('harness_history', { projectId, rel: rel ?? null }),
+  harnessRollbackPreview: (changeId: string) => invoke<RollbackPreview>('harness_rollback_preview', { changeId }),
+  harnessRollback: (changeId: string) => invoke<HarnessChange>('harness_rollback', { changeId }),
+  harnessMarkReviewed: (projectId: string, rel: string) => invoke<void>('harness_mark_reviewed', { projectId, rel }),
+  harnessHookTemplates: () => invoke<HookTemplate[]>('harness_hook_templates'),
+  harnessHookPreviewAdd: (projectId: string, spec: HookSpec) => invoke<HarnessPreview>('harness_hook_preview_add', { projectId, spec: { event: '', ...spec } }),
+  harnessHookPreviewRemove: (projectId: string, hookId: string) => invoke<HarnessPreview>('harness_hook_preview_remove', { projectId, hookId }),
+  /** Executes the command on this machine with a synthetic event. Only ever call after the user confirmed the exact command. */
+  harnessHookDryRun: (projectId: string, event: string, command: string) => invoke<HookDryRun>('harness_hook_dry_run', { projectId, event, command }),
 
   approvalsPending: (missionId?: string) => invoke<Approval[]>('approvals_pending', { missionId: missionId ?? null }),
   approvalDecide: (approvalId: string, approved: boolean, note?: string) =>

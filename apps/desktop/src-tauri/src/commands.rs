@@ -505,3 +505,107 @@ pub async fn context_for_mission(core: CoreState<'_>, mission_id: String) -> Res
 pub async fn mission_memory_set(core: CoreState<'_>, mission_id: String, use_memory: bool, pins: Vec<String>) -> Result<Mission> {
     blocking(&core, move |c| c.set_mission_memory(&mission_id, use_memory, &pins)).await
 }
+
+// ---- Phase 4: Harness Studio ----------------------------------------------------------------------------------
+
+use crate::harness::{doctor::Finding, edit::{FileRead, Preview}, hooks::{DryRun, HookTemplate}, inventory::Inventory, store::HarnessChange};
+use crate::supervisor::{HookSpec, RollbackPreview};
+
+#[tauri::command]
+pub async fn harness_inventory(core: CoreState<'_>, project_id: String) -> Result<Inventory> {
+    blocking(&core, move |c| c.harness_inventory(&project_id)).await
+}
+
+#[tauri::command]
+pub async fn harness_doctor(core: CoreState<'_>, project_id: String) -> Result<Vec<Finding>> {
+    blocking(&core, move |c| c.harness_doctor(&project_id)).await
+}
+
+#[tauri::command]
+pub async fn harness_read(core: CoreState<'_>, project_id: String, rel: String) -> Result<FileRead> {
+    blocking(&core, move |c| c.harness_read(&project_id, &rel)).await
+}
+
+#[tauri::command]
+pub async fn harness_preview(core: CoreState<'_>, project_id: String, rel: String, text: String) -> Result<Preview> {
+    blocking(&core, move |c| c.harness_preview(&project_id, &rel, &text)).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessApplyArgs {
+    pub project_id: String,
+    pub rel: String,
+    pub text: String,
+    /// Hash of the file the user was looking at; absent when they were creating it.
+    pub expected_sha256: Option<String>,
+    /// Hash of the preview they approved.
+    pub expected_after_sha256: String,
+    #[serde(default)]
+    pub acknowledge_risks: bool,
+    pub note: Option<String>,
+}
+
+#[tauri::command]
+pub async fn harness_apply(core: CoreState<'_>, args: HarnessApplyArgs) -> Result<HarnessChange> {
+    blocking(&core, move |c| {
+        c.harness_apply(&args.project_id, &args.rel, &args.text, args.expected_sha256.as_deref(), &args.expected_after_sha256, args.acknowledge_risks, args.note.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn harness_history(core: CoreState<'_>, project_id: String, rel: Option<String>) -> Result<Vec<HarnessChange>> {
+    blocking(&core, move |c| c.harness_history(&project_id, rel.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn harness_rollback_preview(core: CoreState<'_>, change_id: String) -> Result<RollbackPreview> {
+    blocking(&core, move |c| c.harness_rollback_preview(&change_id)).await
+}
+
+#[tauri::command]
+pub async fn harness_rollback(core: CoreState<'_>, change_id: String) -> Result<HarnessChange> {
+    blocking(&core, move |c| c.harness_rollback(&change_id)).await
+}
+
+#[tauri::command]
+pub async fn harness_mark_reviewed(core: CoreState<'_>, project_id: String, rel: String) -> Result<()> {
+    blocking(&core, move |c| c.harness_mark_reviewed(&project_id, &rel)).await
+}
+
+#[tauri::command]
+pub async fn harness_hook_templates(core: CoreState<'_>) -> Result<Vec<HookTemplate>> {
+    blocking(&core, move |c| Ok(c.harness_hook_templates())).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookSpecArgs {
+    #[serde(default)]
+    pub event: String,
+    pub matcher: Option<String>,
+    pub command: Option<String>,
+    pub timeout_secs: Option<u64>,
+    pub template_id: Option<String>,
+    #[serde(default)]
+    pub params: std::collections::HashMap<String, String>,
+}
+
+#[tauri::command]
+pub async fn harness_hook_preview_add(core: CoreState<'_>, project_id: String, spec: HookSpecArgs) -> Result<Preview> {
+    blocking(&core, move |c| {
+        c.harness_hook_preview_add(&project_id, HookSpec { event: spec.event, matcher: spec.matcher, command: spec.command, timeout_secs: spec.timeout_secs, template_id: spec.template_id, params: spec.params })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn harness_hook_preview_remove(core: CoreState<'_>, project_id: String, hook_id: String) -> Result<Preview> {
+    blocking(&core, move |c| c.harness_hook_preview_remove(&project_id, &hook_id)).await
+}
+
+#[tauri::command]
+pub async fn harness_hook_dry_run(core: CoreState<'_>, project_id: String, event: String, command: String) -> Result<DryRun> {
+    blocking(&core, move |c| c.harness_hook_dry_run(&project_id, &event, &command)).await
+}

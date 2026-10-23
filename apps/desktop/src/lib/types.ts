@@ -204,6 +204,7 @@ export type UiEvent =
   | { type: 'verification'; run: VerificationRun }
   | { type: 'proofPack'; missionId: string }
   | { type: 'knowledge'; projectId: string }
+  | { type: 'harness'; projectId: string }
   | { type: 'notice'; level: 'info' | 'warn' | 'error'; message: string };
 
 // ---- Phase 2: contracts, verification, review, proof -----------------------------------------
@@ -521,4 +522,171 @@ export interface ContextPackageRow {
   injectedText: string;
   injectedSha256: string;
   charBudget: number;
+}
+
+// ---- Phase 4: Harness Studio -----------------------------------------------------------------------------------
+
+export type HarnessKind = 'instructions' | 'settings' | 'rule' | 'skill' | 'subagent' | 'command' | 'mcp';
+
+export interface HarnessItem {
+  id: string;
+  kind: HarnessKind;
+  scope: 'project' | 'local' | 'user';
+  path: string;
+  /** Project-relative path with `/` separators; null for user-level items. */
+  rel: string | null;
+  name: string;
+  description: string | null;
+  bytes: number;
+  sha256: string;
+  /** FORGE may edit this (project scope, inside the allowlist). */
+  editable: boolean;
+  /** Does a FORGE mission read this file? (settings/hooks/MCP: no.) */
+  loadedInMissions: boolean;
+  warnings: string[];
+  details: Record<string, unknown>;
+}
+
+export interface HookDef {
+  /** `<settings item id>#<event>#<group>#<index>` */
+  id: string;
+  event: string;
+  matcher: string | null;
+  kind: string;
+  command: string;
+  timeoutSecs: number | null;
+  sourceItem: string;
+  scope: string;
+  knownEvent: boolean;
+  runsInForgeMissions: boolean;
+}
+
+export interface McpServerDef {
+  name: string;
+  transport: string;
+  command: string | null;
+  url: string | null;
+  sourceItem: string;
+  scope: string;
+  runsInForgeMissions: boolean;
+}
+
+export interface HarnessInventory {
+  items: HarnessItem[];
+  hooks: HookDef[];
+  mcpServers: McpServerDef[];
+  notes: string[];
+  truncated: boolean;
+}
+
+export interface DoctorFinding {
+  severity: 'problem' | 'warning' | 'info';
+  kind: string;
+  subject: string | null;
+  message: string;
+  suggestion: string | null;
+}
+
+export interface HarnessFile {
+  rel: string;
+  exists: boolean;
+  text: string;
+  /** sha256 of the exact bytes on disk; null when the file does not exist. Send back as `expectedSha256`. */
+  sha256: string | null;
+  bytes: number;
+  editable: boolean;
+}
+
+export interface HookRisk { event: string; command: string; display: string; risks: string[] }
+
+export interface HarnessPreview {
+  rel: string;
+  exists: boolean;
+  beforeSha256: string | null;
+  /** Hash of exactly the text that would be written; send back as `expectedAfterSha256`. */
+  afterSha256: string;
+  unchanged: boolean;
+  /** Unified diff, 3 lines of context. */
+  diff: string;
+  added: number;
+  removed: number;
+  /** Reasons it cannot be saved. */
+  problems: string[];
+  warnings: string[];
+  /** Hooks this change adds or modifies that run shell commands. Saving needs `acknowledgeRisks`. */
+  risks: HookRisk[];
+  /** The text that would be written (line endings matched to the existing file). Save THIS text. */
+  text: string;
+}
+
+export interface HarnessChange {
+  id: string;
+  projectId: string;
+  rel: string;
+  kind: 'edit' | 'create' | 'rollback';
+  beforeSha256: string | null;
+  afterSha256: string | null;
+  backupPath: string | null;
+  rollsBackId: string | null;
+  note: string | null;
+  state: 'started' | 'applied' | 'failed';
+  createdAt: string;
+  finishedAt: string | null;
+  /** Id of the later rollback that undid this change. */
+  rolledBackBy: string | null;
+}
+
+export interface HarnessApplyArgs {
+  projectId: string;
+  rel: string;
+  text: string;
+  expectedSha256: string | null;
+  expectedAfterSha256: string;
+  acknowledgeRisks?: boolean;
+  note?: string;
+}
+
+export interface RollbackPreview {
+  rel: string;
+  /** Present when the file changed after the edit: rollback is refused, and this says why. */
+  conflict: string | null;
+  removesFile: boolean;
+  diff: string;
+  added: number;
+  removed: number;
+}
+
+export interface HookTemplateParam { key: string; label: string; default: string }
+export interface HookTemplate {
+  id: string;
+  name: string;
+  description: string;
+  event: string;
+  matcher: string | null;
+  timeoutSecs: number;
+  params: HookTemplateParam[];
+  requires: string;
+}
+
+export interface HookSpec {
+  event?: string;
+  matcher?: string | null;
+  command?: string;
+  timeoutSecs?: number;
+  templateId?: string;
+  params?: Record<string, string>;
+}
+
+export interface HookDryRun {
+  shell: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  /** What Claude Code would do with this outcome, in plain words. */
+  interpretation: string;
+  input: unknown;
+  durationMs: number;
+  /** Environment variables withheld because their names look like secrets. */
+  scrubbedEnv: string[];
 }

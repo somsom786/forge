@@ -57,6 +57,9 @@ pub enum UiEvent {
     /// Knowledge changed in this project (page created/verified/forgotten, vault scanned...): lists and counts should look again.
     #[serde(rename_all = "camelCase")]
     Knowledge { project_id: String },
+    /// Agent configuration files in this project were changed through FORGE (or marked reviewed).
+    #[serde(rename_all = "camelCase")]
+    Harness { project_id: String },
     Notice { level: String, message: String },
 }
 
@@ -840,6 +843,7 @@ impl Core {
         }
         // Interrupted knowledge writes are resolved by inspecting what is actually on disk.
         self.recover_knowledge();
+        self.recover_harness();
         let orphaned = self.store.fail_orphaned_runs()?;
         if orphaned > 0 {
             self.store.audit("system", "recovery.checks", None, &json!({"orphanedRuns": orphaned}));
@@ -898,8 +902,10 @@ fn derive_title(objective: &str) -> String {
     if first.chars().count() > 72 { format!("{t}…") } else { t }
 }
 
+mod harness;
 mod memory;
 mod review;
+pub use harness::{HookSpec, RollbackPreview};
 pub use memory::{KnowledgeStatus, NewKnowledgeArgs, PageDetail};
 pub use review::{MergeOutcome, ReviewDecision, Seen};
 
