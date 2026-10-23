@@ -732,7 +732,8 @@ export interface NewExperiment {
   warmup?: number;
   timeoutSecs: number;
   baselineRef: string;
-  variants: { label: string; gitRef: string }[];
+  /** Each variant is a ref (branch, tag, commit) or a mission whose current work FORGE snapshots when the experiment is created. */
+  variants: { label: string; gitRef: string; missionId?: string | null }[];
 }
 
 export interface ExperimentStats {

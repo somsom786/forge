@@ -21,7 +21,7 @@ const NAV: NavItem[] = [
   { key: 'agents', label: 'Agents', icon: Bot, tag: 'Planned', match: () => false },
   { key: 'knowledge', label: 'Knowledge', icon: BookOpen, route: { name: 'knowledge' }, match: (r) => r.name === 'knowledge' },
   { key: 'harness', label: 'Harness Studio', icon: Wrench, route: { name: 'harness' }, match: (r) => r.name === 'harness' },
-  { key: 'experiments', label: 'Experiments', icon: FlaskConical, tag: 'Phase 6', match: () => false },
+  { key: 'experiments', label: 'Experiments', icon: FlaskConical, route: { name: 'experiments' }, match: (r) => r.name === 'experiments' },
   { key: 'settings', label: 'Settings', icon: Settings, route: { name: 'settings' }, match: (r) => r.name === 'settings' },
 ];
 

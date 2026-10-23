@@ -1,5 +1,5 @@
 import { Command } from 'cmdk';
-import { Wrench, BookOpen, FolderGit2, FolderPlus, LayoutDashboard, ListChecks, Plus, Settings, Target } from 'lucide-react';
+import { Wrench, BookOpen, FlaskConical, FolderGit2, FolderPlus, LayoutDashboard, ListChecks, Plus, Settings, Target } from 'lucide-react';
 import { addProjectViaDialog } from '../lib/actions';
 import { missionLabel } from '../lib/format';
 import { useStore } from '../lib/store';
@@ -60,6 +60,9 @@ export function CommandPalette() {
           </Command.Item>
           <Command.Item className={item} value="go harness studio" onSelect={run(() => navigate({ name: 'harness' }))}>
             <Wrench className="size-4" aria-hidden /> Harness Studio
+          </Command.Item>
+          <Command.Item className={item} value="go experiments benchmark compare" onSelect={run(() => navigate({ name: 'experiments' }))}>
+            <FlaskConical className="size-4" aria-hidden /> Experiments
           </Command.Item>
           <Command.Item className={item} value="go settings" onSelect={run(() => navigate({ name: 'settings' }))}>
             <Settings className="size-4" aria-hidden /> Settings
