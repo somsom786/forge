@@ -113,6 +113,20 @@ mission starts (not in an execution backend, not before any approval); FORGE can
 of its tools the agent may call and with whose approval. Package-runner commands (`npx`, `uvx`) without a pinned version can
 change between runs; the dialog says so.
 
+## Verification adapters (Proof Engine 2.0, Milestone 4)
+
+| Control | Where | Test |
+|---|---|---|
+| A check may name an adapter (`gitleaks`, `osv-scanner`, `trivy`, `playwright`). The command stays user-authored and runs on the project's execution backend like any check; FORGE only suggests the command, and only when the tool is installed (Playwright: when the project declares it). | `evidence.rs`, `detect::adapter_checks`, `contract.rs` (unknown adapters refused) | `detect::tests`, `tests::evidence::unknown_adapters…` |
+| The adapter reads **stdout only** (captured separately from stderr, redacted line by line, capped at 16 MiB) and the report, not the exit code, decides the result. Unparseable output, or a non-zero exit with a clean report, is a *tool error*; a missing tool is *tool missing*; neither is ever a pass, and a required check in either state blocks approval. | `verify::run_check_capture`, `evidence::evaluate` | `evidence::tests` (9), `verify::tests::stdout_can_be_captured_alone…`, `tests::evidence::a_clean_report_passes…` |
+| Secret-scan findings keep rule, file and line only; `Secret`/`Match` are never stored or shown, even redacted. At most 200 findings are kept per run (counts cover all). Unknown severity is treated as blocking. | `evidence::gitleaks`, `MAX_FINDINGS` | `evidence::tests::gitleaks_findings…`, `findings_are_capped…` |
+| Findings appear in the Verification view and the Proof Pack (JSON + markdown). | `proof.rs` | `tests::evidence::findings_from_a_secret_scan…` |
+
+Honest limits: the parsers were tested against **hand-written fixtures** built from each tool's documented JSON format
+(`apps/desktop/src-tauri/fixtures/evidence/README.md`), not against real tool runs; the suggested command lines (notably
+`gitleaks … --report-path -` and `osv-scanner scan source`) must be confirmed against the tool versions on the user's machine.
+Trivy downloads its vulnerability database, so it fails (tool error) on the `linux_namespaces` backend, which has no network.
+
 ## ACP agents (Milestone 3)
 
 FORGE is the ACP **client** (official SDK `@agentclientprotocol/sdk` 1.8.0); an ACP agent is a program the user registered.

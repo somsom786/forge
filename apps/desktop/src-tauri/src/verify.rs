@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 
 const TAIL_BYTES: usize = 64 * 1024;
 const LOG_CAP_BYTES: u64 = 5 * 1024 * 1024;
+/// Separate stdout capture for verification adapters (a tool's JSON report).
+pub const STDOUT_CAP_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct RunOutcome {
@@ -37,13 +39,16 @@ struct Buf {
     logged: u64,
     /// Bytes of an unfinished line, redacted as a whole when it completes (a secret can straddle two reads).
     pending: Vec<u8>,
+    /// Log size cap; 0 means `LOG_CAP_BYTES`.
+    cap: u64,
 }
 
 impl Buf {
     fn write_log(&mut self, bytes: &[u8]) {
         if let Some(f) = self.log.as_mut() {
-            if self.logged < LOG_CAP_BYTES {
-                let room = (LOG_CAP_BYTES - self.logged) as usize;
+            let cap = if self.cap == 0 { LOG_CAP_BYTES } else { self.cap };
+            if self.logged < cap {
+                let room = (cap - self.logged) as usize;
                 let n = bytes.len().min(room);
                 let _ = f.write_all(&bytes[..n]);
                 self.logged += n as u64;
@@ -93,6 +98,13 @@ pub fn run_check(command: &str, cwd: &Path, timeout: Duration, log_path: Option<
 /// Run `command` in `cwd` on execution backend `backend`. `cancel` can be flipped from another thread to abort the run. A
 /// backend that is not available makes the run an `Error` that says why; it never falls back to another backend.
 pub fn run_check_in(backend: Backend, command: &str, cwd: &Path, timeout: Duration, log_path: Option<&Path>, cancel: Arc<AtomicBool>) -> RunOutcome {
+    run_check_capture(backend, command, cwd, timeout, log_path, None, cancel)
+}
+
+/// As `run_check_in`, and additionally writes standard output alone (redacted line by line, capped at `STDOUT_CAP_BYTES`)
+/// to `stdout_path`, for an adapter to parse.
+#[allow(clippy::too_many_arguments)]
+pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: Duration, log_path: Option<&Path>, stdout_path: Option<&Path>, cancel: Arc<AtomicBool>) -> RunOutcome {
     let started = Instant::now();
     let fail = |msg: String| RunOutcome {
         state: RunState::Error,
@@ -132,9 +144,18 @@ pub fn run_check_in(backend: Backend, command: &str, cwd: &Path, timeout: Durati
         std::fs::File::create(p).ok()
     });
     let buf = Arc::new(Mutex::new(Buf { log, ..Default::default() }));
+    let capture = stdout_path.and_then(|p| {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::File::create(p).ok()
+    });
+    let capture = capture.map(|f| Arc::new(Mutex::new(Buf { log: Some(f), cap: STDOUT_CAP_BYTES, ..Default::default() })));
     let mut readers = vec![];
-    for stream in [child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>), child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>)].into_iter().flatten() {
+    for (i, stream) in [child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>), child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>)].into_iter().enumerate() {
+        let Some(stream) = stream else { continue };
         let b = buf.clone();
+        let cap = if i == 0 { capture.clone() } else { None };
         readers.push(std::thread::spawn(move || {
             let mut s = stream;
             let mut chunk = [0u8; 8192];
@@ -143,6 +164,9 @@ pub fn run_check_in(backend: Backend, command: &str, cwd: &Path, timeout: Durati
                     break;
                 }
                 b.lock().unwrap_or_else(|p| p.into_inner()).push(&chunk[..n]);
+                if let Some(c) = &cap {
+                    c.lock().unwrap_or_else(|p| p.into_inner()).log_chunk(&chunk[..n]);
+                }
             }
         }));
     }
@@ -188,6 +212,9 @@ pub fn run_check_in(backend: Backend, command: &str, cwd: &Path, timeout: Durati
         }
     }
 
+    if let Some(c) = &capture {
+        c.lock().unwrap_or_else(|p| p.into_inner()).finish_log();
+    }
     let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
     b.finish_log();
     let truncated = b.total as usize > b.tail.len().min(TAIL_BYTES);
@@ -273,6 +300,27 @@ mod tests {
         assert!(!logged.contains("supersecretvalue123"), "the on-disk log is redacted line by line too");
         assert!(logged.contains("line 19999"));
         assert!(!r.output_tail.contains("supersecretvalue123") || !r.output_tail.starts_with("token="), "tail shown in the UI is redacted");
+    }
+
+    #[test]
+    fn stdout_can_be_captured_alone_for_an_adapter() {
+        let d = tempfile::tempdir().unwrap();
+        let out = d.path().join("cap").join("r.stdout");
+        let r = run_check_capture(
+            Backend::TrustedLocal,
+            "node -e \"console.error('progress on stderr'); console.log(JSON.stringify([{a:1,token:'ghp_abcdefghijklmnopqrstuvwxyz0123'}]))\"",
+            d.path(),
+            Duration::from_secs(20),
+            None,
+            Some(&out),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert_eq!(r.state, RunState::Passed);
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(!text.contains("progress on stderr"), "stderr is not mixed into the report");
+        assert!(!text.contains("ghp_abcdefghijklmnopqrstuvwxyz0123"), "redacted");
+        assert!(serde_json::from_str::<serde_json::Value>(text.trim()).is_ok(), "still valid JSON after redaction: {text}");
+        assert!(r.output_tail.contains("progress on stderr"), "the combined tail still has both");
     }
 
     #[test]

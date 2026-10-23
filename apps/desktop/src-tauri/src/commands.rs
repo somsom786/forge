@@ -734,3 +734,9 @@ pub async fn acp_agent_register(core: CoreState<'_>, name: String, command: Stri
 pub async fn acp_agent_remove(core: CoreState<'_>, id: String) -> Result<AcpAgent> {
     blocking(&core, move |c| c.acp_agent_remove(&id)).await
 }
+
+/// The verification adapters this build understands (id, label, suggested command, kind).
+#[tauri::command]
+pub fn verification_adapters() -> serde_json::Value {
+    crate::evidence::adapters_json()
+}

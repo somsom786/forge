@@ -11,7 +11,7 @@ fn contract() -> Contract {
     Contract {
         version: 1,
         criteria: vec![Criterion { id: "file".into(), text: "The note file exists".into(), verified_by: vec!["exists".into()], manual: false, scope_rule: false }],
-        checks: vec![CheckSpec { id: "exists".into(), name: "Note exists".into(), command: FILE_EXISTS.into(), kind: CheckKind::Test, timeout_secs: 60, required: true }],
+        checks: vec![CheckSpec { id: "exists".into(), name: "Note exists".into(), command: FILE_EXISTS.into(), kind: CheckKind::Test, timeout_secs: 60, required: true, adapter: None }],
         ..Default::default()
     }
 }

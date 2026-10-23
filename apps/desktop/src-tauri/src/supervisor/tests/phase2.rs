@@ -33,8 +33,8 @@ fn contract(required: bool) -> Contract {
             Criterion { id: "clean".into(), text: "No unrelated modifications".into(), verified_by: vec![], manual: false, scope_rule: true },
         ],
         checks: vec![
-            CheckSpec { id: "exists".into(), name: "Note exists".into(), command: FILE_EXISTS.into(), kind: CheckKind::Test, timeout_secs: 60, required },
-            CheckSpec { id: "broken".into(), name: "Always fails".into(), command: ALWAYS_FAILS.into(), kind: CheckKind::Custom, timeout_secs: 60, required: false },
+            CheckSpec { id: "exists".into(), name: "Note exists".into(), command: FILE_EXISTS.into(), kind: CheckKind::Test, timeout_secs: 60, required, adapter: None },
+            CheckSpec { id: "broken".into(), name: "Always fails".into(), command: ALWAYS_FAILS.into(), kind: CheckKind::Custom, timeout_secs: 60, required: false, adapter: None },
         ],
         security_constraints: vec![],
         review_expectations: None,
@@ -246,7 +246,7 @@ fn checks_refuse_to_run_while_an_agent_is_working_and_agents_refuse_while_a_chec
 
     // Now the reverse: a slow check blocks the agent from restarting on the same files.
     let mut c = contract(false);
-    c.checks.push(CheckSpec { id: "slow".into(), name: "Slow".into(), command: "node -e \"setTimeout(()=>{},30000)\"".into(), kind: CheckKind::Custom, timeout_secs: 60, required: false });
+    c.checks.push(CheckSpec { id: "slow".into(), name: "Slow".into(), command: "node -e \"setTimeout(()=>{},30000)\"".into(), kind: CheckKind::Custom, timeout_secs: 60, required: false, adapter: None });
     f.core.set_contract(&m.id, c).unwrap();
     let slow = f.core.start_check(&m.id, "slow").unwrap();
     let err = f.core.start_mission(&m.id, None).unwrap_err().to_string();
@@ -288,7 +288,7 @@ fn restart_recovery_resolves_checks_that_were_mid_flight() {
     let run = crate::store_review::VerificationRun {
         id: crate::store::new_id(), mission_id: m.id.clone(), check_id: "exists".into(), name: "n".into(), command: "c".into(), kind: "test".into(),
         state: crate::contract::RunState::Running, exit_code: None, started_at: crate::store::now(), ended_at: None, duration_ms: None,
-        fingerprint: "f".into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: String::new(), backend: "trusted_local".into(),
+        fingerprint: "f".into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: String::new(), backend: "trusted_local".into(), evidence: None,
     };
     f.core.store.insert_run(&run).unwrap();
     f.core.recover().unwrap();
@@ -328,7 +328,7 @@ fn checks_run_on_the_projects_execution_backend_and_record_it() {
     std::fs::write(&secret, "TOP-SECRET-CREDENTIAL-99").unwrap();
     let m = mission_in_review(&f, "make a note");
     let mut contract = f.core.get_contract(&m.id).unwrap();
-    contract.checks.push(crate::contract::CheckSpec { id: "steal".into(), name: "steal".into(), command: format!("cat '{}' || true; echo still-ran", secret.display()), kind: crate::contract::CheckKind::Test, required: false, timeout_secs: 30 });
+    contract.checks.push(crate::contract::CheckSpec { id: "steal".into(), name: "steal".into(), command: format!("cat '{}' || true; echo still-ran", secret.display()), kind: crate::contract::CheckKind::Test, required: false, timeout_secs: 30, adapter: None });
     f.core.set_contract(&m.id, contract).unwrap();
     f.core.project_set_execution_backend(&f.project.id, "linux_namespaces").unwrap();
     let run = run_check(&f, &m.id, "steal");

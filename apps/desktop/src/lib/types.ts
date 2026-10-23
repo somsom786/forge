@@ -228,6 +228,40 @@ export interface CheckSpec {
   timeoutSecs: number;
   /** A required check not passing on the current changes needs a recorded override reason to approve. */
   required: boolean;
+  /** Verification adapter that reads the tool's JSON report from stdout into findings (see `verificationAdapters`). */
+  adapter?: string | null;
+}
+
+export type EvidenceOutcome = 'passed' | 'findings' | 'tool_missing' | 'tool_error' | 'incomplete';
+export type FindingSeverity = 'info' | 'low' | 'medium' | 'high' | 'critical' | 'unknown';
+
+export interface Finding {
+  ruleId: string;
+  severity: FindingSeverity;
+  title: string;
+  location: string | null;
+  package: string | null;
+  fixedIn: string | null;
+  blocking: boolean;
+}
+
+/** Structured evidence from a verification adapter. Secret values are never part of it. */
+export interface Evidence {
+  adapter: string;
+  outcome: EvidenceOutcome;
+  summary: string;
+  totalFindings: number;
+  blockingFindings: number;
+  bySeverity: Record<string, number>;
+  findings: Finding[];
+  findingsTruncated: boolean;
+}
+
+export interface VerificationAdapterInfo {
+  id: string;
+  label: string;
+  command: string;
+  kind: CheckKind;
 }
 
 export interface Criterion {
@@ -276,6 +310,7 @@ export interface VerificationRun {
   logPath: string | null;
   /** The execution backend the command ran on. */
   backend: ExecutionBackendId;
+  evidence?: Evidence | null;
 }
 
 /** Derived from evidence only; an agent claiming "done" changes nothing. */

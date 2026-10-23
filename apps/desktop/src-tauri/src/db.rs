@@ -399,6 +399,10 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE UNIQUE INDEX acp_agent_active ON acp_agent(name) WHERE removed_at IS NULL;
     "#,
+    // v12 - structured evidence from verification adapters (crate::evidence), JSON; NULL for plain checks.
+    r#"
+    ALTER TABLE verification_run ADD COLUMN evidence_json TEXT;
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

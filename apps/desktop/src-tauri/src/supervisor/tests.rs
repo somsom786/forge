@@ -348,6 +348,7 @@ mod conflicts;
 mod approvals;
 mod mcp;
 mod acp;
+mod evidence;
 
 #[test]
 fn the_agents_overview_lists_running_and_recent_sessions_with_their_missions() {

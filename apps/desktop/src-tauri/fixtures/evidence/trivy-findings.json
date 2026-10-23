@@ -1,0 +1,22 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": ".",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "package-lock.json", "Class": "lang-pkgs", "Type": "npm",
+      "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-2021-23337", "PkgName": "lodash", "InstalledVersion": "4.17.20", "FixedVersion": "4.17.21", "Severity": "HIGH", "Title": "lodash: command injection via template"},
+        {"VulnerabilityID": "CVE-2020-28500", "PkgName": "lodash", "InstalledVersion": "4.17.20", "FixedVersion": "4.17.21", "Severity": "MEDIUM", "Title": "lodash: ReDoS"}
+      ]
+    },
+    {
+      "Target": "Dockerfile", "Class": "config", "Type": "dockerfile",
+      "Misconfigurations": [
+        {"ID": "DS002", "Title": "Image user should not be 'root'", "Severity": "HIGH", "Status": "FAIL"},
+        {"ID": "DS001", "Title": "':latest' tag used", "Severity": "MEDIUM", "Status": "PASS"}
+      ]
+    },
+    {"Target": "src/keys.txt", "Class": "secret", "Secrets": [{"RuleID": "private-key", "Title": "Asymmetric Private Key", "Severity": "HIGH", "StartLine": 1, "Match": "REDACTED"}]}
+  ]
+}

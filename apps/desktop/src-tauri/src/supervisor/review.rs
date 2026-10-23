@@ -184,6 +184,7 @@ impl Core {
                 log_path: None,
                 spec_rev: spec.revision(),
                 backend: backend.as_str().into(),
+                evidence: None,
             };
             self.store.insert_run(&run)?;
             Ok(run)
@@ -201,11 +202,25 @@ impl Core {
         let core = self.clone();
         let (run_id, pre, mission) = (run.id.clone(), run.fingerprint.clone(), mission_id.to_string());
         let log = self.cfg.home.join("runs").join(format!("{run_id}.log"));
+        let stdout = self.cfg.home.join("runs").join(format!("{run_id}.stdout"));
         std::thread::spawn(move || {
-            let outcome = verify::run_check_in(backend, &spec.command, &wt, Duration::from_secs(spec.timeout_secs), Some(&log), cancel);
+            let capture = spec.adapter.as_ref().map(|_| stdout.as_path());
+            let mut outcome = verify::run_check_capture(backend, &spec.command, &wt, Duration::from_secs(spec.timeout_secs), Some(&log), capture, cancel);
+            // An adapter turns the tool's report into findings, and its verdict replaces the exit-code verdict.
+            let evidence = spec.adapter.as_deref().map(|a| {
+                let text = std::fs::read_to_string(&stdout).unwrap_or_default();
+                let (ev, state) = crate::evidence::evaluate(a, outcome.state, outcome.exit_code, &text, &outcome.output_tail);
+                outcome.state = state;
+                ev
+            });
             let post = git::fingerprint(&wt, &base).unwrap_or_else(|_| "unknown".into());
             let mutated = post != pre;
             let log_s = outcome.log_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+            if let Some(ev) = &evidence {
+                if let Err(e) = core.store.set_run_evidence(&run_id, ev) {
+                    core.notice("error", format!("could not record the findings of check {}: {e}", spec.id));
+                }
+            }
             match core.store.finish_run(&run_id, outcome.state, outcome.exit_code, outcome.duration_ms as i64, &pre, mutated, &outcome.output_tail, outcome.output_truncated, log_s.as_deref()) {
                 Ok(done) => core.emit(UiEvent::Verification { run: done }),
                 Err(e) => core.notice("error", format!("could not record the result of check {}: {e}", spec.id)),

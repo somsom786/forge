@@ -1,0 +1,17 @@
+{
+  "config": {"version": "1.48.0"},
+  "suites": [
+    {
+      "title": "login.spec.ts", "file": "tests/login.spec.ts",
+      "specs": [
+        {"title": "shows an error for a wrong password", "file": "tests/login.spec.ts", "line": 12, "tests": [{"projectName": "chromium", "status": "unexpected", "results": [{"status": "failed"}]}]},
+        {"title": "logs in", "file": "tests/login.spec.ts", "line": 4, "tests": [{"projectName": "chromium", "status": "expected", "results": [{"status": "passed"}]}]}
+      ],
+      "suites": [
+        {"title": "remember me", "file": "tests/login.spec.ts", "specs": [{"title": "keeps the session", "file": "tests/login.spec.ts", "line": 30, "tests": [{"projectName": "firefox", "status": "flaky", "results": [{"status": "failed"}, {"status": "passed"}]}]}]}
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {"startTime": "2026-10-23T08:00:00.000Z", "duration": 5321, "expected": 1, "skipped": 0, "unexpected": 1, "flaky": 1}
+}

@@ -6,7 +6,7 @@ import type {
   ActivityEvent, AppInfo, Approval, Mission, MissionChanges, MissionDetail, MissionDiff, NewMissionArgs,
   Project, ProviderInfo, RecoveryReport, RepoStatus, UiEvent,
   ContextPackage, ContextPackageRow, KnowledgePage, KnowledgePageDetail, KnowledgeRevision, KnowledgeStatus, LintIssue, NewKnowledgeArgs, ScanResult,
-  AcpAgent, McpAuthorization, McpAuthorizationStatus, McpPreview,
+  AcpAgent, VerificationAdapterInfo, McpAuthorization, McpAuthorizationStatus, McpPreview,
   DoctorFinding, HarnessApplyArgs, HarnessBackupUsage, HarnessChange, HarnessFile, HarnessInventory, HarnessPreview, HarnessPruneReport, HookDryRun, HookSpec, HookTemplate, RollbackPreview,
   CheckSpec, Contract, MergeOutcome, Seen, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
   Experiment, ExperimentDetail, NewExperiment,
@@ -121,6 +121,7 @@ export const api = {
   mcpRevoke: (authorizationId: string) => invoke<McpAuthorization>('mcp_revoke', { authorizationId }),
   mcpAuthorizations: (projectId: string) => invoke<McpAuthorizationStatus[]>('mcp_authorizations', { projectId }),
 
+  verificationAdapters: () => invoke<VerificationAdapterInfo[]>('verification_adapters'),
   acpAgents: () => invoke<AcpAgent[]>('acp_agents'),
   /** Registers a program FORGE will start for ACP missions; the command is resolved to an absolute path. */
   acpAgentRegister: (name: string, command: string, args: string[]) => invoke<AcpAgent>('acp_agent_register', { name, command, args }),

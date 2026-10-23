@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::path::Path;
 
 fn spec(id: &str, name: &str, command: &str, kind: CheckKind, timeout_secs: u64) -> CheckSpec {
-    CheckSpec { id: id.into(), name: name.into(), command: command.into(), kind, timeout_secs, required: false }
+    CheckSpec { id: id.into(), name: name.into(), command: command.into(), kind, timeout_secs, required: false, adapter: None }
 }
 
 fn node_runner(root: &Path) -> &'static str {
@@ -58,7 +58,21 @@ pub fn suggest_checks(root: &Path) -> Vec<CheckSpec> {
         out.push(spec("go-test", "Go tests", "go test ./...", CheckKind::Test, 900));
         out.push(spec("go-vet", "Go vet", "go vet ./...", CheckKind::Lint, 600));
     }
+    out.extend(adapter_checks(root, &|tool| which::which(tool).is_ok()));
     out
+}
+
+/// Checks with a verification adapter, for tools that are installed (or, for Playwright, declared by the project).
+pub fn adapter_checks(root: &Path, installed: &dyn Fn(&str) -> bool) -> Vec<CheckSpec> {
+    let uses_playwright = std::fs::read_to_string(root.join("package.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .is_some_and(|v| ["dependencies", "devDependencies"].iter().any(|k| v.get(k).and_then(|d| d.get("@playwright/test")).is_some()));
+    crate::evidence::ADAPTERS
+        .iter()
+        .filter(|a| if a.id == "playwright" { uses_playwright } else { installed(a.id) })
+        .map(|a| CheckSpec { adapter: Some(a.id.into()), ..spec(a.id, a.label, a.command, a.kind, 900) })
+        .collect()
 }
 
 #[cfg(test)]
@@ -88,6 +102,14 @@ mod tests {
     fn the_npm_default_test_stub_is_not_suggested() {
         let d = dir_with(&[("package.json", r#"{"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}"#)]);
         assert!(suggest_checks(d.path()).is_empty());
+    }
+
+    #[test]
+    fn adapter_checks_are_suggested_only_for_installed_tools_or_a_declared_playwright() {
+        let d = dir_with(&[("package.json", r#"{"devDependencies":{"@playwright/test":"1.48.0"}}"#)]);
+        let ids = |s: Vec<CheckSpec>| s.into_iter().map(|c| (c.id, c.adapter)).collect::<Vec<_>>();
+        assert_eq!(ids(adapter_checks(d.path(), &|t| t == "gitleaks")), vec![("gitleaks".into(), Some("gitleaks".into())), ("playwright".into(), Some("playwright".into()))]);
+        assert!(adapter_checks(tempfile::tempdir().unwrap().path(), &|_| false).is_empty());
     }
 
     #[test]

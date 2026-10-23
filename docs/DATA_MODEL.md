@@ -99,6 +99,12 @@ so history is kept. `definition_json` holds env variable *names* only.
 `acp_agent(id, name, command, args_json, added_at, removed_at)`; at most one active agent per name. `command` is the absolute
 path resolved at registration. An ACP mission has `provider = 'acp'` and `model = <agent name>`.
 
+## Implemented (migration 12 — structured evidence)
+
+`verification_run.evidence_json`: the adapter's verdict (`outcome`: passed / findings / tool_missing / tool_error / incomplete),
+counts by severity and up to 200 findings (rule, severity, title, location, package, fixed-in, blocking). NULL for plain checks.
+`CheckSpec.adapter` lives in the contract JSON; a check's revision includes it only when set, so existing evidence keeps its meaning.
+
 ## Designed, not yet implemented
 
 | Entity | Purpose | Phase |

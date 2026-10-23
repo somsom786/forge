@@ -33,6 +33,8 @@ pub struct VerificationRun {
     pub spec_rev: String,
     /// The execution backend the command ran on (part of the evidence: a pass on the host is not a pass in isolation).
     pub backend: String,
+    /// Structured evidence when the check has a verification adapter.
+    pub evidence: Option<crate::evidence::Evidence>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -96,7 +98,7 @@ fn run_state_parse(s: &str) -> RunState {
     }
 }
 
-const RUN_COLS: &str = "id, mission_id, check_id, name, command, kind, state, exit_code, started_at, ended_at, duration_ms, fingerprint, head_commit, mutated, output_tail, output_truncated, log_path, spec_rev, backend";
+const RUN_COLS: &str = "id, mission_id, check_id, name, command, kind, state, exit_code, started_at, ended_at, duration_ms, fingerprint, head_commit, mutated, output_tail, output_truncated, log_path, spec_rev, backend, evidence_json";
 
 fn run_from(r: &Row) -> rusqlite::Result<VerificationRun> {
     let state: String = r.get(6)?;
@@ -120,6 +122,7 @@ fn run_from(r: &Row) -> rusqlite::Result<VerificationRun> {
         log_path: r.get(16)?,
         spec_rev: r.get(17)?,
         backend: r.get(18)?,
+        evidence: r.get::<_, Option<String>>(19)?.and_then(|j| serde_json::from_str(&j).ok()),
     })
 }
 
@@ -164,6 +167,11 @@ impl Store {
             params![id, run_state_str(state), exit_code, now(), duration_ms, fingerprint, mutated as i64, output_tail, truncated as i64, log_path],
         )?;
         self.get_run(id)
+    }
+
+    pub fn set_run_evidence(&self, id: &str, evidence: &crate::evidence::Evidence) -> Result<()> {
+        self.c().execute("UPDATE verification_run SET evidence_json=?2 WHERE id=?1", params![id, serde_json::to_string(evidence)?])?;
+        Ok(())
     }
 
     pub fn get_run(&self, id: &str) -> Result<VerificationRun> {
@@ -279,7 +287,7 @@ mod tests {
     }
 
     fn run(mid: &str, check: &str, fp: &str) -> VerificationRun {
-        VerificationRun { id: new_id(), mission_id: mid.into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state: RunState::Running, exit_code: None, started_at: now(), ended_at: None, duration_ms: None, fingerprint: fp.into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: "r1".into(), backend: "trusted_local".into() }
+        VerificationRun { id: new_id(), mission_id: mid.into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state: RunState::Running, exit_code: None, started_at: now(), ended_at: None, duration_ms: None, fingerprint: fp.into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: "r1".into(), backend: "trusted_local".into(), evidence: None }
     }
 
     #[test]
@@ -288,7 +296,7 @@ mod tests {
         assert!(s.get_contract(&id).unwrap().criteria.is_empty());
         let c = Contract {
             version: 1,
-            checks: vec![CheckSpec { id: "t".into(), name: "Tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true }],
+            checks: vec![CheckSpec { id: "t".into(), name: "Tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true, adapter: None }],
             in_scope: vec!["src/".into()],
             ..Default::default()
         };

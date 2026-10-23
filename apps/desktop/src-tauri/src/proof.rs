@@ -252,7 +252,9 @@ pub fn build_pack(i: PackInput) -> (Value, String) {
                 "runId": r.id, "state": r.state, "exitCode": r.exit_code, "durationMs": r.duration_ms,
                 "ranAgainst": r.fingerprint, "mutatedWorktree": r.mutated, "startedAt": r.started_at, "logPath": r.log_path,
                 "backend": r.backend,
+                "evidence": r.evidence,
             })),
+            "adapter": c.spec.adapter,
         })).collect::<Vec<_>>(),
         "permissions": {
             "total": i.approvals.len(), "policyDenials": policy_denials,
@@ -355,6 +357,35 @@ pub fn render_markdown(c: &Value) -> String {
             ));
         }
         o.push('\n');
+        // Structured findings from verification adapters (secret scans, dependency audits, end-to-end tests).
+        for k in c["checks"].as_array().cloned().unwrap_or_default() {
+            let ev = &k["latest"]["evidence"];
+            if !ev.is_object() {
+                continue;
+            }
+            o.push_str(&format!("### {} — {} ({})
+
+", cell(k["name"].as_str().unwrap_or("")), ev["adapter"].as_str().unwrap_or(""), cell(ev["summary"].as_str().unwrap_or(""))));
+            let findings = ev["findings"].as_array().cloned().unwrap_or_default();
+            if !findings.is_empty() {
+                o.push_str("| Severity | Blocking | Rule | Title | Location | Package |\n|---|---|---|---|---|---|\n");
+                for f in &findings {
+                    o.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} |\n",
+                        f["severity"].as_str().unwrap_or(""),
+                        if f["blocking"] == true { "yes" } else { "no" },
+                        cell(f["ruleId"].as_str().unwrap_or("")),
+                        cell(f["title"].as_str().unwrap_or("")),
+                        cell(f["location"].as_str().unwrap_or("")),
+                        cell(f["package"].as_str().unwrap_or("")),
+                    ));
+                }
+                if ev["findingsTruncated"] == true {
+                    o.push_str(&format!("\n_{} findings in total; the first {} are listed._\n", ev["totalFindings"], findings.len()));
+                }
+                o.push('\n');
+            }
+        }
     }
 
     o.push_str("## Changes\n\n");
@@ -416,8 +447,8 @@ mod tests {
             version: 1,
             in_scope: vec!["src/".into()],
             checks: vec![
-                CheckSpec { id: "t".into(), name: "Tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true },
-                CheckSpec { id: "l".into(), name: "Lint".into(), command: "npm run lint".into(), kind: CheckKind::Lint, timeout_secs: 60, required: false },
+                CheckSpec { id: "t".into(), name: "Tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true, adapter: None },
+                CheckSpec { id: "l".into(), name: "Lint".into(), command: "npm run lint".into(), kind: CheckKind::Lint, timeout_secs: 60, required: false, adapter: None },
             ],
             criteria: vec![
                 Criterion { id: "exp".into(), text: "Reset tokens expire".into(), verified_by: vec!["t".into()], manual: false, scope_rule: false },
@@ -430,7 +461,7 @@ mod tests {
     }
 
     fn vrun(check: &str, state: RunState, fp: &str, mutated: bool) -> VerificationRun {
-        VerificationRun { id: format!("{check}-run-123456"), mission_id: "m".into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state, exit_code: Some(0), started_at: "t".into(), ended_at: None, duration_ms: Some(10), fingerprint: fp.into(), head_commit: None, mutated, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: contract().checks.iter().find(|c| c.id == check).map(|c| c.revision()).unwrap_or_default(), backend: "trusted_local".into() }
+        VerificationRun { id: format!("{check}-run-123456"), mission_id: "m".into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state, exit_code: Some(0), started_at: "t".into(), ended_at: None, duration_ms: Some(10), fingerprint: fp.into(), head_commit: None, mutated, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: contract().checks.iter().find(|c| c.id == check).map(|c| c.revision()).unwrap_or_default(), backend: "trusted_local".into(), evidence: None }
     }
 
     fn report(runs: Vec<VerificationRun>, verdicts: Vec<ManualVerdictRow>, files: &[&str], pending: usize, running: bool) -> VerificationReport {
