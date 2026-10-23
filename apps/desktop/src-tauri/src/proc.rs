@@ -71,6 +71,50 @@ pub fn contain(child: &Child) -> Result<Containment, String> {
     Ok(Containment { pgid })
 }
 
+/// `CREATE_SUSPENDED`: the process is created with its first thread suspended, so it runs no code until it is resumed. Spawning
+/// with it and resuming only after [`contain`] succeeded closes the window in which a process could start a descendant before it
+/// is in the Job (a descendant created before assignment is not in the Job and would survive the kill).
+#[cfg(windows)]
+pub const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+/// Resume a process created with [`CREATE_SUSPENDED`]. A new process has exactly one thread; it is found by owner pid and
+/// resumed. Fails if no thread of the process could be resumed (the caller must then kill the process).
+#[cfg(windows)]
+pub fn resume_suspended(child: &Child) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next};
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+    let pid = child.id();
+    // SAFETY: plain Win32 calls on handles this function opens and closes itself; THREADENTRY32 is initialised with its size.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return Err(format!("could not list the threads of pid {pid}"));
+        }
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut resumed = 0;
+        let mut ok = Thread32First(snap, &mut entry);
+        while ok != 0 {
+            if entry.th32OwnerProcessID == pid {
+                let t = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if !t.is_null() {
+                    if ResumeThread(t) != u32::MAX {
+                        resumed += 1;
+                    }
+                    CloseHandle(t);
+                }
+            }
+            ok = Thread32Next(snap, &mut entry);
+        }
+        CloseHandle(snap);
+        if resumed == 0 {
+            return Err(format!("could not resume pid {pid}"));
+        }
+    }
+    Ok(())
+}
+
 /// Forcefully terminate a process and its whole tree.
 pub fn kill_tree(pid: u32) {
     #[cfg(windows)]
@@ -148,5 +192,34 @@ mod unix_tests {
         assert!(contain(&child).is_err());
         let _ = child.kill();
         let _ = child.wait();
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+    use std::time::{Duration, Instant};
+
+    /// A suspended process runs nothing until it is contained and resumed, then runs normally.
+    #[test]
+    fn a_suspended_process_runs_only_after_it_is_contained_and_resumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran.txt");
+        let mut child = std::process::Command::new(std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into()))
+            .args(["/d", "/c", "echo ran>ran.txt"])
+            .current_dir(dir.path())
+            .creation_flags(0x0800_0000 | CREATE_SUSPENDED)
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!marker.exists(), "a suspended process must not have run");
+        assert!(child.try_wait().unwrap().is_none());
+        let job = contain(&child).unwrap();
+        resume_suspended(&child).unwrap();
+        let t = Instant::now();
+        while child.try_wait().unwrap().is_none() && t.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(marker.exists(), "the resumed process did not run");
+        drop(job);
     }
 }

@@ -6,7 +6,7 @@ import type {
   ActivityEvent, AppInfo, Approval, Mission, MissionChanges, MissionDetail, MissionDiff, NewMissionArgs,
   Project, ProviderInfo, RecoveryReport, RepoStatus, UiEvent,
   ContextPackage, ContextPackageRow, KnowledgePage, KnowledgePageDetail, KnowledgeRevision, KnowledgeStatus, LintIssue, NewKnowledgeArgs, ScanResult,
-  DoctorFinding, HarnessApplyArgs, HarnessChange, HarnessFile, HarnessInventory, HarnessPreview, HookDryRun, HookSpec, HookTemplate, RollbackPreview,
+  DoctorFinding, HarnessApplyArgs, HarnessBackupUsage, HarnessChange, HarnessFile, HarnessInventory, HarnessPreview, HarnessPruneReport, HookDryRun, HookSpec, HookTemplate, RollbackPreview,
   CheckSpec, Contract, MergeOutcome, Seen, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
 } from './types';
 
@@ -88,6 +88,9 @@ export const api = {
   harnessRollbackPreview: (changeId: string) => invoke<RollbackPreview>('harness_rollback_preview', { changeId }),
   harnessRollback: (changeId: string) => invoke<HarnessChange>('harness_rollback', { changeId }),
   harnessMarkReviewed: (projectId: string, rel: string) => invoke<void>('harness_mark_reviewed', { projectId, rel }),
+  harnessBackupUsage: (projectId: string, keepPerFile?: number) => invoke<HarnessBackupUsage>('harness_backup_usage', { projectId, keepPerFile: keepPerFile ?? null }),
+  /** Removes backups that are not protected; a pruned change can no longer be rolled back. */
+  harnessPruneBackups: (projectId: string, keepPerFile: number) => invoke<HarnessPruneReport>('harness_prune_backups', { projectId, keepPerFile }),
   harnessHookTemplates: () => invoke<HookTemplate[]>('harness_hook_templates'),
   harnessHookPreviewAdd: (projectId: string, spec: HookSpec) => invoke<HarnessPreview>('harness_hook_preview_add', { projectId, spec: { event: '', ...spec } }),
   harnessHookPreviewRemove: (projectId: string, hookId: string) => invoke<HarnessPreview>('harness_hook_preview_remove', { projectId, hookId }),

@@ -509,7 +509,7 @@ pub async fn mission_memory_set(core: CoreState<'_>, mission_id: String, use_mem
 // ---- Phase 4: Harness Studio ----------------------------------------------------------------------------------
 
 use crate::harness::{doctor::Finding, edit::{FileRead, Preview}, hooks::{DryRun, HookTemplate}, inventory::Inventory, store::HarnessChange};
-use crate::supervisor::{HookSpec, RollbackPreview};
+use crate::supervisor::{BackupUsage, HookSpec, PruneReport, RollbackPreview};
 
 #[tauri::command]
 pub async fn harness_inventory(core: CoreState<'_>, project_id: String) -> Result<Inventory> {
@@ -567,6 +567,18 @@ pub async fn harness_rollback_preview(core: CoreState<'_>, change_id: String) ->
 #[tauri::command]
 pub async fn harness_rollback(core: CoreState<'_>, change_id: String) -> Result<HarnessChange> {
     blocking(&core, move |c| c.harness_rollback(&change_id)).await
+}
+
+/// Disk used by this project's Harness Studio backups and what pruning with `keep_per_file` undo steps would free. Read-only.
+#[tauri::command]
+pub async fn harness_backup_usage(core: CoreState<'_>, project_id: String, keep_per_file: Option<usize>) -> Result<BackupUsage> {
+    blocking(&core, move |c| c.harness_backup_usage(&project_id, keep_per_file)).await
+}
+
+/// Remove backups that are no longer needed for crash recovery, the newest undo steps, or a rollback possible right now.
+#[tauri::command]
+pub async fn harness_prune_backups(core: CoreState<'_>, project_id: String, keep_per_file: usize) -> Result<PruneReport> {
+    blocking(&core, move |c| c.harness_prune_backups(&project_id, keep_per_file)).await
 }
 
 #[tauri::command]

@@ -912,7 +912,7 @@ fn derive_title(objective: &str) -> String {
 mod harness;
 mod memory;
 mod review;
-pub use harness::{HookSpec, RollbackPreview};
+pub use harness::{BackupUsage, DEFAULT_KEEP_BACKUPS_PER_FILE, HookSpec, PruneReport, RollbackPreview};
 pub use memory::{KnowledgeStatus, NewKnowledgeArgs, PageDetail};
 pub use review::{MergeOutcome, ReviewDecision, Seen};
 
