@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { errMsg, localTime } from '../lib/format';
 import { useStore } from '../lib/store';
 import type { Mission, ProofPack } from '../lib/types';
-import { Callout } from './ui';
+import { Badge, Callout } from './ui';
 
 /** Tiny safe markdown view: headings, lists, tables and fenced code as React nodes. No HTML is ever injected. */
 export function SafeMarkdown({ text }: { text: string }) {
@@ -55,6 +55,37 @@ export function SafeMarkdown({ text }: { text: string }) {
     }
   }
   return <div className="space-y-2 text-[13px]">{out.map((n, k) => <Fragment key={k}>{n}</Fragment>)}</div>;
+}
+
+const VERIFIED = new Set(['verified_by_checks', 'verified_manually', 'verified_by_scope_check']);
+
+/** The pack's headline numbers, read from its recorded content (not recomputed): what is still open, at a glance. */
+export function ProofSummary({ content }: { content: Record<string, any> }) {
+  const unresolved: string[] = content.unresolved ?? [];
+  const criteria: any[] = content.criteria ?? [];
+  const met = criteria.filter((c) => VERIFIED.has(c.status?.status)).length;
+  const failedCrit = criteria.filter((c) => c.status?.status === 'failed').length;
+  const checks: any[] = content.checks ?? [];
+  const passed = checks.filter((c) => c.latest?.state === 'passed' && c.fresh).length;
+  const failed = checks.filter((c) => c.latest && c.latest.state !== 'passed').length;
+  const never = checks.filter((c) => !c.latest).length;
+  const stale = checks.filter((c) => c.latest && !c.fresh).length;
+  const files = content.changes?.files?.length ?? 0;
+  const ranOn = [...new Set<string>((content.sessions ?? []).map((s: any) => s.ranOn ?? 'agent_host'))];
+  const isolated = ranOn.length > 0 && ranOn.every((r) => r !== 'agent_host');
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" aria-label="Proof Pack summary">
+      <Badge tone={unresolved.length ? 'warn' : 'ok'} title={unresolved.join('\n') || undefined}>{unresolved.length ? `${unresolved.length} not established` : 'nothing outstanding'}</Badge>
+      {criteria.length > 0 && <Badge tone={failedCrit ? 'bad' : met === criteria.length ? 'ok' : 'warn'}>criteria {met}/{criteria.length} met{failedCrit ? `, ${failedCrit} failed` : ''}</Badge>}
+      {checks.length > 0 && (
+        <Badge tone={failed ? 'bad' : never || stale ? 'warn' : 'ok'}>
+          checks {passed}/{checks.length} passed{failed ? `, ${failed} not passing` : ''}{stale ? `, ${stale} out of date` : ''}{never ? `, ${never} never run` : ''}
+        </Badge>
+      )}
+      <Badge>{files} file{files === 1 ? '' : 's'} changed</Badge>
+      {ranOn.length > 0 && <Badge tone={isolated ? 'ok' : 'warn'} title="Where the agent process and the commands it ran executed">{isolated ? 'agent isolated' : 'agent ran on the host'}</Badge>}
+    </div>
+  );
 }
 
 export function ProofPackPanel({ mission }: { mission: Mission }) {
@@ -126,6 +157,7 @@ export function ProofPackPanel({ mission }: { mission: Mission }) {
             <button className="btn btn-sm ml-auto" onClick={() => void copy()}><Copy className="size-3.5" aria-hidden /> Copy markdown</button>
             <button className="btn btn-sm" aria-pressed={raw} onClick={() => setRaw(!raw)}>{raw ? 'Formatted view' : 'Raw text'}</button>
           </div>
+          <ProofSummary content={pack.content} />
           {pack.diffPath && <div className="text-[12px] text-muted">Exact diff: <span className="mono break-all text-fg">{pack.diffPath}</span></div>}
           <div className="rounded-md border border-line bg-panel p-3">
             {raw ? <pre className="overflow-x-auto whitespace-pre-wrap break-words text-[12px]">{pack.markdown}</pre> : <SafeMarkdown text={pack.markdown} />}

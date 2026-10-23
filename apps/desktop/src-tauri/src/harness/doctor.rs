@@ -227,6 +227,8 @@ pub fn run(inv: &Inventory, root: &Path) -> Vec<Finding> {
     }
 
     // 7. provider compatibility
+    precedence(inv, &mut out);
+
     let has = |rel: &str| inv.items.iter().any(|i| i.rel.as_deref() == Some(rel));
     if has("AGENTS.md") && !has("CLAUDE.md") && !has(".claude/CLAUDE.md") {
         out.push(f("info", "agents_md_only", None, "AGENTS.md exists but there is no CLAUDE.md: Claude Code does not read AGENTS.md, so FORGE missions on Claude will not see it".to_string(), Some("Add a CLAUDE.md that imports it (a line containing @AGENTS.md).")));
@@ -238,6 +240,46 @@ pub fn run(inv: &Inventory, root: &Path) -> Vec<Finding> {
         _ => 2,
     });
     cap_per_kind(out)
+}
+
+/// Claude Code reads settings from several files; for a plain value the most specific wins (local > project > user, and
+/// managed policy above all, which FORGE does not read). For permission rules, a deny anywhere beats an allow anywhere,
+/// and ask beats allow. These findings say which value a person's own Claude Code sessions will actually get. FORGE
+/// missions use none of it (their permissions come from FORGE policy), and each message says so.
+fn precedence(inv: &Inventory, out: &mut Vec<Finding>) {
+    const ORDER: [&str; 3] = ["local", "project", "user"];
+    let settings: Vec<&HarnessItem> = ORDER.iter().filter_map(|sc| inv.items.iter().find(|i| i.kind == "settings" && i.scope == *sc)).collect();
+    if settings.len() < 2 {
+        return;
+    }
+    let note = "Your own Claude Code sessions get this; FORGE missions ignore these settings and use FORGE policy.";
+    for (key, label) in [("defaultMode", "permission mode"), ("model", "model")] {
+        let set: Vec<(&str, String)> = settings.iter().filter_map(|i| i.details.get(key).filter(|v| !v.is_null()).map(|v| (i.scope.as_str(), v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))).collect();
+        let distinct: HashSet<&String> = set.iter().map(|(_, v)| v).collect();
+        if distinct.len() > 1 {
+            let (win_scope, win) = &set[0];
+            let all = set.iter().map(|(s, v)| format!("{s}: `{v}`")).collect::<Vec<_>>().join(", ");
+            let subject = settings.iter().find(|i| i.scope == *win_scope).map(|i| i.id.as_str());
+            out.push(f("info", "setting_overridden", subject, format!("The {label} is set differently in more than one settings file ({all}); `{win}` from {win_scope} applies, because local beats project beats user. {note}"), Some("Keep the value in one place, or make the override deliberate (local settings are personal and usually not committed).")));
+        }
+    }
+    let rules = |i: &HarnessItem, list: &str| -> Vec<String> { i.details.get(list).and_then(serde_json::Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default() };
+    let mut reported = HashSet::new();
+    for a in &settings {
+        for rule in rules(a, "allow") {
+            for (other, list, outcome) in settings.iter().flat_map(|b| [(b, "deny", "denied"), (b, "ask", "asked about")]) {
+                if rules(other, list).contains(&rule) && reported.insert((rule.clone(), list)) {
+                    out.push(f(
+                        "warning",
+                        "permission_conflict",
+                        Some(&a.id),
+                        format!("`{rule}` is allowed in {} settings but listed under {list} in {} settings: it is {outcome}, because {list} beats allow wherever it appears. {note}", a.scope, other.scope),
+                        Some("Remove the rule from one of the lists so the file says what actually happens."),
+                    ));
+                }
+            }
+        }
+    }
 }
 
 /// No single kind of finding may flood the screen (or memory): keep the first `PER_KIND_CAP` and say how many were left out.
@@ -293,6 +335,28 @@ mod tests {
         }
         assert_eq!(fs[0].severity, "problem", "problems sort first");
         assert!(!fs.iter().any(|x| x.kind == "hook_command_not_found" && x.message.contains("`echo`")), "shell builtins are not 'missing'");
+    }
+
+    #[test]
+    fn explains_which_setting_wins_across_scopes_and_that_deny_beats_allow() {
+        let d = project(&[
+            (".claude/settings.json", r#"{"model":"opus","permissions":{"allow":["Bash(npm publish)","Bash(git push)"],"defaultMode":"acceptEdits"}}"#),
+            (".claude/settings.local.json", r#"{"model":"sonnet","permissions":{"ask":["Bash(git push)"]}}"#),
+        ]);
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude/settings.json"), r#"{"model":"haiku","permissions":{"deny":["Bash(npm publish)"],"defaultMode":"default"}}"#).unwrap();
+        let fs = run(&scan(d.path(), Some(home.path())), d.path());
+        let over: Vec<&Finding> = fs.iter().filter(|x| x.kind == "setting_overridden").collect();
+        assert!(over.iter().any(|x| x.message.contains("`sonnet` from local applies")), "{over:?}");
+        assert!(over.iter().any(|x| x.message.contains("`acceptEdits` from project applies")), "{over:?}");
+        let conflicts: Vec<&Finding> = fs.iter().filter(|x| x.kind == "permission_conflict").collect();
+        assert!(conflicts.iter().any(|x| x.message.contains("`Bash(npm publish)`") && x.message.contains("denied") && x.message.contains("user settings")), "{conflicts:?}");
+        assert!(conflicts.iter().any(|x| x.message.contains("`Bash(git push)`") && x.message.contains("asked about")), "{conflicts:?}");
+        assert!(fs.iter().filter(|x| x.kind == "setting_overridden" || x.kind == "permission_conflict").all(|x| x.message.contains("FORGE missions ignore")));
+        // A single settings file has nothing to compare.
+        let single = project(&[(".claude/settings.json", r#"{"model":"opus","permissions":{"allow":["Read"],"deny":["Read"]}}"#)]);
+        assert!(!run(&scan(single.path(), None), single.path()).iter().any(|x| x.kind == "setting_overridden"));
     }
 
     #[test]

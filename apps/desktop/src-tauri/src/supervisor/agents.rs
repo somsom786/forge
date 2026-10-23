@@ -89,7 +89,7 @@ mod tests {
 
     fn row(provider: &str, state: &str, usage: Option<serde_json::Value>) -> SessionRow {
         SessionRow {
-            session: AgentSession { id: "s".into(), mission_id: "m".into(), provider: provider.into(), provider_session_id: None, state: state.into(), pid: None, started_at: "t".into(), ended_at: None, end_reason: None, usage },
+            session: AgentSession { id: "s".into(), mission_id: "m".into(), provider: provider.into(), provider_session_id: None, state: state.into(), pid: None, started_at: "t".into(), ended_at: None, end_reason: None, usage, executes_on: "agent_host".into() },
             mission_title: "t".into(),
             project_id: "p".into(),
         }

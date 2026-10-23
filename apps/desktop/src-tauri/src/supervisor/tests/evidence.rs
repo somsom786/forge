@@ -47,6 +47,7 @@ fn findings_from_a_secret_scan_fail_the_check_and_reach_the_proof_pack() {
     assert_eq!((ev.outcome, ev.blocking_findings), (Outcome::Findings, 2));
     run(&f, &m.id, "deps");
     let pack = f.core.generate_proof_pack(&m.id).unwrap();
+    assert!(pack.markdown.contains("Agent ran: on the host, as the user (not isolated)"), "a host session is labelled as such");
     assert!(pack.markdown.contains("gitleaks") && pack.markdown.contains("src/config.ts:3"), "{}", pack.markdown);
     assert!(pack.markdown.contains("GHSA-35jh-r3h4-6jhm"));
     assert!(!pack.markdown.contains("REDACTED") , "no secret material, even redacted, in the pack");

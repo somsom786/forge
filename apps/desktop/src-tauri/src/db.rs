@@ -422,6 +422,10 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE project ADD COLUMN agent_backend TEXT NOT NULL DEFAULT 'trusted_local';
     "#,
+    // v15 - where each agent session ran. Sessions recorded before this could only run on the host.
+    r#"
+    ALTER TABLE agent_session ADD COLUMN executes_on TEXT NOT NULL DEFAULT 'agent_host';
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

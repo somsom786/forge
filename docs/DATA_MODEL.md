@@ -113,6 +113,13 @@ record is reconciled with the repository: the merge commit landed (complete it),
 FORGE's own commit, after checking the index holds exactly the predicted tree), or nothing happened (forget it). The recorded
 `branch_oid` also tells cleanup which commits a squash contained.
 
+## Implemented (migrations 14–15 — where agents run)
+
+* `project.agent_backend` (default `trusted_local`): where the project's agent sessions run, chosen by the user and
+  audited (`project.agent_backend`); an unavailable backend refuses to start a mission instead of falling back.
+* `agent_session.executes_on` (default `agent_host`, which is where every session before this migration ran): recorded
+  when the session starts, carried into approval bindings and Proof Packs ("Agent ran: …").
+
 ## Designed, not yet implemented
 
 | Entity | Purpose | Phase |

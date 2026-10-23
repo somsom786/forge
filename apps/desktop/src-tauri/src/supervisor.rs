@@ -555,6 +555,7 @@ impl Core {
         let project = self.store.get_project(&m.project_id).map_err(|e| fail_session(e.to_string()))?;
         let backend = crate::execution::Backend::parse(&project.agent_backend).map_err(|e| fail_session(e.to_string()))?;
         let executes_on = if backend == crate::execution::Backend::TrustedLocal { AGENT_EXECUTES_ON.to_string() } else { backend.as_str().to_string() };
+        self.store.set_session_executes_on(&session.id, &executes_on).map_err(|e| fail_session(e.to_string()))?;
         let script_arg = [script.clone().into_os_string()];
         let spec = crate::execution::AgentSpec {
             program: &node,

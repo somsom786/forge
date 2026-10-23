@@ -237,7 +237,7 @@ pub fn build_pack(i: PackInput) -> (Value, String) {
         "contract": i.report.contract,
         "sessions": i.sessions.iter().map(|s| json!({
             "id": s.id, "providerSessionId": s.provider_session_id, "state": s.state, "startedAt": s.started_at,
-            "endedAt": s.ended_at, "endReason": s.end_reason, "usage": s.usage,
+            "endedAt": s.ended_at, "endReason": s.end_reason, "usage": s.usage, "ranOn": s.executes_on,
             "usageNote": "token and cost figures are provider-reported estimates, not billing",
         })).collect::<Vec<_>>(),
         "changes": {
@@ -288,6 +288,14 @@ fn status_label(s: &Value) -> String {
     }
 }
 
+/// Where an agent session ran, in words.
+fn agent_place(executes_on: &str) -> String {
+    match executes_on {
+        "agent_host" => "on the host, as the user (not isolated)".to_string(),
+        other => crate::execution::Backend::parse(other).map(|b| b.label().to_string()).unwrap_or_else(|_| other.to_string()),
+    }
+}
+
 fn cell(s: &str) -> String {
     s.replace('|', "\\|").replace('\n', " ")
 }
@@ -306,6 +314,14 @@ pub fn render_markdown(c: &Value) -> String {
         m["model"].as_str().unwrap_or(""),
         c["generatedAt"].as_str().unwrap_or("")
     ));
+    let ran: Vec<String> = {
+        let mut v: Vec<String> = c["sessions"].as_array().into_iter().flatten().filter_map(|s| s["ranOn"].as_str()).map(agent_place).collect();
+        v.dedup();
+        v
+    };
+    if !ran.is_empty() {
+        o.push_str(&format!("Agent ran: {}\n\n", ran.join("; ")));
+    }
     o.push_str("> This records evidence, not a guarantee. A passing check is evidence for the criterion it is linked to; it does not prove correctness. Token and cost figures are provider estimates.\n\n");
     o.push_str(&format!("## Objective\n\n{}\n\n", m["objective"].as_str().unwrap_or("")));
 

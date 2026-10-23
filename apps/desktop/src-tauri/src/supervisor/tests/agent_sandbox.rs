@@ -69,6 +69,9 @@ fn a_contained_agent_still_works_in_its_worktree_and_approvals_record_where_it_r
     let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
     assert!(wt.join("FORGE_TEST.md").exists(), "an approved write inside the worktree works when contained");
     assert!(f.core.store.events(&m.id, 0, 1000).unwrap().iter().any(|e| e.payload["agentBackend"] == "linux_namespaces"), "the timeline says where the agent ran");
+    assert!(f.core.store.sessions_for_mission(&m.id).unwrap().iter().all(|s| s.executes_on == "linux_namespaces"), "the session records it");
+    let pack = f.core.generate_proof_pack(&m.id).unwrap();
+    assert!(pack.markdown.contains("Agent ran: Isolated: Linux namespaces"), "and so does the Proof Pack");
 }
 
 #[test]

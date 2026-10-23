@@ -73,6 +73,8 @@ pub struct AgentSession {
     pub ended_at: Option<String>,
     pub end_reason: Option<String>,
     pub usage: Option<serde_json::Value>,
+    /// Where the agent process ran: `agent_host` (the user's account, not isolated) or an isolating backend's id.
+    pub executes_on: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -395,6 +397,11 @@ impl Store {
         self.get_session(&id)
     }
 
+    pub fn set_session_executes_on(&self, id: &str, executes_on: &str) -> Result<()> {
+        self.c().execute("UPDATE agent_session SET executes_on=?2 WHERE id=?1", params![id, executes_on])?;
+        Ok(())
+    }
+
     pub fn get_session(&self, id: &str) -> Result<AgentSession> {
         self.c()
             .query_row(SESSION_SQL_ONE, [id], session_from)
@@ -595,8 +602,8 @@ fn project_from(r: &Row) -> rusqlite::Result<Project> {
     Ok(Project { id: r.get(0)?, name: r.get(1)?, root_path: r.get(2)?, default_branch: r.get(3)?, created_at: r.get(4)?, execution_backend: r.get(5)?, agent_backend: r.get(6)? })
 }
 
-const SESSION_SELECT: &str = "SELECT id, mission_id, provider, provider_session_id, state, pid, started_at, ended_at, end_reason, usage_json FROM agent_session";
-const SESSION_SQL_ONE: &str = "SELECT id, mission_id, provider, provider_session_id, state, pid, started_at, ended_at, end_reason, usage_json FROM agent_session WHERE id=?1";
+const SESSION_SELECT: &str = "SELECT id, mission_id, provider, provider_session_id, state, pid, started_at, ended_at, end_reason, usage_json, executes_on FROM agent_session";
+const SESSION_SQL_ONE: &str = "SELECT id, mission_id, provider, provider_session_id, state, pid, started_at, ended_at, end_reason, usage_json, executes_on FROM agent_session WHERE id=?1";
 
 fn session_from(r: &Row) -> rusqlite::Result<AgentSession> {
     let usage: Option<String> = r.get(9)?;
@@ -611,6 +618,7 @@ fn session_from(r: &Row) -> rusqlite::Result<AgentSession> {
         ended_at: r.get(7)?,
         end_reason: r.get(8)?,
         usage: usage.and_then(|u| serde_json::from_str(&u).ok()),
+        executes_on: r.get(10)?,
     })
 }
 

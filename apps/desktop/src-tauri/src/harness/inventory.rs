@@ -318,12 +318,9 @@ fn scan_project(root: &Path, inv: &mut Inventory) {
             let id = format!("settings:{scope}:{rel}");
             let (hooks, hw) = parse_hooks(&v, &id, scope);
             warnings.extend(hw);
-            let allow = v.pointer("/permissions/allow").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
-            let deny = v.pointer("/permissions/deny").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0);
-            let mode = v.pointer("/permissions/defaultMode").and_then(Value::as_str).map(str::to_string);
             inv.hooks.extend(hooks);
             inv.mcp_servers.extend(parse_mcp(&v, &id, scope));
-            push(item("settings", scope, &p, Some(rel.into()), rel.into(), Some("Claude Code settings: permissions, hooks, environment".into()), &text, size, false, warnings, serde_json::json!({"allow": allow, "denyCount": deny, "defaultMode": mode, "model": v.get("model"), "hasEnv": v.get("env").is_some()})), inv);
+            push(item("settings", scope, &p, Some(rel.into()), rel.into(), Some("Claude Code settings: permissions, hooks, environment".into()), &text, size, false, warnings, settings_details(&v)), inv);
         }
     }
 
@@ -370,12 +367,23 @@ fn scan_project(root: &Path, inv: &mut Inventory) {
     }
 }
 
+/// What the Doctor needs from a settings file: permission rules per list, the default mode, the model.
+fn settings_details(v: &Value) -> Value {
+    let list = |k: &str| v.pointer(&format!("/permissions/{k}")).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
+    let deny = list("deny");
+    serde_json::json!({
+        "allow": list("allow"), "ask": list("ask"), "deny": deny, "denyCount": deny.len(),
+        "defaultMode": v.pointer("/permissions/defaultMode").and_then(Value::as_str), "model": v.get("model"), "hasEnv": v.get("env").is_some(),
+    })
+}
+
 fn scan_user(home: &Path, inv: &mut Inventory) {
     let base = home.join(".claude");
     for (rel, kind, what) in [("CLAUDE.md", "instructions", "Your global Claude Code instructions"), ("settings.json", "settings", "Your global Claude Code settings")] {
         let p = base.join(rel);
         if let Some((text, size)) = read_capped_in(None, &p) {
             let mut warnings = vec![];
+            let mut details = serde_json::json!({});
             if kind == "settings" {
                 let v: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
                     warnings.push(format!("invalid JSON: {e}"));
@@ -386,8 +394,9 @@ fn scan_user(home: &Path, inv: &mut Inventory) {
                 warnings.extend(hw);
                 inv.hooks.extend(hooks);
                 inv.mcp_servers.extend(parse_mcp(&v, &id, "user"));
+                details = settings_details(&v);
             }
-            inv.items.push(item(kind, "user", &p, None, rel.into(), Some(format!("{what} — never loaded by FORGE missions, never edited by FORGE")), &text, size, false, warnings, serde_json::json!({})));
+            inv.items.push(item(kind, "user", &p, None, rel.into(), Some(format!("{what} — never loaded by FORGE missions, never edited by FORGE")), &text, size, false, warnings, details));
         }
     }
     for (sub, kind) in [("skills", "skill"), ("agents", "subagent")] {
