@@ -80,7 +80,16 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Real third-party ACP agent for the interop tests (pinned; test-only, not a FORGE dependency)
+        run: |
+          dir="$RUNNER_TEMP/acp-interop"; mkdir -p "$dir"
+          echo '{"name":"acp-interop","private":true}' > "$dir/package.json"
+          npm install --prefix "$dir" --no-audit --no-fund --save-exact @agentclientprotocol/claude-agent-acp@0.88.0
+          echo "FORGE_ACP_INTEROP_DIR=$dir" >> "$GITHUB_ENV"
+
       - name: Engine build, typecheck and tests
+        env:
+          FORGE_REQUIRE_ACP_INTEROP: '1'
         run: |
           npm run build -w @forge/engine
           npm run typecheck -w @forge/engine
