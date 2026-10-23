@@ -9,6 +9,7 @@ import { NewMissionDialog } from './components/NewMissionDialog';
 import { Shell } from './components/Shell';
 import { Toasts } from './components/ui';
 import { CommandCenter } from './screens/CommandCenter';
+import { KnowledgeScreen } from './screens/Knowledge';
 import { MissionWorkspace } from './screens/MissionWorkspace';
 import { MissionsScreen } from './screens/Missions';
 import { ProjectsScreen } from './screens/Projects';
@@ -25,6 +26,8 @@ function Screen() {
       return <MissionsScreen />;
     case 'mission':
       return <MissionWorkspace key={route.id} id={route.id} />;
+    case 'knowledge':
+      return <KnowledgeScreen key={`${route.filter ?? ''}${route.pageId ?? ''}`} filter={route.filter} pageId={route.pageId} />;
     case 'settings':
       return <SettingsScreen />;
   }

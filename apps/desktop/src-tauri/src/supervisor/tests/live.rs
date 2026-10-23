@@ -72,3 +72,66 @@ fn live_local_model_mission_end_to_end() {
     assert!(created.is_ok(), "the local model did not create hello.txt (a model-quality outcome, but worth knowing)");
     wait_until("finalised", || core.live_session_count() == 0);
 }
+
+/// LIVE gate for Phase 3 with a real agent: a fact that exists ONLY in a human-verified note must reach the model and
+/// be used; the identical mission with memory off must not know it.
+///   cargo test --lib live_local_memory -- --ignored --nocapture
+#[test]
+#[ignore = "live: needs Ollama + Claude Code CLI; uses the local GPU, no provider quota"]
+fn live_local_memory_gate_with_a_real_agent() {
+    use crate::knowledge::page::Author;
+    use crate::supervisor::NewKnowledgeArgs;
+    let claude = which::which("claude").expect("claude CLI on PATH");
+    let url = std::env::var("FORGE_OLLAMA_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into());
+    let model = std::env::var("FORGE_LOCAL_MODEL").unwrap_or_else(|_| "forge-qwen3.5-9b-32k".into());
+    assert!(providers::list_ollama_models(&url).expect("Ollama is not answering").iter().any(|m| m.starts_with(&model)));
+
+    let repo = git::testutil::init_repo();
+    let home = tempfile::tempdir().unwrap();
+    let core = Core::new(
+        Store::in_memory(),
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: Some(claude), allow_fake: false, max_concurrent: 1, ollama_url: url },
+        Arc::new(|_| {}),
+    );
+    let project = core.add_project(repo.path()).unwrap();
+    let _ = Author::User;
+
+    let page = core
+        .knowledge_create(&project.id, NewKnowledgeArgs {
+            title: "Staging environment location".into(), kind: "convention".into(), files: vec![], tags: vec![], topic: None, sources: vec![],
+            body: "Our staging environment runs in the cloud region eu-west-9 and the staging cluster is named quokka-7. Production is elsewhere.".into(),
+        })
+        .unwrap();
+    core.knowledge_verify(&page.id, &page.current_sha256, Some("confirmed with the platform team")).unwrap();
+
+    let objective = "Question: according to this project's recorded knowledge, which cloud region and cluster name does the staging environment use? Answer in one short sentence. Do not use any tools.";
+    let ask = |use_memory: bool| -> String {
+        let m = core.create_mission(&project.id, objective, Some(if use_memory { "with memory" } else { "without memory" }), "claude-local", Some(&model), PermissionProfile::Default).unwrap();
+        core.set_mission_memory(&m.id, use_memory, &[]).unwrap();
+        core.start_mission(&m.id, None).unwrap();
+        let t0 = Instant::now();
+        loop {
+            let st = core.store.get_mission(&m.id).unwrap();
+            if matches!(st.state.as_str(), "awaiting_review" | "failed" | "interrupted") {
+                assert_eq!(st.state, "awaiting_review", "error: {:?}", st.last_error);
+                break;
+            }
+            for a in core.store.pending_approvals(Some(&m.id)).unwrap() {
+                core.decide_approval(&a.id, false, Some("this question needs no tools")).unwrap();
+            }
+            assert!(t0.elapsed() < Duration::from_secs(600), "timed out");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        wait_until("finalised", || core.live_session_count() == 0);
+        core.store.events(&m.id, 0, 500).unwrap().into_iter().filter(|e| e.kind == "agent.text").map(|e| e.payload["text"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join("\n")
+    };
+
+    let with = ask(true);
+    println!("WITH MEMORY    -> {with}");
+    let without = ask(false);
+    println!("WITHOUT MEMORY -> {without}");
+    let low = with.to_lowercase();
+    assert!(low.contains("eu-west-9") || low.contains("quokka"), "the real agent did not use the verified note: {with}");
+    let lw = without.to_lowercase();
+    assert!(!lw.contains("eu-west-9") && !lw.contains("quokka-7"), "the control must not know the fact: {without}");
+}

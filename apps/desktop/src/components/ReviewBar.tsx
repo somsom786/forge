@@ -1,5 +1,4 @@
-import { useState, type ReactNode } from 'react';
-import * as Dialog from '@radix-ui/react-dialog';
+import { useState } from 'react';
 import { Check, GitMerge, MessageSquareWarning, Trash2, X } from 'lucide-react';
 import { api } from '../lib/api';
 import { mergeMission, submitReview } from '../lib/actions';
@@ -9,21 +8,7 @@ import { useStore } from '../lib/store';
 import type { MergeOutcome, Mission, VerificationReport } from '../lib/types';
 import { approvalGate, OVERRIDE_MIN } from '../lib/verification';
 import { Callout } from './ui';
-
-function Modal({ open, onClose, title, children, footer, tone }: { open: boolean; onClose: () => void; title: string; children: ReactNode; footer: ReactNode; tone?: 'bad' }) {
-  return (
-    <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[60] bg-black/65" />
-        <Dialog.Content aria-describedby={undefined} className={`fixed left-1/2 top-1/2 z-[60] w-[560px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-panel shadow-2xl shadow-black/60 ${tone === 'bad' ? 'border-bad/40' : 'border-line-strong'}`}>
-          <div className="border-b border-line px-4 py-3"><Dialog.Title className="m-0 text-[14px] font-semibold">{title}</Dialog.Title></div>
-          <div className="max-h-[60vh] space-y-3 overflow-y-auto p-4">{children}</div>
-          <div className="flex justify-end gap-2 border-t border-line px-4 py-3">{footer}</div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
-}
+import { Modal } from './Modal';
 
 type Which = null | 'approve' | 'changes' | 'reject' | 'cleanup';
 

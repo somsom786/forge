@@ -1,5 +1,5 @@
 import { Command } from 'cmdk';
-import { FolderGit2, FolderPlus, LayoutDashboard, ListChecks, Plus, Settings, Target } from 'lucide-react';
+import { BookOpen, FolderGit2, FolderPlus, LayoutDashboard, ListChecks, Plus, Settings, Target } from 'lucide-react';
 import { addProjectViaDialog } from '../lib/actions';
 import { missionLabel } from '../lib/format';
 import { useStore } from '../lib/store';
@@ -38,6 +38,9 @@ export function CommandPalette() {
           <Command.Item className={item} value="new mission" disabled={projects.length === 0} onSelect={run(() => openNew(currentProjectId ?? undefined))}>
             <Plus className="size-4" aria-hidden /> New mission
           </Command.Item>
+          <Command.Item className={item} value="new knowledge page" disabled={projects.length === 0} onSelect={run(() => navigate({ name: 'knowledge', newPage: true } as never))}>
+            <BookOpen className="size-4" aria-hidden /> New knowledge page
+          </Command.Item>
           <Command.Item className={item} value="add project" onSelect={run(() => void addProjectViaDialog())}>
             <FolderPlus className="size-4" aria-hidden /> Add project…
           </Command.Item>
@@ -51,6 +54,9 @@ export function CommandPalette() {
           </Command.Item>
           <Command.Item className={item} value="go missions" onSelect={run(() => navigate({ name: 'missions' }))}>
             <ListChecks className="size-4" aria-hidden /> Missions
+          </Command.Item>
+          <Command.Item className={item} value="go knowledge memory" onSelect={run(() => navigate({ name: 'knowledge' }))}>
+            <BookOpen className="size-4" aria-hidden /> Go to Knowledge
           </Command.Item>
           <Command.Item className={item} value="go settings" onSelect={run(() => navigate({ name: 'settings' }))}>
             <Settings className="size-4" aria-hidden /> Settings

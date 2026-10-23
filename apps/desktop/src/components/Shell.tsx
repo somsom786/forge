@@ -19,7 +19,7 @@ const NAV: NavItem[] = [
   { key: 'projects', label: 'Projects', icon: FolderGit2, route: { name: 'projects' }, match: (r) => r.name === 'projects' },
   { key: 'missions', label: 'Missions', icon: ListChecks, route: { name: 'missions' }, match: (r) => r.name === 'missions' || r.name === 'mission' },
   { key: 'agents', label: 'Agents', icon: Bot, tag: 'Planned', match: () => false },
-  { key: 'knowledge', label: 'Knowledge', icon: BookOpen, tag: 'Phase 3', match: () => false },
+  { key: 'knowledge', label: 'Knowledge', icon: BookOpen, route: { name: 'knowledge' }, match: (r) => r.name === 'knowledge' },
   { key: 'harness', label: 'Harness Studio', icon: Wrench, tag: 'Phase 4', match: () => false },
   { key: 'experiments', label: 'Experiments', icon: FlaskConical, tag: 'Phase 6', match: () => false },
   { key: 'settings', label: 'Settings', icon: Settings, route: { name: 'settings' }, match: (r) => r.name === 'settings' },
