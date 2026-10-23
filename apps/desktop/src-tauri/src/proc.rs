@@ -192,6 +192,8 @@ mod unix_tests {
         assert!(contain(&child).is_err());
         let _ = child.kill();
         let _ = child.wait();
+    }
+}
 
 #[cfg(all(test, windows))]
 mod tests {
