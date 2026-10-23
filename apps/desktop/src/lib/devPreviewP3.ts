@@ -4,6 +4,7 @@
 import type {
   ContextItem, ContextPackage, ContextPackageRow, KnowledgePage, KnowledgePageDetail, KnowledgeSource, KnowledgeStatus, LintIssue, Mission,
 } from './types';
+import { previewRelevantCode } from './devPreviewP7';
 
 export interface P3Ctx {
   iso: (minsAgo: number) => string;
@@ -83,7 +84,7 @@ const pkg = (): ContextPackage => ({
     { pageId: 'k2', title: all()[1].title, reason: 'edited since it was verified' },
     { pageId: 'k4', title: all()[3].title, reason: 'over budget' },
   ],
-  query: 'retry', charBudget: 6000, sha256: SHA('pkg'), pathHints: ['src/'],
+  query: 'retry', charBudget: 6000, sha256: SHA('pkg'), pathHints: ['src/'], code: previewRelevantCode(),
   text: '## Verified project knowledge\n\n### HTTP client retries only idempotent requests (decision, verified)\nThe HTTP client retries only idempotent methods (GET, HEAD, PUT, DELETE, OPTIONS).\nMax 5 attempts, exponential backoff with jitter.\n',
 });
 
@@ -134,7 +135,7 @@ export function handleP3(cmd: string, args: any, ctx: P3Ctx): Promise<any> | und
     case 'context_for_mission': {
       if (args.missionId !== 'm2') return done([]);
       const p = pkg();
-      const row: ContextPackageRow = { id: 'cp1', missionId: 'm2', createdAt: ctx.iso(90), query: p.query, params: { budgetChars: p.charBudget, pathHints: p.pathHints }, items: p.items, omitted: p.omitted, injectedText: p.text, injectedSha256: p.sha256, charBudget: p.charBudget };
+      const row: ContextPackageRow = { id: 'cp1', missionId: 'm2', createdAt: ctx.iso(90), query: p.query, params: { budgetChars: p.charBudget, pathHints: p.pathHints, relevantCode: p.code }, items: p.items, omitted: p.omitted, injectedText: p.text, injectedSha256: p.sha256, charBudget: p.charBudget };
       return done([row]);
     }
     case 'mission_memory_set': { const m = ctx.find(args.missionId)!; m.useMemory = args.useMemory; m.memoryPins = args.pins; m.updatedAt = new Date().toISOString(); return done({ ...m }); }

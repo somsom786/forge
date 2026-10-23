@@ -13,7 +13,7 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Split an identifier-ish token into words: `resetToken` -> reset, token; `snake_case` -> snake, case; `HTTPServer2` -> http, server, 2.
-fn split_identifier(tok: &str) -> Vec<String> {
+pub(crate) fn split_identifier(tok: &str) -> Vec<String> {
     let chars: Vec<char> = tok.chars().collect();
     let mut words = vec![];
     let mut cur = String::new();

@@ -740,3 +740,19 @@ pub async fn acp_agent_remove(core: CoreState<'_>, id: String) -> Result<AcpAgen
 pub fn verification_adapters() -> serde_json::Value {
     crate::evidence::adapters_json()
 }
+
+// ---- Code intelligence -----------------------------------------------------------------------------------------------
+
+use crate::codeintel::{CodeMap, SymbolHit};
+
+/// Per-directory summary of the project's symbol index (built on demand, cached in memory per HEAD + working tree).
+#[tauri::command]
+pub async fn code_map(core: CoreState<'_>, project_id: String) -> Result<CodeMap> {
+    blocking(&core, move |c| c.code_map(&project_id)).await
+}
+
+/// Symbols by name, or every symbol of `file` when `query` is empty.
+#[tauri::command]
+pub async fn code_symbols(core: CoreState<'_>, project_id: String, query: String, file: Option<String>, limit: usize) -> Result<Vec<SymbolHit>> {
+    blocking(&core, move |c| c.code_symbols(&project_id, &query, file.as_deref(), limit)).await
+}

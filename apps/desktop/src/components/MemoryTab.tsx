@@ -41,7 +41,7 @@ export function MemoryTab({ mission }: { mission: Mission }) {
 
 function newest(rows: ContextPackageRow[]): ContextShape {
   const r = [...rows].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  return { items: r.items, omitted: r.omitted, charBudget: r.charBudget, text: r.injectedText, sha256: r.injectedSha256 };
+  return { items: r.items, omitted: r.omitted, charBudget: r.charBudget, text: r.injectedText, sha256: r.injectedSha256, code: r.params.relevantCode };
 }
 
 function Settings({ mission, readOnly }: { mission: Mission; readOnly: boolean }) {
@@ -115,5 +115,5 @@ function Preview({ mission }: { mission: Mission }) {
 
   if (!mission.useMemory && mission.memoryPins.length === 0) return <div className="text-muted">Memory is off for this mission.</div>;
   if (!pkg) return <div className="text-muted">Building preview…</div>;
-  return <ContextView heading="Preview: what the agent would be told if started now" ctx={{ items: pkg.items, omitted: pkg.omitted, charBudget: pkg.charBudget, text: pkg.text, sha256: pkg.sha256 }} />;
+  return <ContextView heading="Preview: what the agent would be told if started now" ctx={{ items: pkg.items, omitted: pkg.omitted, charBudget: pkg.charBudget, text: pkg.text, sha256: pkg.sha256, code: pkg.code }} />;
 }

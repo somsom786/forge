@@ -9,11 +9,15 @@
 //!   textual delimiter can stop *semantic* prompt injection, which is why only reviewed text is eligible and why
 //!   FORGE's approval policy (not the model's compliance) remains the control over what an agent can do.
 //! * The exact bytes injected are persisted (`context_package`) so a user can inspect what an agent was told.
+//! * A separate, labelled "Relevant code" block (from `codeintel`) follows the knowledge block: pointers to symbols whose
+//!   names share words with the objective, with the reason for each, within its own byte budget. It is recorded in the
+//!   package's params (`relevantCode`) next to the knowledge items, so it is as inspectable as they are.
 
 use super::page;
 use super::query;
 use super::service::{self, Ctx};
 use super::store::{KPage, KSource};
+use crate::codeintel::{self, RelevantCode};
 use crate::error::Result;
 use crate::proof::sha256_hex;
 use crate::redact;
@@ -77,6 +81,8 @@ pub struct ContextPackage {
     pub text: String,
     pub sha256: String,
     pub path_hints: Vec<String>,
+    /// The "Relevant code" section (its rendered block is part of `text`, after the knowledge block).
+    pub code: RelevantCode,
 }
 
 /// Strip everything that could break out of the package or carry active markup, redact secrets, bound the size.
@@ -293,9 +299,10 @@ pub fn build(ctx: Ctx, project_id: &str, repo_root: &Path, objective: &str, hint
         items.push(e.item);
     }
 
-    let text = render_package(&items);
+    let code = codeintel::relevant_for(repo_root, objective, &path_hints, codeintel::CODE_BUDGET_BYTES);
+    let text = [render_package(&items), codeintel::render(&code)].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n");
     let sha = sha256_hex(text.as_bytes());
-    Ok(ContextPackage { items, omitted, query: query_text, char_budget: budget_chars, text, sha256: sha, path_hints })
+    Ok(ContextPackage { items, omitted, query: query_text, char_budget: budget_chars, text, sha256: sha, path_hints, code })
 }
 
 fn render_item(n: usize, i: &ContextItem) -> String {
@@ -348,5 +355,5 @@ pub fn compose_prompt(objective: &str, package_text: &str) -> String {
 
 /// JSON helpers for persisting a package.
 pub fn package_json(p: &ContextPackage) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
-    (json!({"budgetChars": p.char_budget, "pathHints": p.path_hints}), json!(p.items), json!(p.omitted))
+    (json!({"budgetChars": p.char_budget, "pathHints": p.path_hints, "relevantCode": p.code}), json!(p.items), json!(p.omitted))
 }

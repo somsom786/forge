@@ -6,6 +6,7 @@ import { handleP2 } from './devPreviewP2';
 import { handleP3 } from './devPreviewP3';
 import { handleP4 } from './devPreviewP4';
 import { handleP6 } from './devPreviewP6';
+import { handleP7 } from './devPreviewP7';
 import type {
   AcpAgent, ActivityEvent, AgentSession, Approval, CapabilityMatrix, Mission, MissionDetail, Project, ProviderInfo, RepoStatus,
 } from './types';
@@ -269,6 +270,8 @@ async function invoke(cmd: string, args: any = {}): Promise<any> {
   if (p4) return p4;
   const p6 = handleP6(cmd, args);
   if (p6) return p6;
+  const p7 = handleP7(cmd, args);
+  if (p7) return p7;
   switch (cmd) {
     case 'plugin:event|listen':
       subs.push({ event: args.event, handler: args.handler });

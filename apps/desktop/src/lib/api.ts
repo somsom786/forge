@@ -13,6 +13,7 @@ import type {
   ConflictReport,
   ExecutionBackendId, ExecutionBackendInfo,
   AgentsOverview,
+  CodeMap, SymbolHit,
 } from './types';
 
 export const api = {
@@ -130,6 +131,11 @@ export const api = {
   executionBackends: () => invoke<ExecutionBackendInfo[]>('execution_backends'),
   /** Refused for a backend that cannot run on this machine; never downgraded. */
   projectSetExecutionBackend: (projectId: string, backend: ExecutionBackendId) => invoke<Project>('project_set_execution_backend', { projectId, backend }),
+
+  /** Built on demand from the main checkout (tree-sitter, parse only); cached per HEAD + working-tree state. */
+  codeMap: (projectId: string) => invoke<CodeMap>('code_map', { projectId }),
+  /** Symbols by name; with `file` and an empty query, every symbol of that file in line order. */
+  codeSymbols: (projectId: string, query: string, file: string | null, limit: number) => invoke<SymbolHit[]>('code_symbols', { projectId, query, file, limit }),
 
   approvalsPending: (missionId?: string) => invoke<Approval[]>('approvals_pending', { missionId: missionId ?? null }),
   /** `binding` is the card's `bindingSha256`: the core refuses the decision if the request is not that one. */

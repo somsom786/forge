@@ -121,6 +121,32 @@ how far the base branch moved, which moved files the mission also changed, and w
 Trees are wrapped in unreferenced `commit-tree` objects (older git cannot merge bare trees); no ref, index or file is changed. A git
 error is reported as `unknown`, never as a conflict.
 
+## Code intelligence
+
+`codeintel/` (index, Code Map, search, relevance) + `supervisor/code.rs`, commands `code_map(projectId)` and
+`code_symbols(projectId, query, file, limit)`. Files come from `git ls-files --cached --others --exclude-standard` in the main
+checkout (FORGE's hardened git options), so `.gitignore` is respected; `.git`, `node_modules` and `target` are excluded even if
+committed, symlinks are never followed, files over 512 KiB or containing NUL bytes are skipped and counted, at most 20 000 files are
+listed, each parse has a 2 s deadline and a build 90 s (a truncated index says so). Rust, TypeScript/TSX, JavaScript and Python are
+parsed with tree-sitter grammars compiled into the binary; only declarations are walked (module level, class/impl/trait bodies,
+namespaces), giving name, kind, file, line span, one-line signature and container. Nothing from the repository is executed and
+nothing touches the network.
+
+No database table: the index is kept in memory per repository root, keyed by a fingerprint of HEAD, the porcelain status and the
+size/mtime of every changed file, so a commit, checkout or edit triggers a rebuild on the next request and a stale index is not served.
+
+Context integration: `knowledge::retrieve::build` appends a separate `<<<FORGE_RELEVANT_CODE ... FORGE_RELEVANT_CODE>>>` block after
+the knowledge block (task first, knowledge second, code third; never the system prompt). It lists symbols whose name words (light
+stemming) match the objective's terms, or that sit under a path the mission names, best first, at most 5 per file and 25 in total,
+within 2 000 bytes; every line is sanitised like knowledge text. Each pointer's reasons, the terms, the index commit/dirty flag and
+how many matches were left out are stored in the package's `params_json.relevantCode`, and the injected-text hash covers the block;
+the Memory tab and the new-mission preview show them. The block is governed by the mission's existing memory switch.
+
+Measured on a synthetic fixture (36 files, written by the test, not a real project), file selection at k=3 for 9 hand-labelled
+objectives: keyword grep P 0.33 / R 0.83 (F1 0.48), symbol index P 0.44 / R 0.89 (F1 0.59). The index loses the configuration case
+(`config/app.toml` has no symbols). Test: `codeintel::tests::measured_symbol_index_selects_files_at_least_as_well_as_keyword_grep`
+(run with `--nocapture` for the per-objective table). Not measured on real repositories.
+
 ## Planned domains (not yet built)
 
 Independent review missions and conflict detection between missions (Phase 5), an Experiments screen (Phase 6): each a separate
