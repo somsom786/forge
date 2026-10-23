@@ -161,6 +161,15 @@ fails without it (mutation-checked where noted).
 | Approving without the card's binding skipped the binding check | P2 | Approving a bound request requires the binding; denying does not | `approvals::approving_without_the_cards_binding_is_refused` |
 | A `Read` naming no file was allowed silently | P2 | Asked | `policy::write_without_path_is_denied_and_unknown_tools_ask` |
 
+| Data integrity: a squash merge that reached git before a crash left the mission "approved" forever (every retry: "nothing to commit") | P1 | Merge intent recorded before git runs (migration 13) and reconciled with the repository on restart and on retry | `integrity::a_squash_merge_that_landed…`, `…interrupted_before_its_commit…` |
+| Data integrity: a crash between `git worktree add` and the database write bricked the mission | P1 | An orphaned worktree that is provably the mission's own and untouched is adopted; a failure after `add` undoes it | `integrity::a_worktree_created_before_a_crash_is_adopted_on_start` |
+| Data integrity: a second FORGE on the same data folder "recovered" the first one's live missions, approvals and checks | P1 | Exclusive OS lock on `forge.lock` at startup (released by the OS on exit or crash) | `instance_lock_tests` |
+| Discard/cleanup deleted whatever path the database named: a link to another mission's worktree deleted that worktree's work | P2 | Before deleting: not a link, inside FORGE's worktrees folder, and the registered worktree of this repo on this mission's branch | `integrity::discarding_through_a_link_to_another_worktree_is_refused` |
+| `git worktree remove` silently deleted ignored files (a local `.env`) | P2 | Ignored entries count as potential loss (confirmation required; merge cleanup keeps such worktrees) | `integrity::ignored_files_need_confirmation…` |
+| Recovery only saw the 500 most recently updated missions; a failed write stopped the rest of recovery | P2 | Queried by state; best effort per item, failures audited | `integrity::recovery_finds_active_missions_beyond_any_listing_limit` |
+| Changing the success criteria after approval kept the approval | P2 | Returns the mission to review | `integrity::changing_the_success_criteria_after_approval…` |
+| Discard of a finished mission deleted the worktree before failing | P2 | Refused before anything is deleted | `integrity::a_finished_mission_cannot_be_discarded…` |
+
 Policy revision bumped to `policy-2026-10-23.2` (approvals requested under the old revision are never reused).
 
 ## Execution backends (Stage B; docs/EXECUTION.md)

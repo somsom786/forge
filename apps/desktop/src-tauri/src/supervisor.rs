@@ -445,10 +445,46 @@ impl Core {
         let branch = format!("forge/{slug}-{short}");
         let proj_short = &project.id[project.id.len().saturating_sub(8)..];
         let wt = self.cfg.home.join("worktrees").join(proj_short).join(format!("{slug}-{short}"));
+        // A crash after `git worktree add` but before the database write leaves this exact worktree behind (the path and branch
+        // are derived from the mission). Adopt it only if it is provably ours and untouched; otherwise refuse as before.
+        if wt.exists() {
+            let adopted = (|| -> Result<(PathBuf, String)> {
+                let real = crate::paths::canonical_dir(&wt)?;
+                git::verify_worktree(&root, &real, Some(&branch))?;
+                let head = git::head_commit(&real)?;
+                if git::status(&real)?.dirty {
+                    return Err(ForgeError::Git("it has uncommitted changes".into()));
+                }
+                if git::run(&real, &["rev-list", "--count", &format!("{head}..refs/heads/{branch}")]).map(|n| n.trim() != "0").unwrap_or(true) {
+                    return Err(ForgeError::Git("its branch moved".into()));
+                }
+                Ok((real, head))
+            })();
+            return match adopted {
+                Ok((real, head)) => {
+                    self.store.set_mission_workspace(&m.id, &base_ref, &head, &branch, &real.to_string_lossy())?;
+                    self.store.audit("system", "worktree.adopt", Some(&m.id), &json!({"branch": branch, "path": real.to_string_lossy(), "base": head}));
+                    Ok(real)
+                }
+                Err(e) => Err(ForgeError::Git(format!("{} already exists and cannot be adopted for this mission ({e}); remove it or discard the mission", wt.display()))),
+            };
+        }
         git::worktree_add(&root, &wt, &branch, &base_commit)?;
-        let wt = crate::paths::canonical_dir(&wt)?;
-        git::verify_worktree(&root, &wt, Some(&branch))?;
-        self.store.set_mission_workspace(&m.id, &base_ref, &base_commit, &branch, &wt.to_string_lossy())?;
+        let recorded = (|| -> Result<PathBuf> {
+            let real = crate::paths::canonical_dir(&wt)?;
+            git::verify_worktree(&root, &real, Some(&branch))?;
+            self.store.set_mission_workspace(&m.id, &base_ref, &base_commit, &branch, &real.to_string_lossy())?;
+            Ok(real)
+        })();
+        let wt = match recorded {
+            Ok(real) => real,
+            Err(e) => {
+                // Nothing has run in it yet: undo what we just created rather than leave an orphan that blocks every retry.
+                let _ = git::worktree_remove(&root, &wt, true);
+                let _ = git::delete_branch(&root, &branch, true);
+                return Err(e);
+            }
+        };
         self.store.audit("system", "worktree.create", Some(&m.id), &json!({"branch": branch, "path": wt.to_string_lossy(), "base": base_commit}));
         Ok(wt)
     }
@@ -1013,14 +1049,40 @@ impl Core {
     /// supposed to be running is honestly marked interrupted.
     pub fn recover(&self) -> Result<RecoveryReport> {
         let mut report = RecoveryReport::default();
+        // Best effort per item: one failed write must not skip the rest of recovery.
+        let mut failures: Vec<String> = vec![];
         for s in self.store.live_sessions()? {
-            self.store.end_session(&s.id, "lost", "FORGE restarted; the session could not be re-attached")?;
-            report.expired_approvals += self.store.expire_pending_for_session(&s.id, "FORGE restarted before this was answered")?;
-            report.lost_sessions += 1;
+            match self.store.end_session(&s.id, "lost", "FORGE restarted; the session could not be re-attached") {
+                Ok(_) => report.lost_sessions += 1,
+                Err(e) => failures.push(format!("session {}: {e}", s.id)),
+            }
+            match self.store.expire_pending_for_session(&s.id, "FORGE restarted before this was answered") {
+                Ok(n) => report.expired_approvals += n,
+                Err(e) => failures.push(format!("approvals of session {}: {e}", s.id)),
+            }
         }
         for m in self.store.missions_in_states(&[MissionState::Preparing, MissionState::Running, MissionState::AwaitingApproval])? {
-            self.store.transition(&m.id, MissionState::Interrupted, "FORGE restarted while this mission was active")?;
-            report.interrupted_missions.push(m.id);
+            match self.store.transition(&m.id, MissionState::Interrupted, "FORGE restarted while this mission was active") {
+                Ok(_) => report.interrupted_missions.push(m.id),
+                Err(e) => failures.push(format!("mission {}: {e}", m.id)),
+            }
+        }
+        // Merges that reached git but not the database are finished from what the repository shows.
+        for rec in self.store.unfinished_merges().unwrap_or_default() {
+            let Ok(m) = self.store.get_mission(&rec.mission_id) else { continue };
+            let Ok(project) = self.store.get_project(&m.project_id) else { continue };
+            match self.reconcile_merge(&m.id, Path::new(&project.root_path)) {
+                Ok(Some(commit)) if m.state == MissionState::Approved.as_str() => {
+                    if let Err(e) = self.store.finish_merge(&m.id, &commit).and_then(|_| self.store.transition(&m.id, MissionState::Merged, "the merge reached git before FORGE stopped").map(|_| ())) {
+                        failures.push(format!("merge of mission {}: {e}", m.id));
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => failures.push(format!("merge of mission {}: {e}", m.id)),
+            }
+        }
+        if !failures.is_empty() {
+            self.store.audit("system", "recovery.failures", None, &json!({"failures": failures}));
         }
         // Interrupted knowledge writes are resolved by inspecting what is actually on disk.
         self.recover_knowledge();
@@ -1041,12 +1103,18 @@ impl Core {
     pub fn worktree_safety(&self, mission_id: &str) -> Result<git::WorktreeSafety> {
         let m = self.store.get_mission(mission_id)?;
         let Some(base) = m.base_commit.as_deref() else {
-            return Ok(git::WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: 0 });
+            return Ok(git::WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: 0, ignored_entries: 0 });
         };
         let project = self.store.get_project(&m.project_id)?;
         // A merged mission's commits are "safe" only if they are actually in the main checkout's history now. Anything added to
         // the branch after the merge is unmerged work and needs the same confirmation as any other.
-        let yardstick = if m.state == MissionState::Merged.as_str() { crate::merge::oid(Path::new(&project.root_path), "HEAD").unwrap_or_else(|_| base.to_string()) } else { base.to_string() };
+        // A squash commit does not contain the branch commits; what it merged is recorded, so measure against that instead.
+        let squashed_branch = self.store.merge_record(mission_id)?.filter(|r| r.squash && r.finished_at.is_some()).map(|r| r.branch_oid);
+        let yardstick = match (m.state == MissionState::Merged.as_str(), squashed_branch) {
+            (true, Some(b)) => b,
+            (true, None) => crate::merge::oid(Path::new(&project.root_path), "HEAD").unwrap_or_else(|_| base.to_string()),
+            _ => base.to_string(),
+        };
         git::worktree_safety(Path::new(&project.root_path), m.worktree_path.as_deref().map(Path::new), m.branch.as_deref(), &yardstick)
     }
 
@@ -1055,16 +1123,18 @@ impl Core {
     pub fn discard_mission(self: &Arc<Self>, mission_id: &str, confirm_loss: bool) -> Result<Mission> {
         let _res = self.reserve(mission_id, false)?;
         let m = self.store.get_mission(mission_id)?;
+        // Finished missions are cleaned up (cleanup_workspace), not discarded: check *before* deleting anything.
+        if MissionState::parse(&m.state).is_some_and(|s| s.is_terminal()) {
+            return Err(ForgeError::InvalidState(format!("a {} mission cannot be discarded; use Clean up to remove its worktree", m.state)));
+        }
         let project = self.store.get_project(&m.project_id)?;
         let root = Path::new(&project.root_path);
         let safety = self.worktree_safety(mission_id)?;
-        if (safety.dirty_files > 0 || safety.unmerged_commits > 0) && !confirm_loss {
-            return Err(ForgeError::InvalidState(format!(
-                "discarding would permanently delete {} uncommitted file change(s) and {} unmerged commit(s) on branch {}",
-                safety.dirty_files, safety.unmerged_commits, m.branch.as_deref().unwrap_or("?")
-            )));
+        if (safety.dirty_files > 0 || safety.unmerged_commits > 0 || safety.ignored_entries > 0) && !confirm_loss {
+            return Err(ForgeError::InvalidState(loss_message("discarding", &safety, m.branch.as_deref())));
         }
         if let Some(wt) = &m.worktree_path {
+            self.removable_worktree(root, Path::new(wt), m.branch.as_deref())?;
             // Without confirmation git itself refuses to remove a dirty tree; with it, the user accepted the stated loss.
             git::worktree_remove(root, Path::new(wt), confirm_loss)?;
         }
@@ -1075,6 +1145,34 @@ impl Core {
         }
         self.store.audit("user", "mission.discard", Some(mission_id), &json!({"lostDirtyFiles": safety.dirty_files, "lostCommits": safety.unmerged_commits}));
         self.set_state(mission_id, MissionState::Cancelled, "discarded by user")
+    }
+}
+
+/// What removing a worktree would destroy, in words.
+pub(crate) fn loss_message(verb: &str, s: &git::WorktreeSafety, branch: Option<&str>) -> String {
+    let mut parts = vec![format!("{} uncommitted file change(s)", s.dirty_files), format!("{} unmerged commit(s) on branch {}", s.unmerged_commits, branch.unwrap_or("?"))];
+    if s.ignored_entries > 0 {
+        parts.push(format!("{} ignored file(s) or folder(s) such as build output or a local .env", s.ignored_entries));
+    }
+    format!("{verb} would permanently delete {}", parts.join(", "))
+}
+
+impl Core {
+    /// Before deleting a worktree named in the database, prove it is a FORGE worktree of this repository on this mission's
+    /// branch, under FORGE's own worktrees folder, and not a link to somewhere else (another mission's worktree, user data).
+    pub(crate) fn removable_worktree(&self, root: &Path, wt: &Path, branch: Option<&str>) -> Result<()> {
+        if !wt.exists() && std::fs::symlink_metadata(wt).is_err() {
+            return Ok(()); // already gone; git worktree prune handles the registration
+        }
+        if std::fs::symlink_metadata(wt).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+            return Err(ForgeError::PathRejected(format!("{} is a link, not a worktree; FORGE will not delete through it", wt.display())));
+        }
+        let home = dunce::canonicalize(self.cfg.home.join("worktrees")).map_err(|e| ForgeError::PathRejected(format!("FORGE's worktrees folder: {e}")))?;
+        let real = dunce::canonicalize(wt).map_err(|e| ForgeError::PathRejected(format!("{}: {e}", wt.display())))?;
+        if !crate::paths::is_within(&home, &real) || real == home {
+            return Err(ForgeError::PathRejected(format!("{} is not inside FORGE's worktrees folder; FORGE will not delete it", real.display())));
+        }
+        git::verify_worktree(root, &real, branch)
     }
 }
 

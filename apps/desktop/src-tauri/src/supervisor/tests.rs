@@ -350,6 +350,7 @@ mod mcp;
 mod acp;
 mod evidence;
 mod scanners;
+mod integrity;
 
 #[test]
 fn the_agents_overview_lists_running_and_recent_sessions_with_their_missions() {

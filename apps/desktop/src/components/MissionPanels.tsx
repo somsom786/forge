@@ -92,6 +92,7 @@ export function ChangesPanel({ mission, fileEventCount }: ChangesProps) {
             <span>{changes.files.length} file{changes.files.length === 1 ? '' : 's'}</span>
             <span title="Files with uncommitted changes in the worktree">{changes.safety.dirtyFiles} dirty</span>
             <span title="Commits on the mission branch not yet merged">{changes.safety.unmergedCommits} unmerged commit{changes.safety.unmergedCommits === 1 ? '' : 's'}</span>
+            {(changes.safety.ignoredEntries ?? 0) > 0 && <span title="Ignored files or folders (build output, local settings) that removing the worktree would delete">{changes.safety.ignoredEntries} ignored</span>}
             {!changes.safety.exists && <Badge tone="warn">worktree missing</Badge>}
           </div>
         )}

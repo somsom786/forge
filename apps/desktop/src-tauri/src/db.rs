@@ -403,6 +403,21 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE verification_run ADD COLUMN evidence_json TEXT;
     "#,
+    // v13 - a durable record of each merge FORGE starts, written before git runs, so a crash between git and the database
+    // can be reconciled from the real repository (and squash merges know which branch commit they contained).
+    r#"
+    CREATE TABLE mission_merge (
+        mission_id TEXT PRIMARY KEY REFERENCES mission(id),
+        target_oid TEXT NOT NULL,
+        branch_oid TEXT NOT NULL,
+        predicted_tree TEXT NOT NULL,
+        squash INTEGER NOT NULL,
+        message TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        commit_oid TEXT,
+        finished_at TEXT
+    );
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

@@ -360,3 +360,57 @@ mod tests {
         assert_eq!(p[0].content["v"], 2);
     }
 }
+
+// ---- merge intents (migration 13) ------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergeRecord {
+    pub mission_id: String,
+    pub target_oid: String,
+    pub branch_oid: String,
+    pub predicted_tree: String,
+    pub squash: bool,
+    pub message: String,
+    pub commit_oid: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+fn merge_from(r: &Row) -> rusqlite::Result<MergeRecord> {
+    Ok(MergeRecord { mission_id: r.get(0)?, target_oid: r.get(1)?, branch_oid: r.get(2)?, predicted_tree: r.get(3)?, squash: r.get::<_, i64>(4)? != 0, message: r.get(5)?, commit_oid: r.get(6)?, finished_at: r.get(7)? })
+}
+
+impl Store {
+    /// Record a merge before running git. Replaces an earlier unfinished intent of the same mission.
+    pub fn begin_merge(&self, rec: &MergeRecord) -> Result<()> {
+        self.c().execute(
+            "INSERT INTO mission_merge(mission_id,target_oid,branch_oid,predicted_tree,squash,message,started_at) VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(mission_id) DO UPDATE SET target_oid=?2, branch_oid=?3, predicted_tree=?4, squash=?5, message=?6, started_at=?7, commit_oid=NULL, finished_at=NULL",
+            params![rec.mission_id, rec.target_oid, rec.branch_oid, rec.predicted_tree, rec.squash as i64, rec.message, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn finish_merge(&self, mission_id: &str, commit: &str) -> Result<()> {
+        self.c().execute("UPDATE mission_merge SET commit_oid=?2, finished_at=?3 WHERE mission_id=?1", params![mission_id, commit, now()])?;
+        Ok(())
+    }
+
+    /// The merge did not happen (git refused, nothing changed): forget the intent.
+    pub fn abandon_merge(&self, mission_id: &str) -> Result<()> {
+        self.c().execute("DELETE FROM mission_merge WHERE mission_id=?1 AND finished_at IS NULL", [mission_id])?;
+        Ok(())
+    }
+
+    pub fn merge_record(&self, mission_id: &str) -> Result<Option<MergeRecord>> {
+        Ok(self
+            .c()
+            .query_row("SELECT mission_id,target_oid,branch_oid,predicted_tree,squash,message,commit_oid,finished_at FROM mission_merge WHERE mission_id=?1", [mission_id], merge_from)
+            .optional()?)
+    }
+
+    pub fn unfinished_merges(&self) -> Result<Vec<MergeRecord>> {
+        let c = self.c();
+        let mut s = c.prepare("SELECT mission_id,target_oid,branch_oid,predicted_tree,squash,message,commit_oid,finished_at FROM mission_merge WHERE finished_at IS NULL")?;
+        Ok(s.query_map([], merge_from)?.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+}

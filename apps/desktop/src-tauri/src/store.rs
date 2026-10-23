@@ -296,9 +296,13 @@ impl Store {
         Ok(s.query_map([project_id], mission_from)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Every mission in one of `states`, however old (recovery must not miss a mission beyond any listing limit).
     pub fn missions_in_states(&self, states: &[MissionState]) -> Result<Vec<Mission>> {
-        let all = self.list_missions(None)?;
-        Ok(all.into_iter().filter(|m| MissionState::parse(&m.state).is_some_and(|s| states.contains(&s))).collect())
+        let names: Vec<&str> = states.iter().map(|s| s.as_str()).collect();
+        let placeholders = vec!["?"; names.len()].join(",");
+        let c = self.c();
+        let mut s = c.prepare(&format!("SELECT {MISSION_COLS} FROM mission WHERE state IN ({placeholders}) ORDER BY updated_at DESC"))?;
+        Ok(s.query_map(rusqlite::params_from_iter(names), mission_from)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Enforce the transition table and record the change atomically.

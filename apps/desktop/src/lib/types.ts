@@ -150,7 +150,13 @@ export interface RepoStatus {
 }
 
 export interface ChangedFile { path: string; added: number | null; removed: number | null; binary: boolean }
-export interface WorktreeSafety { exists: boolean; dirtyFiles: number; unmergedCommits: number }
+export interface WorktreeSafety {
+  exists: boolean;
+  dirtyFiles: number;
+  unmergedCommits: number;
+  /** Ignored files/folders (build output, a local .env) that removing the worktree would delete. */
+  ignoredEntries?: number;
+}
 export interface MissionChanges { files: ChangedFile[]; safety: WorktreeSafety }
 export interface MissionDiff { diff: string; truncated: boolean }
 

@@ -277,6 +277,10 @@ pub struct WorktreeSafety {
     pub dirty_files: u32,
     /// Commits on the mission branch (or the worktree HEAD) that are not in the base.
     pub unmerged_commits: u32,
+    /// Ignored files/directories in the worktree (a hand-copied `.env`, build output). `git worktree remove` deletes them
+    /// silently, so they count as potential loss too.
+    #[serde(default)]
+    pub ignored_entries: u32,
 }
 
 fn count_range(dir: &Path, range: &str) -> u32 {
@@ -294,11 +298,12 @@ pub fn worktree_safety(repo: &Path, worktree: Option<&Path>, branch: Option<&str
         }
     }
     let Some(wt) = worktree.filter(|w| w.exists()) else {
-        return Ok(WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: unmerged });
+        return Ok(WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: unmerged, ignored_entries: 0 });
     };
     let st = status(wt)?;
     unmerged = unmerged.max(count_range(wt, &format!("{base_commit}..HEAD")));
-    Ok(WorktreeSafety { exists: true, dirty_files: st.files.len() as u32, unmerged_commits: unmerged })
+    let ignored = run(wt, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"]).map(|o| o.lines().filter(|l| !l.trim().is_empty()).count() as u32).unwrap_or(0);
+    Ok(WorktreeSafety { exists: true, dirty_files: st.files.len() as u32, unmerged_commits: unmerged, ignored_entries: ignored })
 }
 
 /// Prove that `worktree` is the registered worktree of `repo` for `expected_branch` before acting on it.

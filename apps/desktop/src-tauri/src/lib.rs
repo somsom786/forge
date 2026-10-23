@@ -92,12 +92,30 @@ fn locate_node(app: &tauri::App) -> Option<PathBuf> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// One FORGE per home directory. A second copy would run startup recovery against the first one's live state: mark its
+/// running missions interrupted, expire the approvals its agents are waiting on, and race it to merge. The OS drops the lock
+/// when the process ends (also on a crash), so a stale lock file never blocks a restart.
+pub fn acquire_instance_lock(home: &std::path::Path) -> std::result::Result<std::fs::File, String> {
+    let path = home.join("forge.lock");
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(std::fs::TryLockError::WouldBlock) => Err(format!("FORGE is already running with the data folder {}", home.display())),
+        Err(std::fs::TryLockError::Error(e)) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+struct InstanceLock(#[allow(dead_code)] std::fs::File);
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let home = forge_home();
             std::fs::create_dir_all(&home)?;
+            // Held (managed by Tauri) for the life of the app.
+            let lock = acquire_instance_lock(&home).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            app.manage(InstanceLock(lock));
             let store = store::Store::open(&home.join("forge.db"))?;
             let handle = app.handle().clone();
             let cfg = Config {
@@ -214,4 +232,17 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running FORGE");
+}
+
+#[cfg(test)]
+mod instance_lock_tests {
+    #[test]
+    fn a_second_instance_on_the_same_home_is_refused_and_the_lock_is_released_on_exit() {
+        let home = tempfile::tempdir().unwrap();
+        let first = super::acquire_instance_lock(home.path()).unwrap();
+        let err = super::acquire_instance_lock(home.path()).unwrap_err();
+        assert!(err.contains("already running"), "{err}");
+        drop(first);
+        assert!(super::acquire_instance_lock(home.path()).is_ok(), "the lock goes away with its holder");
+    }
 }

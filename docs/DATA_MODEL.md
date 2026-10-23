@@ -105,6 +105,14 @@ path resolved at registration. An ACP mission has `provider = 'acp'` and `model 
 counts by severity and up to 200 findings (rule, severity, title, location, package, fixed-in, blocking). NULL for plain checks.
 `CheckSpec.adapter` lives in the contract JSON; a check's revision includes it only when set, so existing evidence keeps its meaning.
 
+## Implemented (migration 13 — merge records)
+
+`mission_merge(mission_id, target_oid, branch_oid, predicted_tree, squash, message, started_at, commit_oid, finished_at)`:
+written *before* git merges, finished after the mission becomes Merged. On restart (and on a retried merge) an unfinished
+record is reconciled with the repository: the merge commit landed (complete it), a squash stopped before its commit (finish
+FORGE's own commit, after checking the index holds exactly the predicted tree), or nothing happened (forget it). The recorded
+`branch_oid` also tells cleanup which commits a squash contained.
+
 ## Designed, not yet implemented
 
 | Entity | Purpose | Phase |

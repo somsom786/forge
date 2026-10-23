@@ -99,6 +99,10 @@ impl Core {
         contract.version = CONTRACT_VERSION;
         contract.validate()?;
         self.store.set_contract(mission_id, &contract)?;
+        // An approval is a statement about these success criteria; changing them voids it.
+        if m.state == MissionState::Approved.as_str() {
+            self.set_state(mission_id, MissionState::AwaitingReview, "the success criteria changed after approval")?;
+        }
         self.store.audit("user", "contract.set", Some(mission_id), &json!({"criteria": contract.criteria.len(), "checks": contract.checks.len()}));
         let m = self.store.get_mission(mission_id)?;
         self.emit(UiEvent::Mission { mission: m.clone() });
@@ -331,6 +335,13 @@ impl Core {
         let branch = m.branch.clone().ok_or_else(|| ForgeError::InvalidState("mission has no branch".into()))?;
         let target = m.base_ref.clone().ok_or_else(|| ForgeError::InvalidState("mission has no base branch".into()))?;
 
+        // A merge started earlier may have reached git but not the database (crash, power loss). Finish it from the facts in
+        // the repository instead of attempting a second merge (a squash would fail with "nothing to commit" forever).
+        if let Some(commit) = self.reconcile_merge(mission_id, &root)? {
+            let squashed = self.store.merge_record(mission_id)?.is_some_and(|r| r.squash);
+            return Ok(self.complete_merge(mission_id, &root, &wt, &branch, &target, commit, squashed, vec!["this merge had already reached git before FORGE stopped; it was completed now".into()]));
+        }
+
         // What was approved must be exactly what is merged. One read yields both the fingerprint and the reviewed tree.
         let (fp, tree) = git::fingerprint_and_tree(&wt, &base)?;
         let approved = self.store.review_decisions(mission_id)?.into_iter().rev().find(|d| d.decision == "approve");
@@ -356,11 +367,57 @@ Branch: {}", m.title, m.id, branch);
             )));
         }
         let predicted_tree = prediction.tree.ok_or_else(|| ForgeError::Git("git did not report the merged tree".into()))?;
-        let commit = merge::merge(&root, &branch_oid, &message, squash, &target_oid, &predicted_tree)?;
+        // Durable intent first: after this, any outcome of the git step can be recognised and finished on restart.
+        self.store.begin_merge(&crate::store_review::MergeRecord {
+            mission_id: mission_id.into(),
+            target_oid: target_oid.clone(),
+            branch_oid: branch_oid.clone(),
+            predicted_tree: predicted_tree.clone(),
+            squash,
+            message: message.clone(),
+            commit_oid: None,
+            finished_at: None,
+        })?;
+        let commit = match merge::merge(&root, &branch_oid, &message, squash, &target_oid, &predicted_tree) {
+            Ok(c) => c,
+            Err(e) => {
+                // Only forget the intent if git provably changed nothing.
+                if merge::oid(&root, "HEAD").ok().as_deref() == Some(target_oid.as_str()) && !merge::squash_pending(&root, &target_oid, &predicted_tree) {
+                    let _ = self.store.abandon_merge(mission_id);
+                }
+                return Err(e);
+            }
+        };
         self.store.audit("user", "mission.merge", Some(mission_id), &json!({"commit": commit, "squash": squash, "target": target}));
-        self.set_state(mission_id, MissionState::Merged, "merged into the main checkout")?;
+        Ok(self.complete_merge(mission_id, &root, &wt, &branch, &target, commit, squash, vec![]))
+    }
 
-        let mut notes = vec![];
+    /// If an unfinished merge of this mission is recorded, look at the repository: the merge commit landed (return it), a
+    /// squash was interrupted before its commit (finish it and return it), or nothing happened (forget the intent).
+    pub(super) fn reconcile_merge(&self, mission_id: &str, root: &Path) -> Result<Option<String>> {
+        let Some(rec) = self.store.merge_record(mission_id)?.filter(|r| r.finished_at.is_none()) else { return Ok(None) };
+        if let Some(commit) = merge::landed(root, &rec.target_oid, &rec.predicted_tree)? {
+            self.store.audit("system", "mission.merge.reconciled", Some(mission_id), &json!({"commit": commit, "how": "landed"}));
+            return Ok(Some(commit));
+        }
+        if rec.squash && merge::squash_pending(root, &rec.target_oid, &rec.predicted_tree) {
+            let commit = merge::finish_squash(root, &rec.message, &rec.predicted_tree)?;
+            self.store.audit("system", "mission.merge.reconciled", Some(mission_id), &json!({"commit": commit, "how": "squash finished"}));
+            return Ok(Some(commit));
+        }
+        self.store.abandon_merge(mission_id)?;
+        Ok(None)
+    }
+
+    /// Database side of a merge that is in git: record it, move the mission to Merged, seal the evidence, clean up.
+    #[allow(clippy::too_many_arguments)]
+    fn complete_merge(&self, mission_id: &str, root: &Path, wt: &Path, branch: &str, target: &str, commit: String, squash: bool, mut notes: Vec<String>) -> MergeOutcome {
+        if let Err(e) = self.store.finish_merge(mission_id, &commit).and_then(|_| self.set_state(mission_id, MissionState::Merged, "merged into the main checkout").map(|_| ())) {
+            notes.push(format!("the merge is in git ({}) but FORGE could not record it yet: {e}; it will be reconciled on the next start", &commit[..10.min(commit.len())]));
+            return MergeOutcome { commit, branch: branch.into(), target: target.into(), squashed: squash, cleaned_up: false, notes };
+        }
+        let (root, wt, branch, target) = (root.to_path_buf(), wt.to_path_buf(), branch.to_string(), target.to_string());
+
         // Seal the evidence while the worktree still exists.
         if let Err(e) = self.generate_proof_pack(mission_id) {
             notes.push(format!("the Proof Pack could not be generated: {e}"));
@@ -370,7 +427,15 @@ Branch: {}", m.title, m.id, branch);
             notes.push(format!("the mission record could not be saved to memory: {e}"));
         }
         let mut cleaned = false;
-        match git::worktree_remove(&root, &wt, false) {
+        // Ignored files (a local .env, build output) would be deleted silently by `git worktree remove`: keep the worktree
+        // and let the user clean it up knowingly.
+        let ignored = self.worktree_safety(mission_id).map(|s| s.ignored_entries).unwrap_or(0);
+        let removable = if ignored > 0 {
+            Err(ForgeError::InvalidState(format!("it holds {ignored} ignored file(s) or folder(s) (build output, local settings); use Clean up when you no longer need them")))
+        } else {
+            self.removable_worktree(&root, &wt, Some(&branch))
+        };
+        match removable.and_then(|_| git::worktree_remove(&root, &wt, false)) {
             Ok(()) => {
                 let identical = git::run_raw(&root, &["diff", "--quiet", "HEAD", &branch]).map(|o| o.status.success()).unwrap_or(false);
                 if !squash || identical {
@@ -384,7 +449,7 @@ Branch: {}", m.title, m.id, branch);
             }
             Err(e) => notes.push(format!("the worktree was kept: {e}")),
         }
-        Ok(MergeOutcome { commit, branch, target, squashed: squash, cleaned_up: cleaned, notes })
+        MergeOutcome { commit, branch, target, squashed: squash, cleaned_up: cleaned, notes }
     }
 
     /// Remove the worktree and branch of a *finished* mission (rejected, merged, cancelled). Same loss protection as
@@ -398,13 +463,11 @@ Branch: {}", m.title, m.id, branch);
         let project = self.store.get_project(&m.project_id)?;
         let root = Path::new(&project.root_path);
         let safety = self.worktree_safety(mission_id)?;
-        if (safety.dirty_files > 0 || safety.unmerged_commits > 0) && !confirm_loss {
-            return Err(ForgeError::InvalidState(format!(
-                "cleaning up would permanently delete {} uncommitted file change(s) and {} unmerged commit(s) on branch {}",
-                safety.dirty_files, safety.unmerged_commits, m.branch.as_deref().unwrap_or("?")
-            )));
+        if (safety.dirty_files > 0 || safety.unmerged_commits > 0 || safety.ignored_entries > 0) && !confirm_loss {
+            return Err(ForgeError::InvalidState(super::loss_message("cleaning up", &safety, m.branch.as_deref())));
         }
         if let Some(wt) = &m.worktree_path {
+            self.removable_worktree(root, Path::new(wt), m.branch.as_deref())?;
             git::worktree_remove(root, Path::new(wt), confirm_loss)?;
         }
         if let Some(b) = &m.branch {
