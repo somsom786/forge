@@ -8,6 +8,7 @@ import type {
   ContextPackage, ContextPackageRow, KnowledgePage, KnowledgePageDetail, KnowledgeRevision, KnowledgeStatus, LintIssue, NewKnowledgeArgs, ScanResult,
   DoctorFinding, HarnessApplyArgs, HarnessChange, HarnessFile, HarnessInventory, HarnessPreview, HookDryRun, HookSpec, HookTemplate, RollbackPreview,
   CheckSpec, Contract, MergeOutcome, Seen, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
+  ConflictReport,
 } from './types';
 
 export const api = {
@@ -93,6 +94,9 @@ export const api = {
   harnessHookPreviewRemove: (projectId: string, hookId: string) => invoke<HarnessPreview>('harness_hook_preview_remove', { projectId, hookId }),
   /** Executes the command on this machine with a synthetic event. Only ever call after the user confirmed the exact command. */
   harnessHookDryRun: (projectId: string, event: string, command: string) => invoke<HookDryRun>('harness_hook_dry_run', { projectId, event, command }),
+
+  /** Read-only: overlap, predicted textual conflicts and base drift across the project's active missions. */
+  missionConflicts: (projectId: string) => invoke<ConflictReport>('mission_conflicts', { projectId }),
 
   approvalsPending: (missionId?: string) => invoke<Approval[]>('approvals_pending', { missionId: missionId ?? null }),
   approvalDecide: (approvalId: string, approved: boolean, note?: string) =>
