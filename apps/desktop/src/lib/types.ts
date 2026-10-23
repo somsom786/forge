@@ -732,7 +732,8 @@ export interface NewExperiment {
   warmup?: number;
   timeoutSecs: number;
   baselineRef: string;
-  variants: { label: string; gitRef: string }[];
+  /** Each variant is a ref (branch, tag, commit) or a mission whose current work FORGE snapshots when the experiment is created. */
+  variants: { label: string; gitRef: string; missionId?: string | null }[];
 }
 
 export interface ExperimentStats {
@@ -865,4 +866,33 @@ export interface ConflictReport {
   pairs: MissionPairConflict[];
   drift: MissionBaseDrift[];
   skipped: { missionId: string; reason: string }[];
+}
+
+// ---- Agents overview ----
+
+export interface AgentSessionRow {
+  session: AgentSession;
+  missionTitle: string;
+  projectId: string;
+}
+
+/** Provider-reported figures for sessions FORGE launched; not a bill, and nothing from sessions outside FORGE. */
+export interface ProviderUsage {
+  provider: string;
+  sessions: number;
+  live: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  turns: number;
+  costUsdEstimate: number | null;
+  sessionsWithUsage: number;
+}
+
+export interface AgentsOverview {
+  since: string;
+  days: number;
+  sessions: AgentSessionRow[];
+  usage: ProviderUsage[];
 }

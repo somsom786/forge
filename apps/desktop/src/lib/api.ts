@@ -10,6 +10,7 @@ import type {
   CheckSpec, Contract, MergeOutcome, Seen, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
   Experiment, ExperimentDetail, NewExperiment,
   ConflictReport,
+  AgentsOverview,
 } from './types';
 
 export const api = {
@@ -107,6 +108,7 @@ export const api = {
   experimentRun: (experimentId: string) => invoke<ExperimentDetail>('experiment_run', { experimentId }),
   experimentCancel: (experimentId: string) => invoke<void>('experiment_cancel', { experimentId }),
   /** Read-only: overlap, predicted textual conflicts and base drift across the project's active missions. */
+  agentsOverview: (days: number) => invoke<AgentsOverview>('agents_overview', { days }),
   missionConflicts: (projectId: string) => invoke<ConflictReport>('mission_conflicts', { projectId }),
 
   approvalsPending: (missionId?: string) => invoke<Approval[]>('approvals_pending', { missionId: missionId ?? null }),

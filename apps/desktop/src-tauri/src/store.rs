@@ -373,6 +373,17 @@ impl Store {
         Ok(s.query_map([mission_id], session_from)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Sessions started at or after `since` (RFC 3339), newest first, with their mission's title and project.
+    pub fn sessions_since(&self, since: &str, limit: i64) -> Result<Vec<(AgentSession, String, String)>> {
+        let c = self.c();
+        let mut s = c.prepare(
+            "SELECT s.id, s.mission_id, s.provider, s.provider_session_id, s.state, s.pid, s.started_at, s.ended_at, s.end_reason, s.usage_json, m.title, m.project_id \
+             FROM agent_session s JOIN mission m ON m.id = s.mission_id WHERE s.started_at >= ?1 OR s.state IN ('starting','live') ORDER BY s.started_at DESC LIMIT ?2",
+        )?;
+        let rows = s.query_map(params![since, limit], |r| Ok((session_from(r)?, r.get::<_, String>(10)?, r.get::<_, String>(11)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn live_sessions(&self) -> Result<Vec<AgentSession>> {
         let c = self.c();
         let mut s = c.prepare(&format!("{SESSION_SELECT} WHERE state IN ('starting','live')"))?;

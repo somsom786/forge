@@ -664,3 +664,13 @@ use crate::supervisor::ConflictReport;
 pub async fn mission_conflicts(core: CoreState<'_>, project_id: String) -> Result<ConflictReport> {
     blocking(&core, move |c| c.mission_conflicts(&project_id)).await
 }
+
+// ---- Agents overview -------------------------------------------------------------------------------------------------
+
+use crate::supervisor::AgentsOverview;
+
+/// Recent agent sessions (and anything running), with provider-reported usage per provider. Read-only.
+#[tauri::command]
+pub async fn agents_overview(core: CoreState<'_>, days: u32) -> Result<AgentsOverview> {
+    blocking(&core, move |c| c.agents_overview(days)).await
+}

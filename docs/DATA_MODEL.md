@@ -72,7 +72,7 @@ Authority for *trust* lives in SQLite; the page files hold *content*.
 | Table | Notes |
 |---|---|
 | `experiment` | Definition (name, objective, `command`, optional `correctness_command`, `metric_json` = duration or a `FORGE_METRIC <name>=<n>` value with a direction, `repetitions`, `warmup`, `timeout_secs`), `state` (draft → running → completed/failed/cancelled/interrupted), `attempt` (incremented per run), `env_json` (OS, arch, CPU count, git and FORGE versions of the latest attempt), `report_json` (verdict of the latest finished attempt), `last_error`. |
-| `experiment_variant` | The revisions compared: position 0 is the baseline. `git_ref` is what the user named; `commit_sha` is what it resolved to at creation, and every attempt measures that commit even if the branch moves. |
+| `experiment_variant` | The revisions compared: position 0 is the baseline. `git_ref` is what the user named (or `mission:<id>` for a mission snapshot); `commit_sha` is what it resolved to at creation, and every attempt measures that commit even if the branch moves or the agent keeps editing. Mission snapshots are pinned by `refs/forge/snapshots/<sha>`. |
 | `experiment_result` | One row per run of every attempt (`phase` correctness/warmup/measure, `iteration`, `state` incl. `no_metric`, `exit_code`, `duration_ms`, `metric_value`, `worktree_changed`, redacted `output_tail`, `log_path`). Failed and inconclusive attempts are never deleted. |
 | Files outside SQLite | `<home>/experiments/<experiment>/<attempt>/<variant>` detached worktrees (removed when the attempt ends, or at startup after a crash) and `.../logs/*.log` (redacted, capped run logs, kept). |
 
