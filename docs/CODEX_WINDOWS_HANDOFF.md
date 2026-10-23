@@ -9,11 +9,11 @@ Status labels and evidence: `docs/VALIDATION_MATRIX.md`.
 | Item | Value |
 |---|---|
 | Branch | `cloud/overhaul` |
-| Head SHA | see the PR (the branch moves while CI fixes land; `git rev-parse HEAD` after checkout) |
-| PR | draft PR `cloud/overhaul` → `main` (PR_LINK) |
+| Head SHA | `cd75d4c` at the time of writing; see the PR (the branch moves while CI fixes land; `git rev-parse HEAD` after checkout) |
+| PR | draft PR `cloud/overhaul` → `main` (https://github.com/somsom786/forge/pull/8) |
 | Base | `main` at `fdb16e7` |
 | Contains | PRs #1–#7 (`cloud/codex-hardening`, `harness-hardening`, `experiments-backend`, `mission-conflicts`, `unix-containment`, `product-ui`, `execution-backends`) plus the overhaul commits. Merging this PR supersedes them; do not merge them separately afterwards |
-| New dependencies | npm `@agentclientprotocol/sdk` 1.8.0 (Apache-2.0, exact pin); Rust: tree-sitter crates if Code Map is merged (see OSS_ADOPTION.md). External programs, never bundled: bubblewrap (Linux), and optionally gitleaks / osv-scanner / trivy / playwright as user-chosen checks |
+| New dependencies | npm `@agentclientprotocol/sdk` 1.8.0 (Apache-2.0, exact pin); Rust: tree-sitter 0.27.1 + grammar crates for Rust, TypeScript, JavaScript, Python (all MIT; see OSS_ADOPTION.md). External programs, never bundled: bubblewrap (Linux), and optionally gitleaks / osv-scanner / trivy / playwright as user-chosen checks |
 | Migrations | 9 approval binding, 10 MCP authorization, 11 ACP agents, 12 structured evidence (forward-only; tested from every earlier version) |
 
 ## B. What changed (summary)
@@ -30,7 +30,7 @@ Status labels and evidence: `docs/VALIDATION_MATRIX.md`.
    permission request and performs the file reads/writes the agent asks for through policy and approvals.
 5. **Proof Engine adapters**: a check can parse gitleaks / OSV-Scanner / Trivy / Playwright JSON into findings (Verification
    view, Proof Pack).
-6. **Code intelligence** (if merged): tree-sitter symbol index, Code Map view, relevant-code section in context packages.
+6. **Code intelligence**: tree-sitter symbol index, Code Map view, relevant-code section in context packages.
 7. **Fixes**: Codex "Not logged in" was shown as signed in; Unix process containment; 8.3 short-path handling.
 8. **Tooling**: `scripts/windows/*.ps1`, CI with SHA-pinned actions, Windows script job, Windows installer build artifact,
    security workflow (audits, licences, gitleaks, OSV, SBOM).
@@ -81,7 +81,7 @@ Severity: **P0** blocks merging, **P1** must be fixed or documented before a rel
 | D10 | Upgrade over the previous installed build | an installer from `main` (older) | install old, create a project+mission, install new over it, open the app | data intact; migrations 9–12 applied silently | crash on start, "database" errors | `db.rs` | migrations | P1 |
 | D11 | Restart with a pending approval | D2 | close FORGE while a card is pending, reopen | mission "interrupted", approval expired, recovery toast | mission still "awaiting approval" forever | `supervisor.rs` recovery | same | P1 |
 | D12 | Obsidian | Obsidian installed | `test-obsidian.ps1 -Interactive` | the fixture note opens | "vault not found" persists after opening the folder as a vault | `knowledge/vault.rs` | `obsidian_uri` | P2 |
-| D13 | Code Map (if merged) | a real repo | Projects → project → Code Map, search a known function | symbols with correct file:line | empty map for a TS/Rust repo | `codeintel/` | same | P2 |
+| D13 | Code Map | a real repo | Projects → project → Code Map, search a known function | symbols with correct file:line | empty map for a TS/Rust repo | `codeintel/` | same | P2 |
 | D14 | New screens render in the real WebView2 window | — | look at: Harness Studio MCP dialog, Agents → ACP agents, Verification findings, Code Map | as in the browser preview | layout broken, console errors | `apps/desktop/src/components/*` | same | P2 |
 
 ## E. Codex work queue
