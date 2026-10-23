@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -216,6 +216,8 @@ fn canonical_json(v: &Value) -> String {
 
 /// Agents' approved tool calls execute on the host today (see docs/EXECUTION.md); recorded so that changes later are visible.
 pub(crate) const AGENT_EXECUTES_ON: &str = "agent_host";
+/// Longest engine→core protocol line accepted (the engine truncates fields far below this).
+const MAX_ENGINE_LINE: usize = 16 * 1024 * 1024;
 /// How long a request may wait for a human before it can no longer be approved.
 pub(crate) const APPROVAL_TTL_SECS: u64 = 30 * 60;
 
@@ -520,7 +522,13 @@ impl Core {
         }
         // Only servers the user authorized for this project, from their stored (reviewed) definitions; never the repo's .mcp.json.
         // Codex receives none: its MCP configuration lives in the user's own ~/.codex/config.toml, which FORGE does not touch.
-        let mcp_servers = if m.provider == "codex" { serde_json::Map::new() } else { self.mcp_servers_for_mission(&m.project_id)? };
+        // ACP agents run MCP tool calls themselves (FORGE only sees what they choose to ask about), so a per-tool allow-list
+        // cannot be enforced for them: servers authorized with an allow-list are withheld from ACP missions.
+        let mcp_servers = match m.provider.as_str() {
+            "codex" => serde_json::Map::new(),
+            "acp" => self.mcp_servers_for_mission_filtered(&m.project_id, true)?,
+            _ => self.mcp_servers_for_mission(&m.project_id)?,
+        };
         let acp_agent = if m.provider == "acp" {
             let a = self.store.acp_by_name(m.model.as_deref().unwrap_or(""))?;
             if !Path::new(&a.command).is_file() {
@@ -629,13 +637,33 @@ impl Core {
             })?;
             let (c2, h3) = (core.clone(), handle.clone());
             std::thread::Builder::new().name(format!("forge-reader-{sid8}")).spawn(move || {
-                for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
-                    if line.trim().is_empty() {
+                // Protocol lines are bounded, and a line the core cannot read ends the session: silently skipping it could drop a
+                // permission request (the agent would wait forever) or a tool event (a gap in the audit trail).
+                let mut reader = BufReader::new(stdout);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    let n = match (&mut reader).take(MAX_ENGINE_LINE as u64 + 1).read_until(b'\n', &mut buf) {
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    let too_long = buf.len() > MAX_ENGINE_LINE && buf.last() != Some(&b'\n');
+                    let line = String::from_utf8_lossy(&buf);
+                    if !too_long && line.trim().is_empty() {
                         continue;
                     }
-                    match serde_json::from_str::<EngineMsg>(&line) {
-                        Ok(msg) => c2.on_engine_msg(&h3, msg),
-                        Err(e) => eprintln!("[forge] malformed engine line ({e}): {}", redact::truncate(&line, 200).0),
+                    match (too_long, serde_json::from_str::<EngineMsg>(line.trim_end())) {
+                        (false, Ok(msg)) => c2.on_engine_msg(&h3, msg),
+                        (_, res) => {
+                            let why = if too_long { format!("a protocol line longer than {MAX_ENGINE_LINE} bytes") } else { format!("an unreadable protocol line ({})", res.err().map(|e| e.to_string()).unwrap_or_default()) };
+                            eprintln!("[forge] {why}: {}", redact::truncate(&line, 200).0);
+                            *lock(&h3.fatal) = Some(format!("the engine sent {why}; the session was stopped for safety"));
+                            h3.terminate_tree();
+                            break;
+                        }
                     }
                 }
                 let _ = done_tx.send(());
@@ -751,6 +779,10 @@ impl Core {
         };
         // Everything below happens under the lifecycle lock: insert, register waiter, change state, announce.
         let _life = lock(&h.life);
+        // After the turn has ended nothing may still be granted (a late callback from a lingering agent process).
+        if h.completed.load(Ordering::SeqCst) {
+            return reply("deny", Some("the turn has ended; FORGE does not grant anything after it"));
+        }
         let key = request_key(&req.tool_use_id, &req.tool, &req.input);
 
         // A hook and the provider's own prompt can both ask about the same tool use. Only an IDENTICAL call

@@ -73,8 +73,19 @@ impl Core {
 
     /// The `mcpServers` a mission of this project starts with: exactly the active authorizations, from their stored definitions.
     pub(super) fn mcp_servers_for_mission(&self, project_id: &str) -> Result<serde_json::Map<String, serde_json::Value>> {
+        self.mcp_servers_for_mission_filtered(project_id, false)
+    }
+
+    /// `only_unrestricted`: leave out servers authorized with a tool allow-list (for runtimes where FORGE cannot enforce it).
+    pub(super) fn mcp_servers_for_mission_filtered(&self, project_id: &str, only_unrestricted: bool) -> Result<serde_json::Map<String, serde_json::Value>> {
         let env = |n: &str| std::env::var(n).ok();
-        Ok(self.store.mcp_active(project_id)?.into_iter().map(|a| (a.name.clone(), a.definition.to_sdk_config(&env))).collect())
+        Ok(self
+            .store
+            .mcp_active(project_id)?
+            .into_iter()
+            .filter(|a| !only_unrestricted || a.tool_allowlist.is_empty())
+            .map(|a| (a.name.clone(), a.definition.to_sdk_config(&env)))
+            .collect())
     }
 
     /// Core-side gate for `mcp__server__tool` calls: the server must be authorized for the mission's project, and the tool on its

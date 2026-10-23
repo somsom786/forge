@@ -209,6 +209,9 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
   const conflicted = new Set<string>();
   // File-change items FORGE approved, with the exact paths that were approved.
   const approvedPaths = new Map<string, Set<string>>();
+  // Command items FORGE accepted. Under approvalPolicy "untrusted" Codex still runs commands it considers known-safe without
+  // asking; those are flagged as ungated in the activity, not hidden.
+  const approvedCommands = new Set<string>();
   let threadId = '';
   let turnId = '';
   let resolveTurnKnown!: () => void;
@@ -303,6 +306,11 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
         break;
       case 'turn/completed': {
         const t = p.turn ?? {};
+        // Only the completion of *this* thread's current turn ends the session.
+        if ((p.threadId != null && threadId && String(p.threadId) !== threadId) || (t.id != null && turnId && String(t.id) !== turnId)) {
+          ctx.emit('status', { message: 'Codex reported the end of a different turn; ignored', provider: 'codex', warning: true });
+          break;
+        }
         finishTurn({ status: String(t.status ?? 'completed'), error: t.error?.message ? String(t.error.message) : failure });
         break;
       }
@@ -383,7 +391,12 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
       case 'commandExecution': {
         const ok = item.status === 'completed' && (item.exitCode === 0 || item.exitCode == null);
         const out = truncate(String(item.aggregatedOutput ?? (item.status === 'declined' ? 'declined' : '')), MAX_FIELD_BYTES);
-        ctx.emit('tool.result', { toolUseId: id, name: toolName(item), ok, output: out.text, truncated: out.truncated, exitCode: item.exitCode ?? undefined, status: item.status });
+        const ran = item.status === 'completed' || item.status === 'failed';
+        const ungated = ran && !approvedCommands.has(id);
+        ctx.emit('tool.result', { toolUseId: id, name: toolName(item), ok, output: out.text, truncated: out.truncated, exitCode: item.exitCode ?? undefined, status: item.status, ...(ungated ? { ungated: true } : {}) });
+        if (ungated) {
+          ctx.emit('status', { message: `Codex ran a command without asking FORGE (it treats it as known-safe): ${truncate(String(item.command ?? ''), 300).text}`, provider: 'codex', warning: true, ungated: true });
+        }
         break;
       }
       case 'fileChange': {
@@ -442,7 +455,10 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
       const input = net ? { url: String(net.host ?? net.url ?? command) } : { command, cwd: p.cwd ?? item.cwd };
       const cb = String(p.approvalId ?? `${p.itemId}:${++callbackSeq}`);
       const d = await ctx.requestPermission({ tool, input, toolUseId: `${String(p.itemId)}:${cb}`, source: 'can_use_tool', reason: typeof p.reason === 'string' ? p.reason : undefined, signal: ctx.signal });
-      if (d.behavior === 'allow' && !conflicted.has(String(p.itemId))) return { decision: 'accept' };
+      if (d.behavior === 'allow' && !conflicted.has(String(p.itemId))) {
+        approvedCommands.add(String(p.itemId));
+        return { decision: 'accept' };
+      }
       denials++;
       return { decision: 'decline' };
     }

@@ -13,7 +13,7 @@
 // argv: --proto=N  answer initialize with protocol version N;  --auth  newSession fails with auth_required
 import * as acp from '@agentclientprotocol/sdk';
 import { Readable, Writable } from 'node:stream';
-import { symlinkSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { symlinkSync, writeFileSync, mkdtempSync, linkSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -72,6 +72,48 @@ class Scripted {
     if (text.includes('ACP:exec')) result.exec = await askEdit('t5', null, false, 'execute', { command: 'git push origin main' });
     if (text.includes('ACP:read')) {
       try { await this.conn.readTextFile({ sessionId: p.sessionId, path: resolve(s.cwd, '..', 'secret-acp.txt') }); result.read = 'ok'; } catch (e) { result.read = `error: ${e.message ?? e}`; }
+    }
+    if (text.includes('ACP:replay')) {
+      // The same tool-call id twice: each must be a separate question to FORGE.
+      result.first = await askEdit('dup', join(s.cwd, 'FORGE_DUP.md'));
+      result.second = await askEdit('dup', join(s.cwd, 'FORGE_DUP.md'));
+    }
+    if (text.includes('ACP:rawread')) result.readraw = await askEdit('r1', null, false, 'read', { path: '/root/.ssh/id_rsa' });
+    if (text.includes('ACP:titleexec')) {
+      const r = await this.conn.requestPermission({ sessionId: p.sessionId, toolCall: { toolCallId: 'x1', title: 'Run unit tests', kind: 'execute', rawInput: { cmd: 'git push origin main' } }, options: opts(false) });
+      result.exectitle = r.outcome.outcome === 'selected' ? r.outcome.optionId : 'cancelled';
+    }
+    if (text.includes('ACP:hardlink')) {
+      const outside = join(mkdtempSync(join(tmpdir(), 'acp-hl-')), 'victim.txt');
+      writeFileSync(outside, 'original\n');
+      const f = join(s.cwd, 'FORGE_HL.md');
+      try { linkSync(outside, f); } catch (e) { result.linkError = String(e.code ?? e); }
+      result.edit = await askEdit('h1', f);
+      result.write = await write(f, 'OVERWRITTEN\n');
+      result.victim = outside;
+      result.victimContent = readFileSync(outside, 'utf8');
+    }
+    if (text.includes('ACP:ancestor')) {
+      const sub = join(s.cwd, 'sub');
+      mkdirSync(sub, { recursive: true });
+      const f = join(sub, 'a.md');
+      result.edit = await askEdit('a1', f);
+      const outsideDir = mkdtempSync(join(tmpdir(), 'acp-anc-'));
+      rmSync(sub, { recursive: true, force: true });
+      try { symlinkSync(outsideDir, sub, 'dir'); } catch (e) { result.linkError = String(e.code ?? e); }
+      result.write = await write(f, 'redirected\n');
+      result.outsideDir = outsideDir;
+    }
+    if (text.includes('ACP:postturn')) {
+      // After answering the prompt, keep using the client: nothing may be granted or written any more.
+      setTimeout(async () => {
+        await this.conn.requestPermission({ sessionId: p.sessionId, toolCall: { toolCallId: 'late', title: 'late', kind: 'edit', locations: [{ path: join(s.cwd, 'LATE.md') }] }, options: opts(false) }).catch(() => undefined);
+        await this.conn.writeTextFile({ sessionId: p.sessionId, path: join(s.cwd, 'LATE.md'), content: 'late\n' }).catch(() => undefined);
+      }, 0);
+    }
+    if (text.includes('ACP:ignorecancel')) {
+      s.abort = new AbortController();
+      await new Promise(() => {}); // never returns, even when cancelled
     }
     if (text.includes('ACP:report')) Object.assign(result, { clientCaps: this.clientCaps, mcp: s.mcp, promptHasGuidance: text.includes('FORGE mission') });
     if (text.includes('ACP:hang')) {

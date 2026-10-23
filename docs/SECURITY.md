@@ -63,7 +63,7 @@ certification, and no remote service. Treat everything below as the implemented 
 
 ## Codex missions (Phase 5; review 5 in ENGINEERING_REVIEWS.md)
 
-* Every command and file change is an approval request decided by FORGE (policy, then a human); Codex's `workspace-write` sandbox stays on as defence in depth.
+* Every file change and every command Codex asks about is an approval request decided by FORGE (policy, then a human); Codex's `workspace-write` sandbox stays on as defence in depth. **Correction (protocol review):** under `approvalPolicy: "untrusted"` Codex still runs commands it classifies as known-safe and read-only (`ls`, `cat`, …) *without asking*, and its sandbox allows reading outside the worktree. FORGE cannot see those before they run; it flags each one as **ungated** in the activity feed (`tool.result.ungated`, plus a warning) so a review can see what ran unasked.
 * **Effective settings are checked, not assumed.** `thread/start`/`thread/resume` answer with the sandbox, approval policy, approval reviewer, cwd and provider Codex actually applied after merging the user's config. FORGE records those values in `session.started` (`effective`, next to `requested`) and refuses the session before any turn starts if they are broader than requested: full access or an external sandbox, network access, writable roots outside the worktree, any approval policy other than `untrusted`, a reviewer other than `user`, another cwd or provider, or a missing field. (Engine tests against a scripted app-server; the response shape is from the Codex 0.163.0 protocol schema. Not yet observed against a real Codex whose user config widens the sandbox.)
 * **Approvals are scoped.** A command or file-change approval must name this session's thread and the current turn, and refer to an item announced in that turn with the matching type; otherwise it is declined without asking. An item re-announced with different content cannot be approved (an approval given while it changed is withdrawn); if it changes *after* approval, or a completed file change touches a path FORGE did not approve, the session is aborted.
 * **Items with no approval gate abort the session.** `mcpToolCall`, `dynamicToolCall`, `webSearch`, `imageGeneration`, `collabAgentToolCall`, `subAgentActivity` and `hookPrompt` items are shown to the user and the session is interrupted and killed. Their prerequisites are disabled, so this is a tripwire, not the primary control; it acts after the item has started.
@@ -169,6 +169,20 @@ fails without it (mutation-checked where noted).
 | Recovery only saw the 500 most recently updated missions; a failed write stopped the rest of recovery | P2 | Queried by state; best effort per item, failures audited | `integrity::recovery_finds_active_missions_beyond_any_listing_limit` |
 | Changing the success criteria after approval kept the approval | P2 | Returns the mission to review | `integrity::changing_the_success_criteria_after_approval…` |
 | Discard of a finished mission deleted the worktree before failing | P2 | Refused before anything is deleted | `integrity::a_finished_mission_cannot_be_discarded…` |
+
+| ACP: the agent chooses tool-call ids, and a reused id rode an earlier answer | P1 | Every question the ACP adapter asks gets its own id | `acp.test.ts` "a reused tool-call id is a new question each time" |
+| ACP: a read with no location became a path-less `Read` (allowed); an execute without a command string used its *title* as the command | P1 | Mapped to `acp_read` / `acp_execute` (asked, with the agent's raw input shown) | `acp.test.ts` protocol-review tests |
+| ACP: MCP tool allow-lists could not be enforced for ACP agents (they run MCP tools themselves) | P1 | Servers authorized with an allow-list are withheld from ACP missions | `tests::acp::acp_missions_do_not_receive_mcp_servers…` |
+| ACP: callbacks after the turn ended were still honoured (late permission, late write) | P2 | Client closed at turn end (grants cleared, everything refused); the engine and the core also refuse permission requests after the turn | `acp.test.ts` "grants and writes nothing after the turn has ended" (mutation-checked) |
+| ACP: FORGE-performed writes followed hard links and directory links swapped in after approval; reads were unbounded and not link-checked | P2 | No link or hard link anywhere on the path; final open with `O_NOFOLLOW` and a post-open check; reads ≤ 4 MiB, link-checked inside the worktree | `acp.test.ts` hard-link and ancestor-link tests (mutation-checked) |
+| ACP: an agent ignoring `session/cancel` kept running; pending requests were answered with a standing rejection | P2 | Killed 3 s after cancel; `cancelled` outcome while cancelling (ACP spec) | `acp.test.ts` |
+| ACP: billing-key stripping was case-sensitive and missed other providers | P2 | Case-insensitive; any `*_API_KEY`, `*_AUTH_TOKEN`, `*_BASE_URL` | `acp.test.ts` |
+| A lone UTF-16 surrogate made the core drop a protocol line silently (a dropped permission request hangs the agent) | P2 | Strings made well-formed before serialising; an unreadable or over-long (16 MiB) line now ends the session with the reason | `normalize.test.ts`, `regressions::an_unreadable_engine_line_ends_the_session…` |
+| Codex: a `turn/completed` for another thread/turn ended this session | P2 | Checked against the current thread and turn | `codex.test.ts` |
+
+Not changed, documented: on Linux/macOS the engine kills its direct provider child; the core's process-group kill at finalisation
+covers descendants unless one calls `setsid` (SECURITY limit, proc.rs). Moving agents into their own group would take them *out*
+of that group, which is worse.
 
 Policy revision bumped to `policy-2026-10-23.2` (approvals requested under the old revision are never reused).
 

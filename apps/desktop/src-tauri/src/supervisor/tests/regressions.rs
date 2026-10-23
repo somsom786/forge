@@ -213,3 +213,16 @@ fn a_verbatim_engine_path_still_launches() {
         std::thread::sleep(Duration::from_millis(25));
     }
 }
+
+/// Protocol review: a line the core cannot read used to be skipped silently (a lost permission request would leave the agent
+/// waiting forever). Now it ends the session, and says why.
+#[test]
+fn an_unreadable_engine_line_ends_the_session_with_a_reason() {
+    let f = fixture();
+    let m = new_mission(&f, "FAKE:garbage", PermissionProfile::Default);
+    f.core.start_mission(&m.id, None).unwrap();
+    wait_until("session ended", || f.core.live_session_count() == 0 && state(&f, &m.id) != "running" && state(&f, &m.id) != "preparing");
+    let ended = f.core.store.events(&m.id, 0, 1000).unwrap();
+    let text = serde_json::to_string(&ended).unwrap() + &serde_json::to_string(&f.core.store.get_mission(&m.id).unwrap()).unwrap();
+    assert!(text.contains("unreadable protocol line"), "the reason is recorded: {text}");
+}

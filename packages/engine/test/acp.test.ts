@@ -146,3 +146,64 @@ describe('ACP helpers', () => {
     expect(toAcpMcpServers({ d: { type: 'stdio', command: 'c', args: ['a'], env: { T: 'v' } } }, false)).toEqual([{ name: 'd', command: 'c', args: ['a'], env: [{ name: 'T', value: 'v' }] }]);
   });
 });
+
+describe('protocol review regressions (real adapter, scripted agent)', () => {
+  it('a reused tool-call id is a new question each time, never a stored answer', async () => {
+    const r = await run('ACP:replay', allowAll);
+    const ids = r.asked.map((a) => a.toolUseId);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it('a read without a location asks with the agent\'s raw input instead of becoming an allowed Read', async () => {
+    const r = await run('ACP:rawread', denyAll);
+    expect(r.asked.map((a) => [a.tool, (a.input.rawInput as Record<string, unknown>)?.path])).toEqual([['acp_read', '/root/.ssh/id_rsa']]);
+  });
+
+  it('an execute without a command string is never translated into its title', async () => {
+    const r = await run('ACP:titleexec', denyAll);
+    expect(r.asked[0]!.tool).toBe('acp_execute');
+    expect((r.asked[0]!.input.rawInput as Record<string, unknown>).cmd).toBe('git push origin main');
+    expect(r.asked[0]!.input.command).toBeUndefined();
+  });
+
+  it('refuses to write through a hard link to a file outside the worktree', async (t) => {
+    const r = await run('ACP:hardlink', allowAll);
+    if (r.result.linkError) t.skip();
+    expect(String(r.result.write)).toMatch(/hard link/);
+    expect(r.result.victimContent).toBe('original\n');
+  });
+
+  it('refuses a write whose directory was replaced by a link after the edit was approved', async (t) => {
+    const r = await run('ACP:ancestor', allowAll);
+    if (r.result.linkError) t.skip();
+    expect(r.result.edit).toBe('ao');
+    expect(String(r.result.write)).toMatch(/link/);
+    expect(existsSync(join(String(r.result.outsideDir), 'a.md'))).toBe(false);
+  });
+
+  it('grants and writes nothing after the turn has ended', async () => {
+    const r = await run('ACP:postturn', allowAll);
+    await new Promise((res) => setTimeout(res, 300));
+    expect(r.asked).toHaveLength(0);
+    expect(existsSync(join(r.cwd, 'LATE.md'))).toBe(false);
+  });
+
+  it('stops an agent that ignores session/cancel', async () => {
+    const t0 = Date.now();
+    const r = await run('ACP:ignorecancel', allowAll, { abortAfterMs: 300 });
+    expect(r.turn.status).toBe('interrupted');
+    expect(Date.now() - t0).toBeLessThan(8000);
+  });
+
+  it('answers cancelled (not a standing rejection) while cancelling', () => {
+    const o = [{ optionId: 'ra', name: 'Always reject', kind: 'reject_always' as const }, { optionId: 'ao', name: 'Allow', kind: 'allow_once' as const }];
+    expect(chooseOption(o, false, true)).toEqual({ outcome: 'cancelled' });
+    expect(chooseOption(o, true, true)).toEqual({ outcome: 'cancelled' });
+  });
+
+  it('strips billing credentials whatever their case or provider', () => {
+    const env = acpEnv({ PATH: 'p', Openai_Api_Key: 'k', anthropic_api_key: 'k', OPENROUTER_API_KEY: 'k', AZURE_OPENAI_API_KEY: 'k', MISTRAL_BASE_URL: 'u', GH_TOKEN: 'keep' });
+    expect(env).toEqual({ PATH: 'p', GH_TOKEN: 'keep' });
+  });
+});

@@ -11,12 +11,13 @@
 // worktree diff stays the authoritative record and is reviewed before anything is merged.
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, mkdir, open, readFile, realpath } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import * as acp from '@agentclientprotocol/sdk';
-import type { CapabilityMatrix, McpServerConfig, StartCommand } from '../protocol.js';
-import { errMessage } from '../util.js';
+import { MAX_FIELD_BYTES, type CapabilityMatrix, type McpServerConfig, type StartCommand } from '../protocol.js';
+import { errMessage, truncateDeep } from '../util.js';
 import type { TurnResult } from './claudeNormalize.js';
 import type { PermissionDecision, ProviderAdapter, RunContext } from './types.js';
 
@@ -39,10 +40,16 @@ export const ACP_BILLING_ENV = [
   'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_USE_VERTEXAI',
 ];
 
+/** Billing credentials and model-endpoint redirects, whatever their case (Windows env names are case-insensitive). */
+const BILLING_PATTERN = /(^|_)(API_?KEY|AUTH_TOKEN)$|_BASE_URL$|^CLAUDE_CODE_USE_|^GOOGLE_GENAI_USE_VERTEXAI$/i;
+
 export function acpEnv(base: NodeJS.ProcessEnv): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...base };
-  for (const k of ACP_BILLING_ENV) delete env[k];
-  for (const k of Object.keys(env)) if (k.startsWith('FORGE_')) delete env[k];
+  const billing = new Set(ACP_BILLING_ENV.map((k) => k.toUpperCase()));
+  for (const k of Object.keys(env)) {
+    const up = k.toUpperCase();
+    if (billing.has(up) || BILLING_PATTERN.test(k) || up.startsWith('FORGE_')) delete env[k];
+  }
   return env;
 }
 
@@ -71,11 +78,14 @@ export function forgeRequests(tc: acp.ToolCallUpdate, cwd: string): Array<{ tool
       return paths.length ? paths.map((p) => ({ tool: 'Edit', input: { ...base, file_path: p } })) : [{ tool: 'Edit', input: base }];
     case 'read':
     case 'search':
-      return paths.length ? paths.map((p) => ({ tool: 'Read', input: { ...base, file_path: p } })) : [{ tool: 'Read', input: base }];
+      // Without a location FORGE cannot check what is read: ask, and show the agent's own description of it.
+      return paths.length ? paths.map((p) => ({ tool: 'Read', input: { ...base, file_path: p } })) : [{ tool: 'acp_read', input: { ...base, rawInput: raw } }];
     case 'execute': {
       const c = raw.command;
-      const command = Array.isArray(c) ? c.map(String).join(' ') : typeof c === 'string' ? c : String(tc.title ?? '');
-      return [{ tool: 'Bash', input: { ...base, command } }];
+      const command = Array.isArray(c) && c.every((x) => typeof x === 'string') ? c.join(' ') : typeof c === 'string' ? c : null;
+      // The title is the agent's prose, not the command: never let it stand in for what runs (policy reads `command`).
+      if (command === null) return [{ tool: 'acp_execute', input: { ...base, rawInput: raw } }];
+      return [{ tool: 'Bash', input: { ...base, command, rawInput: raw } }];
     }
     case 'fetch':
       return [{ tool: 'WebFetch', input: { ...base, url: raw.url ?? null } }];
@@ -84,8 +94,9 @@ export function forgeRequests(tc: acp.ToolCallUpdate, cwd: string): Array<{ tool
   }
 }
 
-/** The option FORGE answers with: only ever a `*_once` option. */
-export function chooseOption(options: acp.PermissionOption[], allow: boolean): acp.RequestPermissionOutcome {
+/** The option FORGE answers with: only ever a `*_once` option, or `cancelled` once the turn is being cancelled (ACP spec). */
+export function chooseOption(options: acp.PermissionOption[], allow: boolean, cancelling = false): acp.RequestPermissionOutcome {
+  if (cancelling) return { outcome: 'cancelled' };
   const want = allow ? ['allow_once'] : ['reject_once', 'reject_always'];
   for (const kind of want) {
     const o = options.find((x) => x.kind === kind);
@@ -94,29 +105,44 @@ export function chooseOption(options: acp.PermissionOption[], allow: boolean): a
   return { outcome: 'cancelled' };
 }
 
-/** Resolve `p` for a FORGE-performed write: inside the worktree by real path, never through a link. */
+/**
+ * Resolve `p` for a file access FORGE performs itself: lexically inside the worktree, and no link anywhere on the way —
+ * no symlink/junction ancestor (a directory swapped for a link after approval would redirect the write, possibly onto a
+ * protected file) and no link or hard link as the file itself (a hard link would let a write change a file outside).
+ */
 export async function safeTarget(cwd: string, p: string): Promise<string> {
   if (!isAbsolute(p)) throw new Error('ACP requires absolute paths');
   const root = await realpath(cwd);
   const target = resolve(p);
-  const st = await lstat(target).catch(() => null);
-  if (st?.isSymbolicLink()) throw new Error(`${p} is a link; FORGE does not write through links`);
-  // The deepest existing ancestor decides where the write really lands.
-  let dir = dirname(target);
-  for (;;) {
-    const real = await realpath(dir).catch(() => null);
-    if (real) {
-      const rest = relative(dir, target);
-      const finalPath = resolve(real, rest);
-      const rel = relative(root, finalPath);
-      if (rel === '' || rel.startsWith('..') || isAbsolute(rel) || rel.split(sep)[0] === '..') throw new Error(`${p} is outside the mission worktree`);
-      return finalPath;
-    }
-    const up = dirname(dir);
-    if (up === dir) throw new Error(`${p} has no existing parent`);
-    dir = up;
+  const rel = relative(root, target);
+  if (rel === '' || isAbsolute(rel) || rel.split(sep)[0] === '..') throw new Error(`${p} is outside the mission worktree`);
+  let cur = root;
+  const parts = rel.split(sep);
+  for (const [i, part] of parts.entries()) {
+    cur = join(cur, part);
+    const st = await lstat(cur).catch(() => null);
+    if (!st) break; // the rest does not exist yet; it will be created as plain directories/file below the checked part
+    if (st.isSymbolicLink()) throw new Error(`${p} goes through a link (${cur}); FORGE does not follow links`);
+    if (i === parts.length - 1 && st.isFile() && st.nlink > 1) throw new Error(`${p} is a hard link to another file; FORGE does not write through it`);
+  }
+  return target;
+}
+
+/** Open for writing without following a final link (where the platform supports it), and re-check what was opened. */
+async function writeNoFollow(target: string, content: string): Promise<void> {
+  const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0);
+  const fh = await open(target, flags, 0o644);
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() || st.nlink > 1) throw new Error(`${target} changed into a link while being written; nothing was written`);
+    await fh.writeFile(content, 'utf8');
+  } finally {
+    await fh.close();
   }
 }
+
+/** Reads FORGE performs for the agent are bounded. */
+const MAX_READ_BYTES = 4 * 1024 * 1024;
 
 const zero = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
 
@@ -136,8 +162,11 @@ export function createAcpAdapter(deps: AcpDeps = {}): ProviderAdapter {
 async function runAcp(ctx: RunContext, deps: AcpDeps): Promise<void> {
   const s = ctx.start;
   let denials = 0;
-  const finish = (r: Partial<TurnResult> & { status: TurnResult['status'] }) =>
+  let closeClient = () => {};
+  const finish = (r: Partial<TurnResult> & { status: TurnResult['status'] }) => {
+    closeClient();
     ctx.turnComplete({ usage: zero, permissionDenials: denials, ...r });
+  };
   if (!s.acp?.command) return finish({ status: 'error', message: 'no ACP agent was given for this mission' });
 
   let child: ChildProcess;
@@ -160,21 +189,33 @@ async function runAcp(ctx: RunContext, deps: AcpDeps): Promise<void> {
   let currentMsg = `acp-m${++msgCounter}`;
   let textSinceTool = false;
 
-  const ask = async (tool: string, input: Record<string, unknown>, toolUseId: string): Promise<PermissionDecision> => {
-    const d = await ctx.requestPermission({ tool, input, toolUseId, source: 'hook' });
+  // Every question FORGE asks gets its own id: the agent chooses its tool-call ids, and a reused id must never let an
+  // earlier answer stand in for a new request.
+  let askSeq = 0;
+  // Once the turn has ended (or is ending), nothing more is granted, read or written for this agent.
+  let closed = false;
+  const ask = async (tool: string, input: Record<string, unknown>, idBase: string): Promise<PermissionDecision> => {
+    if (closed) return { behavior: 'deny', message: 'the turn has ended' };
+    const d = await ctx.requestPermission({ tool, input: truncateDeep(input, MAX_FIELD_BYTES), toolUseId: `${idBase}#${++askSeq}`, source: 'hook' });
     if (d.behavior !== 'allow') denials++;
     return d;
+  };
+  const refuse = (msg: string) => acp.RequestError.invalidParams(undefined, msg);
+  closeClient = () => {
+    closed = true;
+    granted.clear();
   };
 
   const client: acp.Client = {
     async requestPermission(p) {
+      if (closed || ctx.signal.aborted) return { outcome: { outcome: 'cancelled' } };
       const reqs = forgeRequests(p.toolCall, s.cwd);
       let allow = true;
-      for (const [i, r] of reqs.entries()) {
-        const d = await ask(r.tool, r.input, `${p.toolCall.toolCallId}${reqs.length > 1 ? `#${i}` : ''}`);
+      for (const r of reqs) {
+        const d = await ask(r.tool, r.input, p.toolCall.toolCallId);
         if (d.behavior !== 'allow') { allow = false; break; }
       }
-      const outcome = chooseOption(p.options, allow);
+      const outcome = chooseOption(p.options, allow, closed || ctx.signal.aborted);
       if (allow && outcome.outcome === 'selected') {
         for (const r of reqs) if (r.tool === 'Edit' && typeof r.input.file_path === 'string') granted.set(resolve(r.input.file_path), (granted.get(resolve(r.input.file_path)) ?? 0) + 1);
       } else if (allow) {
@@ -189,28 +230,35 @@ async function runAcp(ctx: RunContext, deps: AcpDeps): Promise<void> {
           if (u.content.type === 'text') { ctx.delta(currentMsg, u.content.text); textIds.set(currentMsg, (textIds.get(currentMsg) ?? '') + u.content.text); textSinceTool = true; }
           break;
         case 'agent_thought_chunk':
-          if (u.content.type === 'text') ctx.emit('agent.thinking', { text: u.content.text });
+          if (u.content.type === 'text') ctx.emit('agent.thinking', { text: truncateDeep(u.content.text, MAX_FIELD_BYTES) });
           break;
         case 'tool_call':
           flushText();
-          ctx.emit('tool.call', { toolUseId: u.toolCallId, name: u.kind ?? 'other', summary: u.title, input: { kind: u.kind ?? null, locations: u.locations ?? [], rawInput: u.rawInput ?? null } });
+          ctx.emit('tool.call', truncateDeep({ toolUseId: u.toolCallId, name: u.kind ?? 'other', summary: u.title, input: { kind: u.kind ?? null, locations: u.locations ?? [], rawInput: u.rawInput ?? null } }, MAX_FIELD_BYTES));
           break;
         case 'tool_call_update':
           if (u.status === 'completed' || u.status === 'failed') {
-            ctx.emit('tool.result', { toolUseId: u.toolCallId, name: u.kind ?? 'other', ok: u.status === 'completed', output: u.title ?? u.status });
-            for (const c of u.content ?? []) if (c.type === 'diff') ctx.emit('file.changed', { path: c.path, tool: 'acp', toolUseId: u.toolCallId });
+            ctx.emit('tool.result', truncateDeep({ toolUseId: u.toolCallId, name: u.kind ?? 'other', ok: u.status === 'completed', output: u.title ?? u.status }, MAX_FIELD_BYTES));
+            for (const c of (u.content ?? []).slice(0, 200)) if (c.type === 'diff') ctx.emit('file.changed', { path: truncateDeep(c.path, MAX_FIELD_BYTES), tool: 'acp', toolUseId: u.toolCallId });
           }
           break;
         case 'plan':
-          ctx.emit('status', { message: 'plan', entries: u.entries.map((e) => ({ content: e.content, status: e.status })) });
+          ctx.emit('status', truncateDeep({ message: 'plan', entries: u.entries.map((e) => ({ content: e.content, status: e.status })) }, MAX_FIELD_BYTES));
           break;
         default:
           break;
       }
     },
     async readTextFile(p) {
-      const d = await ask('Read', { file_path: p.path, acpKind: 'fs/read_text_file' }, `fs-read-${Date.now()}`);
-      if (d.behavior !== 'allow') throw acp.RequestError.invalidParams(undefined, d.message ?? 'denied by FORGE');
+      const d = await ask('Read', { file_path: p.path, acpKind: 'fs/read_text_file' }, 'fs-read');
+      if (d.behavior !== 'allow') throw refuse(d.message ?? 'denied by FORGE');
+      // Policy allowed it (inside the worktree) or a human approved it (outside). Inside the worktree, links and hard links
+      // are refused as for writes; an approved outside read is read as named.
+      const inside = await safeTarget(s.cwd, p.path).then(() => true).catch((e: unknown) => (String(errMessage(e)).includes('outside the mission worktree') ? false : Promise.reject(refuse(errMessage(e)))));
+      const st = await lstat(p.path).catch(() => null);
+      if (!st?.isFile()) throw refuse(`${p.path} is not a regular file`);
+      if (st.size > MAX_READ_BYTES) throw refuse(`${p.path} is larger than ${MAX_READ_BYTES} bytes; FORGE does not read it whole`);
+      if (inside && st.nlink > 1) throw refuse(`${p.path} is a hard link`);
       const text = await readFile(p.path, 'utf8');
       if (p.line == null && p.limit == null) return { content: text };
       const lines = text.split('\n');
@@ -218,18 +266,20 @@ async function runAcp(ctx: RunContext, deps: AcpDeps): Promise<void> {
       return { content: lines.slice(from, p.limit == null ? undefined : from + p.limit).join('\n') };
     },
     async writeTextFile(p) {
+      if (closed) throw refuse('the turn has ended');
       const key = resolve(p.path);
       const n = granted.get(key) ?? 0;
       if (n > 0) {
         if (n === 1) granted.delete(key); else granted.set(key, n - 1);
       } else {
-        const d = await ask('Write', { file_path: p.path, content: p.content, acpKind: 'fs/write_text_file' }, `fs-write-${Date.now()}`);
-        if (d.behavior !== 'allow') throw acp.RequestError.invalidParams(undefined, d.message ?? 'denied by FORGE');
+        const d = await ask('Write', { file_path: p.path, content: p.content, acpKind: 'fs/write_text_file' }, 'fs-write');
+        if (d.behavior !== 'allow') throw refuse(d.message ?? 'denied by FORGE');
       }
-      // Re-checked at write time: a path that became a link or left the worktree since the decision is refused.
-      const target = await safeTarget(s.cwd, p.path).catch((e) => { throw acp.RequestError.invalidParams(undefined, errMessage(e)); });
+      // Re-checked at write time: a path that became (or goes through) a link, or left the worktree, since the decision.
+      const target = await safeTarget(s.cwd, p.path).catch((e) => { throw refuse(errMessage(e)); });
       await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, p.content, 'utf8');
+      await safeTarget(s.cwd, p.path).catch((e) => { throw refuse(errMessage(e)); }); // the directories just created are plain
+      await writeNoFollow(target, p.content).catch((e) => { throw refuse(errMessage(e)); });
       ctx.emit('file.changed', { path: target, tool: 'fs/write_text_file' });
       return {};
     },
@@ -245,7 +295,11 @@ async function runAcp(ctx: RunContext, deps: AcpDeps): Promise<void> {
   const stream = acp.ndJsonStream(Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>, Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>);
   const conn = new acp.ClientSideConnection(() => client, stream);
   let sessionId: string | null = null;
-  const onAbort = () => { if (sessionId) void conn.cancel({ sessionId }).catch(() => undefined); };
+  const onAbort = () => {
+    if (sessionId) void conn.cancel({ sessionId }).catch(() => undefined);
+    // An agent that ignores session/cancel does not keep running: stop it after a short grace period.
+    setTimeout(() => { if (child.exitCode === null) child.kill('SIGKILL'); }, 3000).unref();
+  };
   ctx.signal.addEventListener('abort', onAbort, { once: true });
   const died = exited.then((code) => { throw new Error(`the ACP agent exited (code ${code ?? 'unknown'})${stderrTail.trim() ? `: ${stderrTail.trim().slice(-500)}` : ''}`); });
 

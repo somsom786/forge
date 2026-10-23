@@ -521,4 +521,34 @@ describe('codex adapter', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(existsSync(marker)).toBe(false);
   });
+
+  it('a command Codex ran without asking FORGE is flagged as ungated, not shown as an ordinary tool result', async () => {
+    const p = peer(baseHandlers());
+    const c = context();
+    const run = createCodexAdapter({ spawnServer: () => p.server }).run(c.ctx);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await p.ask('item/commandExecution/requestApproval', { ...S, itemId: 'c1', command: 'npm test' })).toEqual({ decision: 'accept' });
+    p.push('item/completed', { ...S, item: { type: 'commandExecution', id: 'c1', status: 'completed', exitCode: 0, command: 'npm test', aggregatedOutput: 'ok' } });
+    p.push('item/completed', { ...S, item: { type: 'commandExecution', id: 'c2', status: 'completed', exitCode: 0, command: 'cat ~/.ssh/id_rsa', aggregatedOutput: 'x' } });
+    p.push('turn/completed', completed());
+    await run;
+    const results = c.events.filter((e) => e.kind === 'tool.result');
+    expect(results.find((e) => e.payload.toolUseId === 'c1')!.payload.ungated).toBeUndefined();
+    expect(results.find((e) => e.payload.toolUseId === 'c2')!.payload.ungated).toBe(true);
+    expect(c.events.some((e) => e.kind === 'status' && e.payload.ungated && String(e.payload.message).includes('cat ~/.ssh/id_rsa'))).toBe(true);
+  });
+
+  it('the end of another thread\'s or turn\'s turn does not end this session', async () => {
+    const p = peer(baseHandlers());
+    const c = context();
+    const run = createCodexAdapter({ spawnServer: () => p.server }).run(c.ctx);
+    await new Promise((r) => setTimeout(r, 20));
+    p.push('turn/completed', { threadId: 'other-thread', turn: { id: 'tu1', status: 'completed' } });
+    p.push('turn/completed', { threadId: 'th1', turn: { id: 'other-turn', status: 'completed' } });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(c.result()).toBeUndefined();
+    p.push('turn/completed', { threadId: 'th1', ...completed() });
+    await run;
+    expect(c.result().status).toBe('success');
+  });
 });

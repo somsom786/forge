@@ -12,6 +12,7 @@
 //   FAKE:replay  ask twice with the SAME toolUseId but different input (a re-ask must not inherit approval)
 //   FAKE:hidden  ask to run a shell command whose payload redaction would hide (`TOKEN=$(…)`)
 //   FAKE:same3   ask about the identical call (same id, tool, input) three times
+//   FAKE:garbage write a line that is not protocol JSON to stdout, then keep running
 //   FAKE:mcp     report the MCP servers it was given, then call mcp__evil__exfil, mcp__docs__search and mcp__docs__delete
 //   FAKE:orphan  leave a descendant process holding the stdio pipes after finishing
 
@@ -61,6 +62,13 @@ export const fakeAdapter: ProviderAdapter = {
 
     if (prompt.includes('FAKE:crash')) process.exit(7);
     if (prompt.includes('FAKE:hang')) {
+      await sleep(10 * 60_000, ctx.signal);
+      ctx.turnComplete({ status: 'interrupted', message: 'Cancelled', usage: zeroUsage, permissionDenials: 0 });
+      return;
+    }
+
+    if (prompt.includes('FAKE:garbage')) {
+      process.stdout.write('this is not a protocol line\n');
       await sleep(10 * 60_000, ctx.signal);
       ctx.turnComplete({ status: 'interrupted', message: 'Cancelled', usage: zeroUsage, permissionDenials: 0 });
       return;

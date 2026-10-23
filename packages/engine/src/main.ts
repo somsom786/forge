@@ -9,7 +9,7 @@ import { fakeAdapter } from './adapters/fake.js';
 import type { TurnResult } from './adapters/claudeNormalize.js';
 import type { PermissionDecision, PermissionRequest, ProviderAdapter, RunContext } from './adapters/types.js';
 import type { Command, EngineEvent, StartCommand } from './protocol.js';
-import { errMessage } from './util.js';
+import { errMessage, protocolLine } from './util.js';
 
 const ENGINE_VERSION = '0.1.0';
 
@@ -18,7 +18,7 @@ console.log = (...a: unknown[]) => process.stderr.write(a.map(String).join(' ') 
 console.info = console.log;
 
 function send(ev: EngineEvent): void {
-  process.stdout.write(JSON.stringify(ev) + '\n');
+  process.stdout.write(protocolLine(ev) + '\n');
 }
 
 function adapterFor(start: StartCommand): ProviderAdapter {
@@ -56,6 +56,7 @@ function makeContext(start: StartCommand): RunContext {
     requestPermission: ({ signal, ...req }: PermissionRequest) =>
       new Promise<PermissionDecision>((resolve) => {
         if (abort.signal.aborted) return resolve({ behavior: 'deny', message: 'Mission was cancelled' });
+        if (finished) return resolve({ behavior: 'deny', message: 'The turn has ended; FORGE does not grant anything after it' });
         const requestId = `p${++permCounter}`;
         pending.set(requestId, resolve);
         // The provider may withdraw a tool call (interrupt, timeout). Tell the core so a stale prompt does not linger.

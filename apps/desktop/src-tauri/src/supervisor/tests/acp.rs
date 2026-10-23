@@ -68,3 +68,20 @@ fn acp_missions_need_a_registered_agent() {
     f.core.acp_agent_remove(&a.id).unwrap();
     assert!(f.core.create_mission(&f.project.id, "x", None, "acp", Some("scripted"), PermissionProfile::Default).is_err());
 }
+
+/// Protocol review P1: an ACP agent runs MCP tools itself, so FORGE cannot enforce a tool allow-list for it. Servers
+/// authorized *with* an allow-list are withheld from ACP missions; unrestricted ones are passed.
+#[test]
+fn acp_missions_do_not_receive_mcp_servers_whose_allow_list_they_could_bypass() {
+    let f = fixture();
+    fixture_agent(&f);
+    std::fs::write(f.repo.path().join(".mcp.json"), r#"{"mcpServers": {"open": {"command": "open-mcp"}, "narrow": {"command": "narrow-mcp"}}}"#).unwrap();
+    for (name, tools) in [("open", vec![]), ("narrow", vec!["search".to_string()])] {
+        let p = f.core.mcp_preview(&f.project.id, name).unwrap();
+        f.core.mcp_authorize(&f.project.id, name, &p.definition_sha256, &tools).unwrap();
+    }
+    let m = acp_mission(&f, "ACP:report");
+    f.core.start_mission(&m.id, None).unwrap();
+    wait_until("awaiting_review", || state(&f, &m.id) == "awaiting_review");
+    assert_eq!(agent_result(&f, &m)["mcp"], json!(["open"]));
+}
