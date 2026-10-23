@@ -311,6 +311,10 @@ impl Core {
         if let Err(e) = self.generate_proof_pack(mission_id) {
             notes.push(format!("the Proof Pack could not be generated: {e}"));
         }
+        // A factual record of what happened, as a *proposed* page: a person decides whether it is worth trusting.
+        if let Err(e) = self.capture_mission_record(mission_id, Some(&commit)) {
+            notes.push(format!("the mission record could not be saved to memory: {e}"));
+        }
         let mut cleaned = false;
         match git::worktree_remove(&root, &wt, false) {
             Ok(()) => {

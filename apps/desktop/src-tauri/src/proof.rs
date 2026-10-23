@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn markdown_states_evidence_honestly_and_contains_no_scores() {
         let r = report(vec![vrun("t", RunState::Passed, "F", false)], vec![], &["src/auth/reset.rs"], 0, false);
-        let m = Mission { id: "m1".into(), project_id: "p".into(), title: "Implement password reset".into(), objective: "Do it".into(), state: "awaiting_review".into(), provider: "claude".into(), model: None, permission_profile: "default".into(), base_ref: Some("main".into()), base_commit: Some("0123456789abcdef".into()), branch: Some("forge/x".into()), worktree_path: None, provider_session_id: None, last_error: None, created_at: "t".into(), updated_at: "t".into() };
+        let m = Mission { id: "m1".into(), project_id: "p".into(), title: "Implement password reset".into(), objective: "Do it".into(), state: "awaiting_review".into(), provider: "claude".into(), model: None, permission_profile: "default".into(), base_ref: Some("main".into()), base_commit: Some("0123456789abcdef".into()), branch: Some("forge/x".into()), worktree_path: None, provider_session_id: None, last_error: None, created_at: "t".into(), updated_at: "t".into(), use_memory: true, memory_pins: vec![] };
         let (content, md) = build_pack(PackInput { mission: &m, project_name: "demo", report: &r, runs: &[], sessions: &[], approvals: &[], decisions: &[], diff_sha256: "deadbeef", diff_bytes: 10, diff_path: Some("/x.diff"), generated_at: "2026-10-23T00:00:00Z" });
         assert!(md.contains("# Proof Pack — Implement password reset"));
         assert!(md.contains("evidence, not a guarantee"));

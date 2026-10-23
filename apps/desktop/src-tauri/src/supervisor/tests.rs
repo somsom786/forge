@@ -332,3 +332,4 @@ fn invalid_projects_and_empty_objectives_are_rejected() {
 mod regressions;
 mod live;
 mod phase2;
+mod memory;

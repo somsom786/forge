@@ -8,3 +8,4 @@ pub mod service;
 pub mod retrieve;
 #[cfg(test)]
 mod service_tests;
+pub mod lint;

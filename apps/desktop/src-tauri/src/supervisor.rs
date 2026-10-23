@@ -370,7 +370,8 @@ impl Core {
         let prompt = match (followup, &resume) {
             (Some(t), _) => t.to_string(),
             (None, Some(_)) => format!("Continue the mission from where you left off. Original objective:\n{}", m.objective),
-            (None, None) => m.objective.clone(),
+            // First turn of a fresh session: attach verified project knowledge (pinned to this turn; never in the system prompt).
+            (None, None) => self.memory_prompt(&m, &project, &m.objective),
         };
         let _ = self.store.set_mission_error(mission_id, None);
 
@@ -830,6 +831,8 @@ impl Core {
             self.store.transition(&m.id, MissionState::Interrupted, "FORGE restarted while this mission was active")?;
             report.interrupted_missions.push(m.id);
         }
+        // Interrupted knowledge writes are resolved by inspecting what is actually on disk.
+        self.recover_knowledge();
         let orphaned = self.store.fail_orphaned_runs()?;
         if orphaned > 0 {
             self.store.audit("system", "recovery.checks", None, &json!({"orphanedRuns": orphaned}));
@@ -885,7 +888,9 @@ fn derive_title(objective: &str) -> String {
     if first.chars().count() > 72 { format!("{t}…") } else { t }
 }
 
+mod memory;
 mod review;
+pub use memory::{KnowledgeStatus, NewKnowledgeArgs, PageDetail};
 pub use review::{MergeOutcome, ReviewDecision};
 
 #[cfg(test)]

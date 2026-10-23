@@ -50,6 +50,10 @@ pub struct Mission {
     pub last_error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Retrieve verified project knowledge into the first prompt (default on).
+    pub use_memory: bool,
+    /// Pages the user explicitly chose to include even if unverified.
+    pub memory_pins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -116,7 +120,7 @@ pub struct NewMission<'a> {
     pub permission_profile: &'a str,
 }
 
-const MISSION_COLS: &str = "id, project_id, title, objective, state, provider, model, permission_profile, base_ref, base_commit, branch, worktree_path, provider_session_id, last_error, created_at, updated_at";
+const MISSION_COLS: &str = "id, project_id, title, objective, state, provider, model, permission_profile, base_ref, base_commit, branch, worktree_path, provider_session_id, last_error, created_at, updated_at, use_memory, memory_pins";
 
 fn mission_from(r: &Row) -> rusqlite::Result<Mission> {
     Ok(Mission {
@@ -136,6 +140,8 @@ fn mission_from(r: &Row) -> rusqlite::Result<Mission> {
         last_error: r.get(13)?,
         created_at: r.get(14)?,
         updated_at: r.get(15)?,
+        use_memory: r.get::<_, i64>(16)? != 0,
+        memory_pins: r.get::<_, Option<String>>(17)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
     })
 }
 
@@ -310,6 +316,14 @@ impl Store {
             "UPDATE mission SET base_ref=?2, base_commit=?3, branch=?4, worktree_path=?5, updated_at=?6 WHERE id=?1",
             params![id, base_ref, base_commit, branch, worktree, now()],
         )?;
+        Ok(())
+    }
+
+    pub fn set_mission_memory(&self, id: &str, use_memory: bool, pins: &[String]) -> Result<()> {
+        let n = self.c().execute("UPDATE mission SET use_memory=?2, memory_pins=?3, updated_at=?4 WHERE id=?1", params![id, use_memory as i64, serde_json::to_string(pins)?, now()])?;
+        if n == 0 {
+            return Err(ForgeError::NotFound(format!("mission {id}")));
+        }
         Ok(())
     }
 
