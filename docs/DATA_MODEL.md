@@ -67,11 +67,19 @@ Authority for *trust* lives in SQLite; the page files hold *content*.
 | `harness_review` (migration 5) | The content hash of each configuration file the user last reviewed (set by saving through FORGE or by "Mark reviewed"). Doctor reports files that differ from it ("changed outside FORGE since you last reviewed it"). |
 | Files outside SQLite | `<home>/harness-backups/<project>/<change>.bak` (exact previous bytes, hash-verified before any restore) and `<home>/harness-locks/<project>/.forge-lock` (OS file lock serialising writers across FORGE processes). Backups are kept indefinitely (each is at most 256 KiB); there is no retention policy yet. |
 
+## Implemented (migration 7 — experiments, Phase 6; backend only)
+
+| Table | Notes |
+|---|---|
+| `experiment` | Definition (name, objective, `command`, optional `correctness_command`, `metric_json` = duration or a `FORGE_METRIC <name>=<n>` value with a direction, `repetitions`, `warmup`, `timeout_secs`), `state` (draft → running → completed/failed/cancelled/interrupted), `attempt` (incremented per run), `env_json` (OS, arch, CPU count, git and FORGE versions of the latest attempt), `report_json` (verdict of the latest finished attempt), `last_error`. |
+| `experiment_variant` | The revisions compared: position 0 is the baseline. `git_ref` is what the user named; `commit_sha` is what it resolved to at creation, and every attempt measures that commit even if the branch moves. |
+| `experiment_result` | One row per run of every attempt (`phase` correctness/warmup/measure, `iteration`, `state` incl. `no_metric`, `exit_code`, `duration_ms`, `metric_value`, `worktree_changed`, redacted `output_tail`, `log_path`). Failed and inconclusive attempts are never deleted. |
+| Files outside SQLite | `<home>/experiments/<experiment>/<attempt>/<variant>` detached worktrees (removed when the attempt ends, or at startup after a crash) and `.../logs/*.log` (redacted, capped run logs, kept). |
+
 ## Designed, not yet implemented
 
 | Entity | Purpose | Phase |
 |---|---|---|
-| `experiment`, `experiment_result` | baseline, command, env, repetitions, outcome | 6 |
 | `organization`, `workspace`, `user`, `role`, `policy` | multi-tenant extension; every row gains `workspace_id` | 7 |
 
 Relationships: project 1─* mission 1─* agent_session 1─* activity_event; mission 1─* approval_request / verification_run /

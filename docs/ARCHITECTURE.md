@@ -103,7 +103,17 @@ file on disk.
 What this does *not* do: FORGE missions still never run project hooks or `.mcp.json` (see SECURITY.md). Hooks edited here take effect in the
 user's own Claude Code sessions.
 
+## Experiments (Phase 6, backend only)
+
+`experiment.rs` (pure: definition validation, metric extraction, statistics, verdict), `store_experiment.rs` (migration 7),
+`supervisor/experiment.rs` (runner). `experiment_create` resolves the baseline and every variant to exact commits. `experiment_run`
+(explicit user action, blocking) checks each commit out in its own detached worktree under the FORGE home, runs the optional
+correctness command once per revision, then warm-ups, then the measured runs interleaved across revisions (rotating who goes first),
+all through `verify::run_check`. A run that fails, prints no metric or changes its worktree invalidates that revision; a variant is
+*better* only if every measured value beats every baseline value with at least 3 runs on both sides. Worktrees are removed at the end;
+every run of every attempt is kept. No UI and no progress events yet.
+
 ## Planned domains (not yet built)
 
-Harness configuration service (Phase 4), experiment runner (Phase 6), second provider adapter — Codex (Phase 5): each a
-separate module behind `Core`-level commands; see ROADMAP.md. Tables are added by forward-only migrations.
+Independent review missions and conflict detection between missions (Phase 5), an Experiments screen (Phase 6): each a separate
+module behind `Core`-level commands; see ROADMAP.md. Tables are added by forward-only migrations.

@@ -609,3 +609,36 @@ pub async fn harness_hook_preview_remove(core: CoreState<'_>, project_id: String
 pub async fn harness_hook_dry_run(core: CoreState<'_>, project_id: String, event: String, command: String) -> Result<DryRun> {
     blocking(&core, move |c| c.harness_hook_dry_run(&project_id, &event, &command)).await
 }
+
+// ---- Phase 6: Experiments ---------------------------------------------------------------------------------------
+
+use crate::experiment::NewExperiment;
+use crate::store_experiment::Experiment;
+use crate::supervisor::ExperimentDetail;
+
+/// Define an experiment: every revision is resolved to an exact commit now. Nothing runs.
+#[tauri::command]
+pub async fn experiment_create(core: CoreState<'_>, project_id: String, spec: NewExperiment) -> Result<Experiment> {
+    blocking(&core, move |c| c.experiment_create(&project_id, spec)).await
+}
+
+#[tauri::command]
+pub async fn experiment_list(core: CoreState<'_>, project_id: String) -> Result<Vec<Experiment>> {
+    blocking(&core, move |c| c.experiment_list(&project_id)).await
+}
+
+#[tauri::command]
+pub async fn experiment_get(core: CoreState<'_>, experiment_id: String) -> Result<ExperimentDetail> {
+    blocking(&core, move |c| c.experiment_get(&experiment_id)).await
+}
+
+/// Runs the user's command against every revision (explicit user action; executes repository code). Returns when the attempt ends.
+#[tauri::command]
+pub async fn experiment_run(core: CoreState<'_>, experiment_id: String) -> Result<ExperimentDetail> {
+    blocking(&core, move |c| c.experiment_run(&experiment_id)).await
+}
+
+#[tauri::command]
+pub async fn experiment_cancel(core: CoreState<'_>, experiment_id: String) -> Result<()> {
+    blocking(&core, move |c| c.experiment_cancel(&experiment_id)).await
+}
