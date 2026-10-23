@@ -155,9 +155,9 @@ pub fn detect_codex(path: Option<PathBuf>) -> ProviderInfo {
     };
     if let Some(p) = &path {
         info.version = run_timeout(p, &["--version"], 10).map(|(_, t)| t.trim().to_string());
-        if let Some((_, t)) = run_timeout(p, &["login", "status"], 15) {
+        if let Some((ok, t)) = run_timeout(p, &["login", "status"], 15) {
             let lower = t.to_lowercase();
-            info.signed_in = Some(lower.contains("logged in"));
+            info.signed_in = Some(codex_signed_in(ok, &lower));
             if lower.contains("chatgpt") {
                 info.auth_method = Some("chatgpt".into());
             } else if lower.contains("api key") {
@@ -171,6 +171,11 @@ pub fn detect_codex(path: Option<PathBuf>) -> ProviderInfo {
 // ---- local models (Ollama) ---------------------------------------------------------------
 
 /// Plain `http://` on a loopback host only. A "local model" setting must never be able to send prompts off-box.
+/// `codex login status`: signed in only if it succeeded and says so. "Not logged in" also contains "logged in".
+fn codex_signed_in(exit_ok: bool, lower: &str) -> bool {
+    exit_ok && lower.contains("logged in") && !lower.contains("not logged in")
+}
+
 pub fn is_loopback_http(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("http://") else { return false };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
@@ -269,6 +274,14 @@ pub fn detect_claude_local(claude: Option<&PathBuf>, ollama_url: &str) -> Provid
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_not_logged_in_is_not_signed_in() {
+        assert!(codex_signed_in(true, "logged in using chatgpt"));
+        assert!(!codex_signed_in(false, "not logged in"));
+        assert!(!codex_signed_in(true, "not logged in"));
+        assert!(!codex_signed_in(false, "logged in using chatgpt"), "a failing status command is not proof");
+    }
 
     #[test]
     fn only_plain_http_loopback_is_accepted() {
