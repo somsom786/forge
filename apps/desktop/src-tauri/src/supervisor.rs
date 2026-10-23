@@ -133,6 +133,8 @@ struct SessionHandle {
     life: Mutex<()>,
     /// approval id -> engine request ids waiting on it (a hook and a fallback prompt can coincide).
     waiters: Mutex<HashMap<String, Vec<String>>>,
+    /// approval id -> the exact (tool, input) the agent asked for, unredacted, so policy can be re-checked at decision time.
+    requests: Mutex<HashMap<String, (String, Value)>>,
     fatal: Mutex<Option<String>>,
     stderr_tail: Mutex<String>,
     /// Dropping this terminates the whole process tree (Windows Job Object).
@@ -184,6 +186,8 @@ pub struct Core {
     checks: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// project ids with a merge in progress (merges into one checkout are serialised).
     merging: Mutex<HashSet<String>>,
+    /// Seconds a pending approval stays decidable (APPROVAL_TTL_SECS; shortened only by tests).
+    approval_ttl: std::sync::atomic::AtomicU64,
     /// experiment id -> cancel flag of its running attempt.
     experiments: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
@@ -208,6 +212,24 @@ fn canonical_json(v: &Value) -> String {
     canon(v).to_string()
 }
 
+/// Agents' approved tool calls execute on the host today (see docs/EXECUTION.md); recorded so that changes later are visible.
+pub(crate) const AGENT_EXECUTES_ON: &str = "agent_host";
+/// How long a request may wait for a human before it can no longer be approved.
+pub(crate) const APPROVAL_TTL_SECS: u64 = 30 * 60;
+
+/// What a human approves: one digest over everything the decision is about. A different mission, session, provider, tool,
+/// input, worktree, permission profile, policy revision or execution place is a different binding.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn approval_binding(mission_id: &str, session_id: &str, provider: &str, tool: &str, input: &Value, worktree: &Path, profile: &str, executes_on: &str) -> String {
+    let doc = json!({
+        "mission": mission_id, "session": session_id, "provider": provider, "tool": tool, "input": input,
+        "worktree": worktree.to_string_lossy(), "profile": profile, "policyRev": policy::REVISION, "executesOn": executes_on,
+    });
+    let mut h = Sha256::new();
+    h.update(canonical_json(&doc).as_bytes());
+    format!("{:x}", h.finalize())
+}
+
 /// Identity of one exact tool call: the provider's id *and* a digest of tool + input.
 fn request_key(tool_use_id: &str, tool: &str, input: &Value) -> String {
     let mut h = Sha256::new();
@@ -219,7 +241,7 @@ fn request_key(tool_use_id: &str, tool: &str, input: &Value) -> String {
 
 impl Core {
     pub fn new(store: Store, cfg: Config, emit: Emitter) -> Arc<Self> {
-        Arc::new(Self { store, cfg, emit, reg: Mutex::new(Registry::default()), checks: Mutex::new(HashMap::new()), merging: Mutex::new(HashSet::new()), experiments: Mutex::new(HashMap::new()) })
+        Arc::new(Self { store, cfg, emit, reg: Mutex::new(Registry::default()), checks: Mutex::new(HashMap::new()), merging: Mutex::new(HashSet::new()), experiments: Mutex::new(HashMap::new()), approval_ttl: std::sync::atomic::AtomicU64::new(APPROVAL_TTL_SECS) })
     }
 
     fn emit(&self, e: UiEvent) {
@@ -506,11 +528,22 @@ impl Core {
             core_seq: AtomicI64::new(0),
             life: Mutex::new(()),
             waiters: Mutex::new(HashMap::new()),
+            requests: Mutex::new(HashMap::new()),
             fatal: Mutex::new(None),
             stderr_tail: Mutex::new(String::new()),
             containment: Mutex::new(Some(containment)),
         });
         self.reg().sessions.insert(session.id.clone(), handle.clone());
+        // Expire requests nobody decided in time, so an agent is never left waiting on a stale prompt.
+        {
+            let (core, sid) = (self.clone(), session.id.clone());
+            let _ = std::thread::Builder::new().name(format!("forge-expiry-{}", &session.id[..8])).spawn(move || loop {
+                let ttl_ms = core.approval_ttl.load(Ordering::SeqCst) * 1000;
+                std::thread::sleep(Duration::from_millis((ttl_ms / 4).clamp(100, 15_000)));
+                let Some(h) = core.reg().sessions.get(&sid).cloned() else { break };
+                core.expire_overdue(&h);
+            });
+        }
         self.store.audit("system", "session.spawn", Some(&session.id), &json!({"mission": m.id, "provider": m.provider, "pid": pid}));
 
         // Start the I/O threads; if any cannot start, unwind everything instead of leaving a half-session.
@@ -704,8 +737,17 @@ impl Core {
                     Risk::Medium => "medium",
                     Risk::High => "high",
                 };
-                match self.store.create_approval(&h.mission_id, &h.session_id, &key, &req.tool, &redact::redact_str(&summary), &detail, risk_s, &warnings, "pending", None, None) {
+                let provider = self.store.get_mission(&h.mission_id).map(|m| m.provider).unwrap_or_default();
+                let binding = approval_binding(&h.mission_id, &h.session_id, &provider, &req.tool, &req.input, &h.worktree, h.profile.as_str(), AGENT_EXECUTES_ON);
+                let ttl = self.approval_ttl.load(Ordering::SeqCst);
+                let expires = (chrono::Utc::now() + chrono::Duration::seconds(ttl as i64)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                let created = self
+                    .store
+                    .create_approval(&h.mission_id, &h.session_id, &key, &req.tool, &redact::redact_str(&summary), &detail, risk_s, &warnings, "pending", None, None)
+                    .and_then(|a| self.store.bind_approval(&a.id, &binding, policy::REVISION, AGENT_EXECUTES_ON, &expires));
+                match created {
                     Ok(a) => {
+                        lock(&h.requests).insert(a.id.clone(), (req.tool.clone(), req.input.clone()));
                         lock(&h.waiters).entry(a.id.clone()).or_default().push(req.request_id.clone());
                         self.core_event(h, "approval.requested", json!({"approvalId": a.id, "tool": req.tool, "summary": a.summary, "risk": risk_s}));
                         self.settle(&h.mission_id, MissionState::AwaitingApproval, "waiting for approval");
@@ -733,6 +775,7 @@ impl Core {
         }
         waiters.remove(&approval_id);
         drop(waiters);
+        lock(&h.requests).remove(&approval_id);
         if let Ok(Some(a)) = self.store.expire_approval(&approval_id, "the agent withdrew this request") {
             self.emit(UiEvent::Approval { approval: a });
         }
@@ -749,8 +792,49 @@ impl Core {
         }
     }
 
+    fn expire_overdue(&self, h: &Arc<SessionHandle>) {
+        let _life = lock(&h.life);
+        let ids: Vec<String> = lock(&h.waiters).keys().cloned().collect();
+        let now = crate::store::now();
+        for id in ids {
+            let Ok(a) = self.store.get_approval(&id) else { continue };
+            if a.state == "pending" && a.expires_at.as_deref().is_some_and(|e| e < now.as_str()) {
+                if let Ok(Some(a)) = self.store.expire_approval(&id, "no decision before it expired") {
+                    self.store.audit("system", "approval.expired", Some(&a.id), &json!({"tool": a.tool}));
+                    self.core_event(h, "approval.decided", json!({"approvalId": a.id, "tool": a.tool, "decision": "expired"}));
+                    self.release_waiters(h, &id, false, Some("The request expired before anyone decided it".into()));
+                    self.after_approval_change(&a.mission_id);
+                    self.emit(UiEvent::Approval { approval: a });
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_approval_ttl_for_tests(&self, secs: u64) {
+        self.approval_ttl.store(secs, Ordering::SeqCst);
+    }
+
     /// The human's answer. Single-shot; fails if the request is no longer pending or its session is gone.
     pub fn decide_approval(&self, approval_id: &str, approved: bool, note: Option<&str>) -> Result<Approval> {
+        self.decide_approval_checked(approval_id, approved, note, None)
+    }
+
+    /// Answer the agent's waiting tool calls for `approval_id` and update the mission state. Caller holds `life`.
+    fn release_waiters(&self, handle: &SessionHandle, approval_id: &str, allow: bool, message: Option<String>) {
+        let waiting = lock(&handle.waiters).remove(approval_id).unwrap_or_default();
+        lock(&handle.requests).remove(approval_id);
+        for r in waiting {
+            handle.send(json!({"t": "permission_result", "requestId": r, "behavior": if allow { "allow" } else { "deny" }, "message": message}));
+        }
+    }
+
+    /// The human's answer, checked against what they were shown (`expected_binding`, from the approval card) and against the
+    /// current state of the world:
+    ///   * an expired request cannot be approved (it is expired and the agent is told "denied");
+    ///   * an approval re-runs FORGE policy on the exact original request first: if the target became protected or moved out of
+    ///     the worktree while the human was reading (a junction swapped in, say), the policy denial wins.
+    pub fn decide_approval_checked(&self, approval_id: &str, approved: bool, note: Option<&str>, expected_binding: Option<&str>) -> Result<Approval> {
         let existing = self.store.get_approval(approval_id)?;
         let handle = self
             .reg()
@@ -759,14 +843,42 @@ impl Core {
             .cloned()
             .ok_or_else(|| ForgeError::InvalidState("the agent session for this request has ended".into()))?;
         let _life = lock(&handle.life);
+        let existing = self.store.get_approval(approval_id)?; // re-read under the lock
+        if let Some(expected) = expected_binding {
+            if existing.binding_sha256.as_deref() != Some(expected) {
+                return Err(ForgeError::InvalidState("this request is not the one you were shown; reload and decide again".into()));
+            }
+        }
+        if existing.state == "pending" && existing.expires_at.as_deref().is_some_and(|e| e < crate::store::now().as_str()) {
+            if let Ok(Some(a)) = self.store.expire_approval(approval_id, "no decision before it expired") {
+                self.store.audit("system", "approval.expired", Some(&a.id), &json!({"tool": a.tool}));
+                self.release_waiters(&handle, approval_id, false, Some("The request expired before anyone decided it".into()));
+                self.after_approval_change(&a.mission_id);
+                self.emit(UiEvent::Approval { approval: a });
+            }
+            return Err(ForgeError::InvalidState("this request expired before it was decided; the agent was told it was denied".into()));
+        }
+        if approved && existing.state == "pending" {
+            let original = lock(&handle.requests).get(approval_id).cloned();
+            let Some((tool, input)) = original else {
+                return Err(ForgeError::InvalidState("FORGE no longer holds the original request, so it cannot be approved safely; deny it instead".into()));
+            };
+            if let Decision::Deny { reason } = policy::evaluate(&tool, &input, &handle.worktree, handle.profile) {
+                let why = format!("Blocked by FORGE policy at decision time: {reason}");
+                let a = self.store.decide_approval(approval_id, false, "policy", Some(&why))?;
+                self.store.audit("system", "approval.policy_override", Some(&a.id), &json!({"tool": a.tool, "reason": reason}));
+                self.core_event(&handle, "approval.decided", json!({"approvalId": a.id, "tool": a.tool, "decision": a.state, "note": why}));
+                self.release_waiters(&handle, approval_id, false, Some(why.clone()));
+                self.after_approval_change(&a.mission_id);
+                self.emit(UiEvent::Approval { approval: a });
+                return Err(ForgeError::InvalidState(format!("{why}. The request was denied.")));
+            }
+        }
         let a = self.store.decide_approval(approval_id, approved, "user", note)?;
         self.store.audit("user", if approved { "approval.approve" } else { "approval.deny" }, Some(&a.id), &json!({"tool": a.tool, "summary": a.summary, "risk": a.risk}));
         self.core_event(&handle, "approval.decided", json!({"approvalId": a.id, "tool": a.tool, "decision": a.state, "note": note}));
-        let waiting = lock(&handle.waiters).remove(&a.id).unwrap_or_default();
         let message = if approved { None } else { Some(note.map(str::to_string).unwrap_or_else(|| "Denied by the user".into())) };
-        for r in waiting {
-            handle.send(json!({"t": "permission_result", "requestId": r, "behavior": if approved { "allow" } else { "deny" }, "message": message}));
-        }
+        self.release_waiters(&handle, &a.id, approved, message);
         self.after_approval_change(&a.mission_id);
         self.emit(UiEvent::Approval { approval: a.clone() });
         Ok(a)

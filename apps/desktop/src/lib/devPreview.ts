@@ -65,23 +65,23 @@ const approvals: Approval[] = [
     id: 'a1', missionId: 'm1', sessionId: 's1', providerRequestId: 'r1', tool: 'Bash', summary: 'npm test -- --runInBand src/http',
     detail: { tool: 'Bash', input: { command: 'npm test -- --runInBand src/http', description: 'Run the HTTP client unit tests', timeout: 120000 }, source: 'can_use_tool' },
     risk: 'medium', warnings: ['Runs a project script: package.json scripts can execute arbitrary code.', 'Command is not on the allow-list for this profile.'],
-    state: 'pending', decidedBy: null, decisionNote: null, createdAt: iso(1), decidedAt: null,
+    state: 'pending', decidedBy: null, decisionNote: null, createdAt: iso(1), decidedAt: null, bindingSha256: null, policyRev: null, executesOn: null, expiresAt: null,
   },
   {
     id: 'a0', missionId: 'm1', sessionId: 's1', providerRequestId: 'r0', tool: 'Bash', summary: 'git push --force origin HEAD',
     detail: { tool: 'Bash', input: { command: 'git push --force origin HEAD' }, source: 'hook' },
     risk: 'high', warnings: ['Pushes to a remote.'], state: 'auto_denied', decidedBy: 'policy', decisionNote: 'Blocked by policy: pushing to remotes is not permitted inside a mission worktree.',
-    createdAt: iso(18), decidedAt: iso(18),
+    createdAt: iso(18), decidedAt: iso(18), bindingSha256: null, policyRev: null, executesOn: null, expiresAt: null,
   },
   {
     id: 'a2', missionId: 'm1', sessionId: 's1', providerRequestId: 'r2', tool: 'Edit', summary: 'src/http/client.ts',
     detail: { tool: 'Edit', input: { file_path: 'src/http/client.ts', old_string: 'return fetch(url, init);', new_string: 'return withRetry(() => fetch(url, init), opts.retry);' } },
-    risk: 'low', warnings: [], state: 'approved', decidedBy: 'user', decisionNote: null, createdAt: iso(30), decidedAt: iso(29),
+    risk: 'low', warnings: [], state: 'approved', decidedBy: 'user', decisionNote: null, createdAt: iso(30), decidedAt: iso(29), bindingSha256: null, policyRev: null, executesOn: null, expiresAt: null,
   },
   {
     id: 'a3', missionId: 'm7', sessionId: 's7', providerRequestId: 'r3', tool: 'Bash', summary: 'node scripts/build-index.mjs',
     detail: { tool: 'Bash', input: { command: 'node scripts/build-index.mjs' } },
-    risk: 'low', warnings: [], state: 'pending', decidedBy: null, decisionNote: null, createdAt: iso(50), decidedAt: null,
+    risk: 'low', warnings: [], state: 'pending', decidedBy: null, decisionNote: null, createdAt: iso(50), decidedAt: null, bindingSha256: null, policyRev: null, executesOn: null, expiresAt: null,
   },
 ];
 

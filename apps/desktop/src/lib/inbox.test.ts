@@ -9,7 +9,7 @@ const m = (id: string, state: Mission['state'], updatedAt = '2026-01-01T00:00:00
 });
 const ap = (id: string, missionId: string, state: Approval['state'], createdAt: string): Approval => ({
   id, missionId, sessionId: 's', providerRequestId: 'r', tool: 'Bash', summary: '', detail: { tool: 'Bash', input: {} },
-  risk: 'low', warnings: [], state, decidedBy: null, decisionNote: null, createdAt, decidedAt: null,
+  risk: 'low', warnings: [], state, decidedBy: null, decisionNote: null, createdAt, decidedAt: null, bindingSha256: null, policyRev: null, executesOn: null, expiresAt: null,
 });
 
 describe('buildInbox', () => {

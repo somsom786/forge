@@ -86,6 +86,18 @@ certification, and no remote service. Treat everything below as the implemented 
   commit is kept alive by a ref `refs/forge/snapshots/<sha>` in the project repository. These refs are FORGE's own namespace (not branches)
   and are never pushed by FORGE; nothing removes them yet. The UI asks for confirmation and states the commands before a run.
 
+## Approval binding (Milestone 2)
+
+| Control | Where | Test |
+|---|---|---|
+| Every approval request is bound to a digest of mission, session, provider, tool, canonical input, worktree, permission profile, policy revision (`policy::REVISION`) and where it executes (`agent_host` today). The UI sends the digest back; a decision on a different request is refused. | `supervisor.rs` (`approval_binding`, `decide_approval_checked`), migration 9 | `approvals::an_approval_is_bound…` |
+| Requests expire (30 min). A sweeper expires overdue ones and tells the agent "denied", so nothing waits forever and nothing old can be approved. | `supervisor.rs` (`expire_overdue`) | `approvals::an_undecided_request_expires…` |
+| Approving re-runs FORGE policy on the exact original (unredacted, in-memory) request. A target that became protected or was redirected outside the worktree while the human read the prompt is denied by policy. Before this, such an approval went through (shown by a mutation test). | `decide_approval_checked` | `approvals::policy_is_rechecked_at_decision_time…` (Unix; a Windows junction variant is in the Windows handoff) |
+| Reuse is narrow: only an identical call (same provider tool-use id and input digest) in the same session reuses an answer. | `on_permission` | `regressions::a_reask_with_changed_input…` |
+
+Remaining window: between FORGE's decision-time check and the agent's own write there is still a small gap that only a brokered
+file layer or an OS sandbox closes (limit 3).
+
 ## Execution backends (Stage B; docs/EXECUTION.md)
 
 * Checks and experiment runs execute through the project's **execution backend**. `trusted_local` (the default, unchanged

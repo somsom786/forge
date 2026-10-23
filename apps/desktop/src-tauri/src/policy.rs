@@ -138,6 +138,10 @@ fn short(s: &str, n: usize) -> String {
     }
 }
 
+/// Revision of the rules in this file. Every approval records the revision it was requested under; an approval requested under
+/// another revision is never reused. **Bump it whenever `evaluate` changes what it allows, denies or asks.**
+pub const REVISION: &str = "policy-2026-10-23.1";
+
 pub fn evaluate(tool: &str, input: &Value, worktree: &Path, profile: PermissionProfile) -> Decision {
     if WRITE_TOOLS.contains(&tool) {
         let Some(p) = path_arg(tool, input) else {

@@ -364,6 +364,15 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE verification_run ADD COLUMN backend TEXT NOT NULL DEFAULT 'trusted_local';
     ALTER TABLE experiment_result ADD COLUMN backend TEXT NOT NULL DEFAULT 'trusted_local';
     "#,
+    // v9 - approval binding: what exactly a human approves (digest of mission, session, provider, tool, canonical input,
+    // worktree, permission profile, policy revision, where it executes) and until when. Older rows keep NULLs: they belong
+    // to sessions that have ended and can no longer be decided.
+    r#"
+    ALTER TABLE approval_request ADD COLUMN binding_sha256 TEXT;
+    ALTER TABLE approval_request ADD COLUMN policy_rev TEXT;
+    ALTER TABLE approval_request ADD COLUMN executes_on TEXT;
+    ALTER TABLE approval_request ADD COLUMN expires_at TEXT;
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

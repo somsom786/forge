@@ -117,8 +117,9 @@ export const api = {
   projectSetExecutionBackend: (projectId: string, backend: ExecutionBackendId) => invoke<Project>('project_set_execution_backend', { projectId, backend }),
 
   approvalsPending: (missionId?: string) => invoke<Approval[]>('approvals_pending', { missionId: missionId ?? null }),
-  approvalDecide: (approvalId: string, approved: boolean, note?: string) =>
-    invoke<Approval>('approval_decide', { approvalId, approved, note: note ?? null }),
+  /** `binding` is the card's `bindingSha256`: the core refuses the decision if the request is not that one. */
+  approvalDecide: (approvalId: string, approved: boolean, note?: string, binding?: string | null) =>
+    invoke<Approval>('approval_decide', { approvalId, approved, note: note ?? null, binding: binding ?? null }),
 };
 
 export function subscribe(handler: (e: UiEvent) => void): Promise<UnlistenFn> {

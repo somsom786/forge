@@ -83,6 +83,11 @@ Authority for *trust* lives in SQLite; the page files hold *content*.
 | `project.execution_backend` | `trusted_local` (default, also for every existing project) or `linux_namespaces`. Changed only by the user; audited. |
 | `verification_run.backend`, `experiment_result.backend` | Where each run actually executed. Existing rows read `trusted_local`, which is what they were. |
 
+## Implemented (migration 9 — approval binding)
+
+`approval_request.binding_sha256`, `policy_rev`, `executes_on`, `expires_at`. NULL on rows created before migration 9 (their
+sessions have ended; they can no longer be decided).
+
 ## Designed, not yet implemented
 
 | Entity | Purpose | Phase |

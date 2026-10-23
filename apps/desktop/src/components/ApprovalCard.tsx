@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Check, ShieldAlert, ShieldX, X } from 'lucide-react';
 import { decideApproval } from '../lib/actions';
-import { RISK_TONE, relTime } from '../lib/format';
+import { RISK_TONE, relTime, timeUntil } from '../lib/format';
 import type { Approval } from '../lib/types';
 import { Badge, Kbd } from './ui';
 
@@ -30,7 +30,7 @@ export function ApprovalCard({ approval: a, compact }: { approval: Approval; com
   const decide = async (approved: boolean) => {
     if (busy || !pending) return;
     setBusy(true);
-    await decideApproval(a.id, approved, note);
+    await decideApproval(a.id, approved, note, a.bindingSha256);
     setBusy(false);
   };
 
@@ -72,7 +72,10 @@ export function ApprovalCard({ approval: a, compact }: { approval: Approval; com
         {blocked && <Badge tone="bad">Blocked by policy</Badge>}
         {!pending && !blocked && <Badge tone={a.state === 'approved' ? 'ok' : 'idle'}>{a.state.replace('_', ' ')}</Badge>}
         {!pending && !blocked && a.risk !== 'low' && <Badge tone={RISK_TONE[a.risk]}>{a.risk} risk</Badge>}
-        <span className="ml-auto text-[11px] text-muted">{relTime(a.decidedAt ?? a.createdAt)}</span>
+        <span className="ml-auto text-[11px] text-muted" title={a.bindingSha256 ? `Bound to request ${a.bindingSha256.slice(0, 12)}… under ${a.policyRev ?? 'unknown policy'}; runs on: ${a.executesOn ?? 'unknown'}` : undefined}>
+          {relTime(a.decidedAt ?? a.createdAt)}
+          {pending && a.expiresAt && <> · expires {timeUntil(a.expiresAt)}</>}
+        </span>
       </div>
       <div className="mono mt-1.5 whitespace-pre-wrap break-words text-[12.5px] text-fg">{a.summary}</div>
 

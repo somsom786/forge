@@ -298,8 +298,9 @@ pub async fn approvals_pending(core: CoreState<'_>, mission_id: Option<String>) 
 }
 
 #[tauri::command]
-pub async fn approval_decide(core: CoreState<'_>, approval_id: String, approved: bool, note: Option<String>) -> Result<Approval> {
-    blocking(&core, move |c| c.decide_approval(&approval_id, approved, note.as_deref())).await
+pub async fn approval_decide(core: CoreState<'_>, approval_id: String, approved: bool, note: Option<String>, binding: Option<String>) -> Result<Approval> {
+    // The card the user decided on carries the binding it showed; a request that is not that one is refused.
+    blocking(&core, move |c| c.decide_approval_checked(&approval_id, approved, note.as_deref(), binding.as_deref())).await
 }
 
 // ---- Phase 2: contracts, verification, review, merge, proof ---------------------------------

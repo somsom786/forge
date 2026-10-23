@@ -345,6 +345,7 @@ mod review_hardening;
 mod harness;
 mod experiment;
 mod conflicts;
+mod approvals;
 
 #[test]
 fn the_agents_overview_lists_running_and_recent_sessions_with_their_missions() {

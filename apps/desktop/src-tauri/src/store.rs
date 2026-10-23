@@ -102,6 +102,13 @@ pub struct Approval {
     pub decision_note: Option<String>,
     pub created_at: String,
     pub decided_at: Option<String>,
+    /// Digest of everything the decision is about (see `supervisor::approval_binding`). The UI echoes it back when deciding.
+    pub binding_sha256: Option<String>,
+    pub policy_rev: Option<String>,
+    /// Where the approved action would execute (agents' tool calls run on the host today: `agent_host`).
+    pub executes_on: Option<String>,
+    /// After this, the request can no longer be approved.
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -147,7 +154,7 @@ fn mission_from(r: &Row) -> rusqlite::Result<Mission> {
     })
 }
 
-const APPROVAL_COLS: &str = "id, mission_id, session_id, provider_request_id, tool, summary, detail_json, risk, warnings_json, state, decided_by, decision_note, created_at, decided_at";
+const APPROVAL_COLS: &str = "id, mission_id, session_id, provider_request_id, tool, summary, detail_json, risk, warnings_json, state, decided_by, decision_note, created_at, decided_at, binding_sha256, policy_rev, executes_on, expires_at";
 
 fn approval_from(r: &Row) -> rusqlite::Result<Approval> {
     let detail: String = r.get(6)?;
@@ -167,6 +174,10 @@ fn approval_from(r: &Row) -> rusqlite::Result<Approval> {
         decision_note: r.get(11)?,
         created_at: r.get(12)?,
         decided_at: r.get(13)?,
+        binding_sha256: r.get(14)?,
+        policy_rev: r.get(15)?,
+        executes_on: r.get(16)?,
+        expires_at: r.get(17)?,
     })
 }
 
@@ -485,6 +496,18 @@ impl Store {
             params![id, mission_id, session_id, provider_request_id, tool, summary, detail.to_string(), risk, serde_json::to_string(warnings)?, state, decided_by, note, t, decided_at],
         )?;
         self.get_approval(&id)
+    }
+
+    /// Record what a still-pending request is bound to. Written once, under the session's lifecycle lock, before anyone can see it.
+    pub fn bind_approval(&self, id: &str, binding: &str, policy_rev: &str, executes_on: &str, expires_at: &str) -> Result<Approval> {
+        let n = self.c().execute(
+            "UPDATE approval_request SET binding_sha256=?2, policy_rev=?3, executes_on=?4, expires_at=?5 WHERE id=?1 AND binding_sha256 IS NULL",
+            params![id, binding, policy_rev, executes_on, expires_at],
+        )?;
+        if n != 1 {
+            return Err(ForgeError::InvalidState(format!("approval {id} is already bound")));
+        }
+        self.get_approval(id)
     }
 
     pub fn get_approval(&self, id: &str) -> Result<Approval> {

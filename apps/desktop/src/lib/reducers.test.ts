@@ -18,7 +18,7 @@ const mission = (over: Partial<Mission> = {}): Mission => ({
 const approval = (over: Partial<Approval> = {}): Approval => ({
   id: 'a1', missionId: 'm1', sessionId: 's1', providerRequestId: 'r1', tool: 'Bash', summary: 'npm test',
   detail: { tool: 'Bash', input: {} }, risk: 'low', warnings: [], state: 'pending', decidedBy: null, decisionNote: null,
-  createdAt: '2026-01-01T00:00:00Z', decidedAt: null, ...over,
+  createdAt: '2026-01-01T00:00:00Z', decidedAt: null, bindingSha256: null, policyRev: null, executesOn: null, expiresAt: null, ...over,
 });
 
 describe('mergeEvents', () => {

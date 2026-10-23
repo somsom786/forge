@@ -108,6 +108,12 @@ export interface Approval {
   decisionNote: string | null;
   createdAt: string;
   decidedAt: string | null;
+  /** Digest of everything this decision is about; sent back when deciding so a different request can never be approved. */
+  bindingSha256: string | null;
+  policyRev: string | null;
+  executesOn: string | null;
+  /** After this the request can no longer be approved (the agent is told it was denied). */
+  expiresAt: string | null;
 }
 
 export interface MissionDetail {
