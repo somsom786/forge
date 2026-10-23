@@ -288,7 +288,7 @@ fn restart_recovery_resolves_checks_that_were_mid_flight() {
     let run = crate::store_review::VerificationRun {
         id: crate::store::new_id(), mission_id: m.id.clone(), check_id: "exists".into(), name: "n".into(), command: "c".into(), kind: "test".into(),
         state: crate::contract::RunState::Running, exit_code: None, started_at: crate::store::now(), ended_at: None, duration_ms: None,
-        fingerprint: "f".into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: String::new(),
+        fingerprint: "f".into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: String::new(), backend: "trusted_local".into(),
     };
     f.core.store.insert_run(&run).unwrap();
     f.core.recover().unwrap();
@@ -308,4 +308,35 @@ fn a_rejected_missions_leftovers_are_cleaned_only_with_confirmation() {
     f.core.cleanup_workspace(&m.id, true).unwrap();
     assert!(!wt.exists());
     assert_eq!(state(&f, &m.id), "rejected", "cleanup does not rewrite history");
+}
+
+/// Stage B: a project switched to the Linux-namespace backend runs its checks there; the run records where it ran, the Proof
+/// Pack says so, and a check that tries to read a host secret cannot. Backends that cannot run are refused, not downgraded.
+#[cfg(target_os = "linux")]
+#[test]
+fn checks_run_on_the_projects_execution_backend_and_record_it() {
+    let f = fixture();
+    assert_eq!(f.project.execution_backend, "trusted_local", "existing and new projects keep running as before");
+    assert!(f.core.project_set_execution_backend(&f.project.id, "windows_sandbox").unwrap_err().to_string().contains("cannot be used"));
+    assert!(f.core.project_set_execution_backend(&f.project.id, "docker").is_err());
+    if crate::execution::availability(crate::execution::Backend::LinuxNamespaces).is_err() {
+        assert!(std::env::var("FORGE_REQUIRE_SANDBOX_TESTS").as_deref() != Ok("1"), "sandbox required but unavailable");
+        return;
+    }
+    let secret_dir = tempfile::tempdir().unwrap();
+    let secret = secret_dir.path().join("credentials");
+    std::fs::write(&secret, "TOP-SECRET-CREDENTIAL-99").unwrap();
+    let m = mission_in_review(&f, "make a note");
+    let mut contract = f.core.get_contract(&m.id).unwrap();
+    contract.checks.push(crate::contract::CheckSpec { id: "steal".into(), name: "steal".into(), command: format!("cat '{}' || true; echo still-ran", secret.display()), kind: crate::contract::CheckKind::Test, required: false, timeout_secs: 30 });
+    f.core.set_contract(&m.id, contract).unwrap();
+    f.core.project_set_execution_backend(&f.project.id, "linux_namespaces").unwrap();
+    let run = run_check(&f, &m.id, "steal");
+    assert_eq!(run.backend, "linux_namespaces");
+    assert!(run.output_tail.contains("still-ran"), "{}", run.output_tail);
+    assert!(!run.output_tail.contains("TOP-SECRET-CREDENTIAL-99"), "the check read a host secret: {}", run.output_tail);
+    assert_eq!(f.core.store.audit_count("project.execution_backend").unwrap(), 1);
+    // Switching back records trusted-local runs as such; nothing is hidden.
+    f.core.project_set_execution_backend(&f.project.id, "trusted_local").unwrap();
+    assert_eq!(run_check(&f, &m.id, "steal").backend, "trusted_local");
 }

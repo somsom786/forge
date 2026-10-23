@@ -46,7 +46,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev librsvg2-dev bubblewrap
 
       - name: Install
         run: npm ci
@@ -69,4 +69,7 @@ jobs:
 
       - name: Rust core tests (live tests stay ignored)
         working-directory: apps/desktop/src-tauri
+        # On Linux the sandbox tests must run, not skip: a sandbox that silently is not there must not look green.
+        env:
+          FORGE_REQUIRE_SANDBOX_TESTS: ${{ runner.os == 'Linux' && '1' || '0' }}
         run: cargo test --lib

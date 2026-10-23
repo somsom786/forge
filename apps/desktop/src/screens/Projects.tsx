@@ -6,6 +6,7 @@ import { addProjectViaDialog, removeProject } from '../lib/actions';
 import { errMsg } from '../lib/format';
 import { useStore } from '../lib/store';
 import type { Project, RepoStatus } from '../lib/types';
+import { ExecutionBackendPanel } from '../components/ExecutionBackendPanel';
 import { Badge, EmptyState, PageHeader } from '../components/ui';
 import { MissionsTable } from './Missions';
 
@@ -218,6 +219,7 @@ function ProjectView({ project }: { project: Project }) {
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-line px-5 py-2">
         <span className="text-muted">Default branch <span className="mono text-fg">{project.defaultBranch}</span></span>
         <StatusCells s={map[project.id]} />
+        <span className="ml-auto"><ExecutionBackendPanel project={project} /></span>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         <MissionsTable missions={rows} showProject={false} emptyHint="No missions in this project yet." />

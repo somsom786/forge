@@ -29,6 +29,8 @@ pub struct Project {
     pub root_path: String,
     pub default_branch: String,
     pub created_at: String,
+    /// Where this project's checks and experiments run (see `execution.rs`).
+    pub execution_backend: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -203,14 +205,14 @@ impl Store {
     pub fn add_project(&self, name: &str, root: &str, default_branch: &str) -> Result<Project> {
         let c = self.c();
         if let Some(p) = c
-            .query_row("SELECT id, name, root_path, default_branch, created_at FROM project WHERE root_path=?1", [root], project_from)
+            .query_row("SELECT id, name, root_path, default_branch, created_at, execution_backend FROM project WHERE root_path=?1", [root], project_from)
             .optional()?
         {
             // Re-adding an archived or existing project returns it rather than duplicating.
             c.execute("UPDATE project SET archived_at=NULL WHERE id=?1", [&p.id])?;
             return Ok(p);
         }
-        let p = Project { id: new_id(), name: name.into(), root_path: root.into(), default_branch: default_branch.into(), created_at: now() };
+        let p = Project { id: new_id(), name: name.into(), root_path: root.into(), default_branch: default_branch.into(), created_at: now(), execution_backend: "trusted_local".into() };
         c.execute(
             "INSERT INTO project(id,name,root_path,default_branch,created_at) VALUES (?1,?2,?3,?4,?5)",
             params![p.id, p.name, p.root_path, p.default_branch, p.created_at],
@@ -220,14 +222,22 @@ impl Store {
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let c = self.c();
-        let mut s = c.prepare("SELECT id, name, root_path, default_branch, created_at FROM project WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE")?;
+        let mut s = c.prepare("SELECT id, name, root_path, default_branch, created_at, execution_backend FROM project WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE")?;
         let rows = s.query_map([], project_from)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
+    pub fn set_project_backend(&self, id: &str, backend: &str) -> Result<()> {
+        let n = self.c().execute("UPDATE project SET execution_backend=?2 WHERE id=?1", params![id, backend])?;
+        if n == 0 {
+            return Err(ForgeError::NotFound(format!("project {id}")));
+        }
+        Ok(())
+    }
+
     pub fn get_project(&self, id: &str) -> Result<Project> {
         self.c()
-            .query_row("SELECT id, name, root_path, default_branch, created_at FROM project WHERE id=?1", [id], project_from)
+            .query_row("SELECT id, name, root_path, default_branch, created_at, execution_backend FROM project WHERE id=?1", [id], project_from)
             .optional()?
             .ok_or_else(|| ForgeError::NotFound(format!("project {id}")))
     }
@@ -534,7 +544,7 @@ impl Store {
 }
 
 fn project_from(r: &Row) -> rusqlite::Result<Project> {
-    Ok(Project { id: r.get(0)?, name: r.get(1)?, root_path: r.get(2)?, default_branch: r.get(3)?, created_at: r.get(4)? })
+    Ok(Project { id: r.get(0)?, name: r.get(1)?, root_path: r.get(2)?, default_branch: r.get(3)?, created_at: r.get(4)?, execution_backend: r.get(5)? })
 }
 
 const SESSION_SELECT: &str = "SELECT id, mission_id, provider, provider_session_id, state, pid, started_at, ended_at, end_reason, usage_json FROM agent_session";

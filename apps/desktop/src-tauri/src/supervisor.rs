@@ -912,6 +912,7 @@ fn derive_title(objective: &str) -> String {
     if first.chars().count() > 72 { format!("{t}…") } else { t }
 }
 
+mod execution;
 mod experiment;
 mod harness;
 mod memory;

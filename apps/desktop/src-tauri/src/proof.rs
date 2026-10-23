@@ -251,6 +251,7 @@ pub fn build_pack(i: PackInput) -> (Value, String) {
             "latest": c.latest.as_ref().map(|r| json!({
                 "runId": r.id, "state": r.state, "exitCode": r.exit_code, "durationMs": r.duration_ms,
                 "ranAgainst": r.fingerprint, "mutatedWorktree": r.mutated, "startedAt": r.started_at, "logPath": r.log_path,
+                "backend": r.backend,
             })),
         })).collect::<Vec<_>>(),
         "permissions": {
@@ -334,18 +335,22 @@ pub fn render_markdown(c: &Value) -> String {
     if checks.is_empty() {
         o.push_str("_No checks were defined._\n\n");
     } else {
-        o.push_str("| Check | Command | Result | Fresh |\n|---|---|---|---|\n");
+        o.push_str("| Check | Command | Result | Ran in | Fresh |\n|---|---|---|---|---|\n");
         for k in checks {
             let res = match k["latest"].as_object() {
                 None => "never run".to_string(),
                 Some(l) => format!("{} (exit {}, {} ms){}", l["state"].as_str().unwrap_or("?"), l["exitCode"], l["durationMs"], if l["mutatedWorktree"] == true { ", modified worktree" } else { "" }),
             };
             o.push_str(&format!(
-                "| {}{} | `{}` | {} | {} |\n",
+                "| {}{} | `{}` | {} | {} | {} |\n",
                 cell(k["name"].as_str().unwrap_or("")),
                 if k["required"] == true { " (required)" } else { "" },
                 cell(k["command"].as_str().unwrap_or("")),
                 cell(&res),
+                match k["latest"]["backend"].as_str() {
+                    Some(b) => crate::execution::Backend::parse(b).map(|b| b.label()).unwrap_or(b),
+                    None => "—",
+                },
                 if k["fresh"] == true { "yes" } else { "no" }
             ));
         }
@@ -425,7 +430,7 @@ mod tests {
     }
 
     fn vrun(check: &str, state: RunState, fp: &str, mutated: bool) -> VerificationRun {
-        VerificationRun { id: format!("{check}-run-123456"), mission_id: "m".into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state, exit_code: Some(0), started_at: "t".into(), ended_at: None, duration_ms: Some(10), fingerprint: fp.into(), head_commit: None, mutated, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: contract().checks.iter().find(|c| c.id == check).map(|c| c.revision()).unwrap_or_default() }
+        VerificationRun { id: format!("{check}-run-123456"), mission_id: "m".into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state, exit_code: Some(0), started_at: "t".into(), ended_at: None, duration_ms: Some(10), fingerprint: fp.into(), head_commit: None, mutated, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: contract().checks.iter().find(|c| c.id == check).map(|c| c.revision()).unwrap_or_default(), backend: "trusted_local".into() }
     }
 
     fn report(runs: Vec<VerificationRun>, verdicts: Vec<ManualVerdictRow>, files: &[&str], pending: usize, running: bool) -> VerificationReport {

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Play, RefreshCw, Square } from 'lucide-react';
 import { api } from '../lib/api';
 import { cancelCheck, runCheck, setVerdict } from '../lib/actions';
+import { backendShort } from '../lib/execution';
 import { errMsg, formatDuration } from '../lib/format';
 import { useStore } from '../lib/store';
 import type { CheckReport, CriterionReport, Mission, VerificationReport } from '../lib/types';
@@ -123,6 +124,7 @@ function CheckRow({ c, missionId, anyRunning, canRun }: { c: CheckReport; missio
               <Badge tone={RUN_TONE[r.state]}>{r.state}</Badge>
               {r.exitCode !== null && <span className="mono text-[11.5px] text-muted">exit {r.exitCode}</span>}
               {r.durationMs !== null && <span className="text-[11.5px] text-muted">{formatDuration(r.durationMs)}</span>}
+              <span title={`Ran on: ${r.backend}`}><Badge tone={backendShort(r.backend).tone}>{backendShort(r.backend).label}</Badge></span>
             </>
           ) : (
             <span className="text-muted">never run</span>

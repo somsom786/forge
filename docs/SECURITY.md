@@ -83,9 +83,19 @@ certification, and no remote service. Treat everything below as the implemented 
   ranges or reflog expressions) before they reach git.
 * Run output is redacted (tail and log) like checks; containment is the check runner's (best-effort, limit 5).
 
+## Execution backends (Stage B; docs/EXECUTION.md)
+
+* Checks and experiment runs execute through the project's **execution backend**. `trusted_local` (the default, unchanged
+  behaviour) is labelled "Not isolated" everywhere. `linux_namespaces` (bubblewrap) is implemented and adversarially tested on
+  Linux: no host files outside the workspace, no home directory, cleared environment, no network, no surviving processes,
+  read-only git directory. Windows Sandbox and isolated WSL are designed and reported **not implemented**.
+* A selected backend that is unavailable is an error; FORGE never falls back to a less isolated one. Changes are audited, and
+  every verification run, experiment run and Proof Pack records the backend it ran on.
+* The **agents** and the commands they run after approval are not yet routed through a backend (limit 1 stands).
+
 ## Known limits (do not assume these are solved)
 
-1. **An approved shell command runs with the user's privileges and no sandbox.** FORGE shows risk warnings but cannot
+1. **An approved agent shell command runs with the user's privileges and no sandbox.** (Checks and experiments can now be isolated on Linux; see Execution backends.) FORGE shows risk warnings but cannot
    confine it: an approved command could read or modify `~/.forge/forge.db` or files outside the worktree, push to a
    remote using the user's credentials, or run package scripts. Mitigation path: provider sandboxing (Claude `sandbox`
    option, Codex sandbox) and brokered git — not enabled yet.
@@ -98,7 +108,7 @@ certification, and no remote service. Treat everything below as the implemented 
    process that wins that microsecond window could still redirect a write; closing it needs handle-pinned directory identities. Creating a file
    that did not exist is an exclusive create (it fails instead of replacing a file that appeared after the check); replacing an existing
    file is not.
-4. **Running a verification check executes code from the mission worktree** (including agent-written code, or a
+4. **Running a verification check executes code from the mission worktree** (unsandboxed on `trusted_local`; isolated on `linux_namespaces`) (including agent-written code, or a
    modified `npm test` script) with the user's privileges. Checks only run on an explicit user action and their commands
    come from the user, but the code they invoke is not sandboxed. A check that dirties the worktree is flagged and its
    result is not treated as fresh.
