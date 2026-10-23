@@ -1,6 +1,6 @@
 {
   "build": {
-    "beforeBuildCommand": "node ../../../tools/package/prepare.mjs && npm run build"
+    "beforeBuildCommand": "node ../../tools/package/prepare.mjs && npm run build"
   },
   "bundle": {
     "active": true,
