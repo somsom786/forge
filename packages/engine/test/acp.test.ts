@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { acpEnv, chooseOption, createAcpAdapter, forgeRequests, toAcpMcpServers } from '../src/adapters/acp.js';
@@ -135,7 +135,7 @@ describe('ACP helpers', () => {
   });
   it('write kinds without a location carry no path (policy denies them); multi-location moves check each path', () => {
     expect(forgeRequests({ toolCallId: 't', kind: 'delete' }, '/w')).toEqual([{ tool: 'Edit', input: { acpTitle: null, acpKind: 'delete' } }]);
-    expect(forgeRequests({ toolCallId: 't', kind: 'move', locations: [{ path: '/w/a' }, { path: 'b' }] }, '/w').map((r) => r.input.file_path)).toEqual(['/w/a', '/w/b']);
+    expect(forgeRequests({ toolCallId: 't', kind: 'move', locations: [{ path: '/w/a' }, { path: 'b' }] }, '/w').map((r) => r.input.file_path)).toEqual(['/w/a', resolve('/w', 'b')]); // absolute paths are kept as given; relative ones resolve against cwd
     expect(forgeRequests({ toolCallId: 't', kind: 'switch_mode' }, '/w')[0]!.tool).toBe('acp_switch_mode');
   });
   it('strips billing credentials and FORGE internals from the agent environment', () => {
