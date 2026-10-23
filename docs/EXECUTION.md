@@ -50,7 +50,10 @@ test has a trusted-local control proving it would notice a leak, and mutation ch
 **Not enforced:** memory/CPU limits (needs cgroups); toolchains installed under the home directory (rustup, nvm) are invisible
 by design, so such projects need a system-wide toolchain; anything readable under `/usr` or the listed `/etc` files is readable;
 the kernel is shared (a kernel exploit escapes, unlike a VM); requires unprivileged user namespaces (some distributions restrict
-them; FORGE then reports the backend unavailable).
+them; FORGE then reports the backend unavailable). Ubuntu 23.10+ (including 24.04) restricts them through AppArmor by default
+(`kernel.apparmor_restrict_unprivileged_userns=1`): bubblewrap fails with "loopback: Failed RTM_NEWADDR". Enabling the backend
+there needs an AppArmor profile that allows `bwrap` user namespaces, or that sysctl set to 0 — a host security decision FORGE
+leaves to the user. CI sets the sysctl on its disposable runner so the isolation tests run.
 
 ### `windows_sandbox` — designed, **not implemented**
 Windows Sandbox (Windows 10/11 Pro, Enterprise, Education; not Home) is a disposable lightweight VM configured by a `.wsb` file.
