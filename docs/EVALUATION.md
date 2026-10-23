@@ -73,6 +73,28 @@ Index build (whole tree, release build, this container): median 47–614 ms acro
 * 30 cases per repository: differences of a few points are noise. The large gaps (axios, hono, zod, ripgrep) are not.
 * The two weaknesses above (tests ranked high; no view into function bodies or references) are real and unaddressed.
 
+## Memory retrieval on real documentation (2026-10-23)
+
+**Method** (`apps/desktop/src-tauri/src/knowledge/memory_eval.rs`): FAQ files from two public projects. Each answer
+becomes one verified memory page titled only "Answer N" (the question's wording is not in the page); each question is
+then used as a mission objective, and the package FORGE would inject (`retrieve::build`, default 6,000-character budget)
+is checked for the right answer.
+
+| FAQ (pinned clone as above) | Pairs | hit@1 | hit@3 | MRR | Right answer in the package at all | Raw FTS hit@1 |
+|---|---|---|---|---|---|---|
+| ripgrep `FAQ.md` | 28 | 0.57 | 0.79 | 0.66 | 0.82 | 0.57 |
+| click `docs/faqs.md` | 6 | 0.83 | 1.00 | 0.92 | 1.00 | 0.83 |
+
+Reading: retrieval is lexical (SQLite FTS5/BM25 plus FORGE's trust, file-overlap and freshness adjustments), so a
+question and answer that share no words are missed — e.g. "How do I search files that aren't UTF-8?" against an answer
+written in terms of *encodings*. FORGE's re-ranking did not change hit@1 over plain BM25 here (it is designed to demote
+untrusted, stale and superseded pages, which this set does not contain). The click set is too small to mean much.
+The 6,000-character budget covers the notes; a fixed frame of about 420 characters (the data-not-instructions header)
+and the separate "Relevant code" block (≤ 2,000 bytes) come on top.
+
+Not measured: retrieval over a user's real, messy vault (duplicates, contradictions); semantic (embedding) retrieval,
+which FORGE does not have.
+
 ## Native agent vs FORGE
 
 Not run. A fair comparison needs the same tasks given to native Claude Code / Codex and to FORGE missions on the same
