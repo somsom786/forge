@@ -27,7 +27,7 @@ function Screen() {
     case 'mission':
       return <MissionWorkspace key={route.id} id={route.id} />;
     case 'knowledge':
-      return <KnowledgeScreen key={`${route.filter ?? ''}${route.pageId ?? ''}`} filter={route.filter} pageId={route.pageId} />;
+      return <KnowledgeScreen key={`${route.filter ?? ''}${route.pageId ?? ''}${route.newPage ? 'n' : ''}`} filter={route.filter} pageId={route.pageId} newPage={route.newPage} />;
     case 'settings':
       return <SettingsScreen />;
   }

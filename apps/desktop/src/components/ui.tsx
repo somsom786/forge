@@ -61,13 +61,14 @@ export function Toasts() {
   return (
     <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-[380px] max-w-[calc(100vw-2rem)] flex-col gap-2" aria-live="polite">
       {notices.map((n) => (
-        <Toast key={n.id} id={n.id} level={n.level} message={n.message} onClose={() => dismiss(n.id)} />
+        <Toast key={n.id} id={n.id} level={n.level} message={n.message} link={n.link} onClose={() => dismiss(n.id)} />
       ))}
     </div>
   );
 }
 
-function Toast({ level, message, onClose }: { id: number; level: 'info' | 'warn' | 'error'; message: string; onClose: () => void }) {
+function Toast({ level, message, link, onClose }: { id: number; level: 'info' | 'warn' | 'error'; message: string; link?: { label: string; pageId: string }; onClose: () => void }) {
+  const navigate = useStore((s) => s.navigate);
   useEffect(() => {
     if (level === 'error') return; // errors stay until dismissed
     const t = window.setTimeout(onClose, level === 'warn' ? 12000 : 5000);
@@ -79,7 +80,7 @@ function Toast({ level, message, onClose }: { id: number; level: 'info' | 'warn'
   return (
     <div role={level === 'error' ? 'alert' : 'status'} className={`pointer-events-auto flex items-start gap-2 rounded-md border px-3 py-2 shadow-lg shadow-black/40 ${tone}`}>
       <Icon className={`mt-0.5 size-4 shrink-0 ${color}`} aria-hidden />
-      <div className="min-w-0 flex-1 whitespace-pre-wrap break-words text-fg">{message}</div>
+      <div className="min-w-0 flex-1 whitespace-pre-wrap break-words text-fg">{message}{link && <> <button className="text-accent underline" onClick={() => { navigate({ name: 'knowledge', pageId: link.pageId }); onClose(); }}>{link.label}</button></>}</div>
       <button className="btn btn-ghost btn-sm !px-1" onClick={onClose} aria-label="Dismiss notification">
         <X className="size-3.5" />
       </button>

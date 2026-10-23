@@ -5,8 +5,10 @@ import { api } from '../lib/api';
 import { createMission, guarded, refreshProviders, startMission } from '../lib/actions';
 import { ContractEditor } from './ContractEditor';
 import { contractIsEmpty, normalizeContract } from '../lib/verification';
-import type { Contract } from '../lib/types';
-import { providerLabel } from '../lib/format';
+import type { Contract, ContextPackage } from '../lib/types';
+import { previewSummary } from '../lib/knowledge';
+import { ContextView } from './ContextView';
+import { errMsg, providerLabel } from '../lib/format';
 import { useStore } from '../lib/store';
 import type { PermissionProfile, ProviderId, ProviderInfo } from '../lib/types';
 import { defaultModel, modelRequired, modelSatisfied } from '../lib/provider';
@@ -53,6 +55,10 @@ export function NewMissionDialog() {
   const [busy, setBusy] = useState(false);
   const [contract, setContract] = useState<Contract>(EMPTY_CONTRACT);
   const [showContract, setShowContract] = useState(false);
+  const [useMemory, setUseMemory] = useState(true);
+  const [pkg, setPkg] = useState<ContextPackage | null>(null);
+  const [pkgError, setPkgError] = useState<string | null>(null);
+  const [showPkg, setShowPkg] = useState(false);
 
   // Reset whenever the dialog opens.
   useEffect(() => {
@@ -64,6 +70,9 @@ export function NewMissionDialog() {
     setBusy(false);
     setContract(EMPTY_CONTRACT);
     setShowContract(false);
+    setUseMemory(true);
+    setPkg(null);
+    setShowPkg(false);
     void refreshProviders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -76,6 +85,19 @@ export function NewMissionDialog() {
   }, [open, providers, provider, firstAvailable]);
 
   const selected = providers?.find((p) => p.id === provider);
+  // Debounced preview of the verified knowledge that would be attached.
+  useEffect(() => {
+    if (!open || !useMemory || !projectId || !objective.trim()) { setPkg(null); setPkgError(null); return; }
+    let off = false;
+    const t = window.setTimeout(() => {
+      api.contextPreview(projectId, objective.trim(), [], []).then(
+        (p) => { if (!off) { setPkg(p); setPkgError(null); } },
+        (e) => { if (!off) setPkgError(errMsg(e)); },
+      );
+    }, 600);
+    return () => { off = true; window.clearTimeout(t); };
+  }, [open, useMemory, projectId, objective]);
+
   const hasList = (selected?.models.length ?? 0) > 0;
   // Default to the first listed model whenever the provider changes.
   useEffect(() => {
@@ -97,14 +119,22 @@ export function NewMissionDialog() {
         model: model.trim() || undefined,
         permissionProfile: profile,
       },
-      start && !wantsContract,
+      false,
     );
+    let ready = !!m;
     if (m && wantsContract) {
       // The contract is saved on the new mission before anything runs.
       const base = await guarded(api.contractGet(m.id), 'Mission created but its contract could not be read');
       const saved = base && (await guarded(api.contractSet(m.id, { ...base, ...normalizeContract(contract), version: base.version }), 'Mission created but the contract was not saved'));
-      if (saved && start) m = (await startMission(m.id)) ?? m;
+      if (!saved) ready = false;
     }
+    if (m && !useMemory) {
+      // Only call when the user changed the default.
+      const r = await guarded(api.missionMemorySet(m.id, false, []), 'Mission created but memory could not be turned off');
+      if (!r) ready = false;
+      else m = r;
+    }
+    if (m && start && ready) m = (await startMission(m.id)) ?? m;
     setBusy(false);
     if (m) {
       close();
@@ -226,6 +256,21 @@ export function NewMissionDialog() {
                 <>
                   <label className="label" htmlFor="nm-model">Model (optional; provider default if empty)</label>
                   <input id="nm-model" className="input mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. a model alias accepted by the CLI" />
+                </>
+              )}
+            </div>
+            <div className="rounded-md border border-line-strong p-3" aria-label="Project memory">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={useMemory} onChange={(e) => setUseMemory(e.target.checked)} />
+                <span className="font-medium">Use verified project knowledge</span>
+              </label>
+              <div className="mt-1 text-[12px] text-muted">
+                {!useMemory ? 'Memory will be off for this mission.' : !objective.trim() ? 'Write an objective to see which notes match.' : pkgError ? `Preview unavailable: ${pkgError}` : pkg ? previewSummary(pkg.items) : 'Checking…'}
+              </div>
+              {pkg && useMemory && (
+                <>
+                  <button type="button" className="btn btn-sm btn-ghost mt-1" aria-expanded={showPkg} onClick={() => setShowPkg(!showPkg)}>See what would be sent</button>
+                  {showPkg && <div className="mt-2"><ContextView ctx={{ items: pkg.items, omitted: pkg.omitted, charBudget: pkg.charBudget, text: pkg.text, sha256: pkg.sha256 }} /></div>}
                 </>
               )}
             </div>

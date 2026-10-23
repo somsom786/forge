@@ -5,6 +5,7 @@ pub mod detect;
 pub mod error;
 pub mod git;
 pub mod merge;
+pub mod harness;
 pub mod knowledge;
 pub mod mission;
 pub mod paths;

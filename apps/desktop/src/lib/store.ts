@@ -11,7 +11,7 @@ export type Route =
   | { name: 'projects'; projectId?: string }
   | { name: 'missions' }
   | { name: 'mission'; id: string }
-  | { name: 'knowledge'; filter?: 'proposed'; pageId?: string }
+  | { name: 'knowledge'; filter?: 'proposed'; pageId?: string; newPage?: boolean }
   | { name: 'settings' };
 
 export interface DiscardState {
@@ -41,7 +41,7 @@ export interface Store extends DataState {
   setPalette: (open: boolean) => void;
   setDiscard: (d: DiscardState | null) => void;
   applyEvent: (e: UiEvent) => void;
-  notify: (level: 'info' | 'warn' | 'error', message: string) => void;
+  notify: (level: 'info' | 'warn' | 'error', message: string, link?: { label: string; pageId: string }) => void;
   dismiss: (id: number) => void;
   setProjects: (p: Project[]) => void;
   setMissions: (m: Mission[]) => void;
@@ -87,7 +87,7 @@ export const useStore = create<Store>((set) => ({
   setPalette: (paletteOpen) => set({ paletteOpen }),
   setDiscard: (discard) => set({ discard }),
   applyEvent: (e) => set((s) => reduceUiEvent(s, e)),
-  notify: (level, message) => set((s) => addNotice(s, level, message)),
+  notify: (level, message, link) => set((s) => addNotice(s, level, message, link)),
   dismiss: (id) => set((s) => ({ notices: dismissNotice(s.notices, id) })),
   setProjects: (projects) => set({ projects }),
   setMissions: (list) => set((s) => ({ missions: upsertMissions(s.missions, list) })),

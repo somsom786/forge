@@ -1,4 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { api } from '../lib/api';
+import { errMsg } from '../lib/format';
+import { proposalsToReview } from '../lib/knowledge';
 import { ChevronDown, ChevronRight, FolderPlus, Plus } from 'lucide-react';
 import { addProjectViaDialog, startMission } from '../lib/actions';
 import { relTime, STATE_META } from '../lib/format';
@@ -17,6 +20,24 @@ export function CommandCenter() {
   const openNew = useStore((s) => s.openNewMission);
   const currentProjectId = useStore((s) => s.currentProjectId);
   const now = useNow();
+  const [review, setReview] = useState<{ projectId: string; count: number }[]>([]);
+  const notify = useStore((st) => st.notify);
+  const projectKey = projects.map((p) => p.id).join(',');
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      const out: { projectId: string; count: number }[] = [];
+      for (const p of projects) {
+        try {
+          const n = proposalsToReview(await api.knowledgeList(p.id)).length;
+          if (n > 0) out.push({ projectId: p.id, count: n });
+        } catch (e) { notify('error', `Could not check knowledge for ${p.name}: ${errMsg(e)}`); }
+      }
+      if (!off) setReview(out);
+    })();
+    return () => { off = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectKey]);
 
   const list = useMemo(() => Object.values(missions), [missions]);
   const rows = useMemo(() => buildInbox(list, Object.values(approvals)), [list, approvals]);
@@ -82,6 +103,18 @@ export function CommandCenter() {
           >
             Nothing is waiting on you: no pending approvals, failures, reviews or running missions.
           </EmptyState>
+        )}
+        {review.length > 0 && (
+          <div aria-label="Knowledge to review">
+            <div className="flex items-center gap-2 border-b border-line bg-panel px-5 py-1 text-[11px] font-medium uppercase tracking-wide text-muted"><span className="size-1.5 rounded-full bg-warn" aria-hidden />Knowledge to review</div>
+            {review.map((r) => (
+              <div key={r.projectId} className="flex items-center gap-3 border-b border-line px-5 py-2">
+                <span className="w-[130px] shrink-0 truncate text-muted">{projectName(r.projectId)}</span>
+                <span className="min-w-0 flex-1">{r.count} proposed page{r.count === 1 ? '' : 's'} from agents or the system need review. Nothing here is attached to missions until you verify it.</span>
+                <button className="btn btn-sm btn-primary" onClick={() => { useStore.getState().setCurrentProject(r.projectId); useStore.getState().navigate({ name: 'knowledge', filter: 'proposed' }); }}>Review</button>
+              </div>
+            ))}
+          </div>
         )}
         {rows.length > 0 && (
           <ul className="m-0 list-none p-0" aria-label="Inbox">

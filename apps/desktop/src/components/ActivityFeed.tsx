@@ -5,6 +5,7 @@ import { clockTime, fmtNum, fmtUtilization, formatDuration, localTime } from '..
 import type { ActivityEvent, Approval, UsageReport } from '../lib/types';
 import { costText, credentialChip } from '../lib/provider';
 import { Badge } from './ui';
+import { SaveAsKnowledge } from './SaveAsKnowledge';
 
 interface Props {
   events: ActivityEvent[];
@@ -114,14 +115,15 @@ function UsageLine({ u }: { u: UsageReport }) {
   );
 }
 
-function EventRow({ ev, approvals, onFocusApprovals }: { ev: ActivityEvent; approvals: Record<string, Approval>; onFocusApprovals: () => void }) {
+function EventRow({ ev, approvals, onFocusApprovals, onSave }: { ev: ActivityEvent; approvals: Record<string, Approval>; onFocusApprovals: () => void; onSave: (e: ActivityEvent) => void }) {
   const p = ev.payload ?? {};
   switch (ev.kind) {
     case 'agent.text':
       return (
         <Row at={ev.at}>
-          <div className="rounded-md border border-line bg-raised px-3 py-2 text-[13px] leading-[1.55]">
+          <div className="group relative rounded-md border border-line bg-raised px-3 py-2 text-[13px] leading-[1.55]">
             <RichText text={String(p.text ?? '')} />
+            <button className="btn btn-sm absolute right-1.5 top-1.5 opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100" onClick={() => onSave(ev)}>Save as knowledge…</button>
           </div>
         </Row>
       );
@@ -270,6 +272,7 @@ export function ActivityFeed({ events, approvals, streams, onFocusApprovals }: P
   const [hidden, setHidden] = useState<Set<FilterGroup>>(() => new Set<FilterGroup>(['thinking']));
   const items = useMemo(() => filterFeed(buildFeed(events), hidden), [events, hidden]);
   const scroller = useRef<HTMLDivElement>(null);
+  const [saving, setSaving] = useState<ActivityEvent | null>(null);
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
   const streamText = streams ? Object.entries(streams) : [];
@@ -317,7 +320,7 @@ export function ActivityFeed({ events, approvals, streams, onFocusApprovals }: P
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto py-2" role="log" aria-label="Mission activity">
         {items.length === 0 && streamText.length === 0 && <div className="px-4 py-10 text-center text-muted">No activity recorded yet.</div>}
         {items.map((it) =>
-          it.type === 'tool' ? <ToolRow key={it.key} item={it} /> : <EventRow key={it.key} ev={it.ev} approvals={approvals} onFocusApprovals={onFocusApprovals} />,
+          it.type === 'tool' ? <ToolRow key={it.key} item={it} /> : <EventRow key={it.key} ev={it.ev} approvals={approvals} onFocusApprovals={onFocusApprovals} onSave={setSaving} />,
         )}
         {streamText.map(([id, text]) => (
           <div key={`stream-${id}`} className="flex gap-2 px-4 py-1">
@@ -329,6 +332,7 @@ export function ActivityFeed({ events, approvals, streams, onFocusApprovals }: P
           </div>
         ))}
       </div>
+      <SaveAsKnowledge ev={saving} onClose={() => setSaving(null)} />
       {!atBottom && (
         <button
           className="btn btn-primary absolute bottom-3 left-1/2 -translate-x-1/2 shadow-lg shadow-black/50"

@@ -12,6 +12,7 @@ import { ActivityFeed } from '../components/ActivityFeed';
 import { ApprovalsPanel, ChangesPanel, TimelinePanel } from '../components/MissionPanels';
 import { SplitLayout } from '../components/Splitter';
 import { ContractTab } from '../components/ContractTab';
+import { MemoryTab } from '../components/MemoryTab';
 import { ProofPackPanel } from '../components/ProofPackPanel';
 import { ReviewBar } from '../components/ReviewBar';
 import { useReport, VerificationPanel } from '../components/VerificationPanel';
@@ -185,6 +186,7 @@ export function MissionWorkspace({ id }: { id: string }) {
                 { v: 'changes', label: 'Changes', count: 0 },
                 { v: 'verification', label: 'Verification', count: report ? report.unresolved.length : 0 },
                 { v: 'contract', label: 'Contract', count: 0 },
+                { v: 'memory', label: 'Memory', count: 0 },
                 { v: 'proof', label: 'Proof Pack', count: 0 },
                 { v: 'timeline', label: 'Timeline', count: 0 },
               ].map((t) => (
@@ -209,6 +211,9 @@ export function MissionWorkspace({ id }: { id: string }) {
             </Tabs.Content>
             <Tabs.Content value="contract" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
               <ContractTab mission={mission} />
+            </Tabs.Content>
+            <Tabs.Content value="memory" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+              <MemoryTab mission={mission} />
             </Tabs.Content>
             <Tabs.Content value="proof" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
               <ProofPackPanel mission={mission} />

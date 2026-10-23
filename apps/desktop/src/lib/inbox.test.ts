@@ -5,7 +5,7 @@ import type { Approval, Mission } from './types';
 const m = (id: string, state: Mission['state'], updatedAt = '2026-01-01T00:00:00Z'): Mission => ({
   id, projectId: 'p', title: id, objective: '', state, provider: 'claude', model: null, permissionProfile: 'default',
   baseRef: null, baseCommit: null, branch: null, worktreePath: null, providerSessionId: null, lastError: null,
-  createdAt: updatedAt, updatedAt,
+  createdAt: updatedAt, updatedAt, useMemory: true, memoryPins: [],
 });
 const ap = (id: string, missionId: string, state: Approval['state'], createdAt: string): Approval => ({
   id, missionId, sessionId: 's', providerRequestId: 'r', tool: 'Bash', summary: '', detail: { tool: 'Bash', input: {} },

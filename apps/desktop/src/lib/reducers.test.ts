@@ -12,7 +12,7 @@ const ev = (id: number, kind: ActivityEvent['kind'] = 'agent.text', payload: Rec
 const mission = (over: Partial<Mission> = {}): Mission => ({
   id: 'm1', projectId: 'p1', title: 't', objective: 'o', state: 'ready', provider: 'claude', model: null,
   permissionProfile: 'default', baseRef: null, baseCommit: null, branch: null, worktreePath: null,
-  providerSessionId: null, lastError: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', ...over,
+  providerSessionId: null, lastError: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', useMemory: true, memoryPins: [], ...over,
 });
 
 const approval = (over: Partial<Approval> = {}): Approval => ({

@@ -103,6 +103,11 @@ fn risky_shell_patterns() -> &'static [(Regex, &'static str)] {
     })
 }
 
+/// Human-readable reasons a shell command line looks risky (used by FORGE's approval policy and by Harness Doctor).
+pub fn shell_risks(cmd: &str) -> Vec<String> {
+    risky_shell_patterns().iter().filter(|(re, _)| re.is_match(cmd)).map(|(_, d)| (*d).to_string()).collect()
+}
+
 fn push_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     // `git` + any global options (including ones that take an argument, quoted or not) + `push`.

@@ -38,7 +38,7 @@ export function CommandPalette() {
           <Command.Item className={item} value="new mission" disabled={projects.length === 0} onSelect={run(() => openNew(currentProjectId ?? undefined))}>
             <Plus className="size-4" aria-hidden /> New mission
           </Command.Item>
-          <Command.Item className={item} value="new knowledge page" disabled={projects.length === 0} onSelect={run(() => navigate({ name: 'knowledge', newPage: true } as never))}>
+          <Command.Item className={item} value="new knowledge page" disabled={projects.length === 0} onSelect={run(() => navigate({ name: 'knowledge', newPage: true }))}>
             <BookOpen className="size-4" aria-hidden /> New knowledge page
           </Command.Item>
           <Command.Item className={item} value="add project" onSelect={run(() => void addProjectViaDialog())}>

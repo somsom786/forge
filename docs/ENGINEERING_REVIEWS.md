@@ -30,6 +30,26 @@ commands (SECURITY.md limit 1), TOCTOU junction swaps, ignored-file reporting.
 
 Validation: Rust 127 tests + 1 live-ignored (all pass), engine 36 tests (all pass), plus two live runs (below).
 
+## Review 2 — Memory design (before any code)  (2026-10-23)
+
+Scope: the FORGE Memory design as a written brief (files-as-truth + SQLite index, states, retrieval, Obsidian boundary,
+injection). Seven questions. Astra's "top 3 design changes before coding": revision-bound verification; untrusted context
+out of the system prompt; journaled writes with explicit external-writer conflict handling.
+
+| # | Astra's finding | My assessment | Resolution |
+|---|---|---|---|
+| 1 | Verification can be forged or inherited: a vault edit sets `state: verified`, or replaces a verified page's body and keeps its status. Bind verification to project/page/**revision hash**/reviewer; imported frontmatter must not grant trust; supersession never transfers verification and rejects cycles transactionally. | Right, and it reshaped the data model. | **Adopted in full.** `status` + `verified_sha256` live in SQLite; frontmatter state/author are ignored; `effective_state` derives from hash equality; `k_verify` compares the reviewer's hash inside the transaction; `k_supersede` walks the chain (tests: forged frontmatter, edit after verify, stale review screen, cycles, atomic rejection). |
+| 2 | Retrieved text becomes privileged instruction; keep it out of the system prompt; label origin/status/freshness; collision-safe delimiters; exclude proposed agent text; bound/strip. No delimiter stops semantic injection. | Agree, including the limits. | **Adopted.** Injected into the first *user* turn only; verified-only (user pins are labelled NOT VERIFIED); angle brackets and control chars stripped, embeds neutralised, secrets redacted again on the way out; exact bytes persisted. Test asserts the system prompt never contains it. Residual risk documented. |
+| 3 | Canonicalisation leaves races: junction swapped after validation, hardlinks. Reject reparse points and hardlinks in managed trees; broker I/O. | Partly: V1 detects and rejects; handle-based I/O is future work. | **Adopted as detect-and-reject** (`vault::safe_file`, real junction + hardlink tests). TOCTOU remains and is documented. |
+| 4 | Atomic replace does not prevent lost updates; use a writer lock, an operation journal, write proposed revisions for externally edited pages; generate `index.md`/`log.md` from durable records. | Right. | **Adopted.** File lock per root; `knowledge_op` journal + hash-based recovery; edits to existing pages are revisions applied only on request with a base-hash check (conflict recorded, nothing overwritten); catalogue files are generated. |
+| 5 | Redaction misses other ingestion routes; allowlist/sensitive-file exclusions; retention across snapshots, packages, backups. | Right. | **Adopted:** sensitive-name exclusion at scan and as sources, redaction on create/revision/injection, `forget` scrubs historical snapshots. Backups/export semantics not built yet (SQLite is kept outside sync folders by default). |
+| 6 | sha256-at-capture proves identity, not truth; store source type, locator, raw + normalised hashes, git blob/commit pins, extractor version, missing-source states. | Right. | **Adopted:** `knowledge_source` carries all of these; freshness states current/changed/missing/unknown; mission records state "what happened, not whether it was correct". |
+| 7 | Incremental indexing can silently miss same-size edits; mtime/watchers are hints; hash selected pages before packaging; persist exact injected bytes; pin per turn. | Right — and I wrote the test that reproduces it. | **Adopted:** retrieval re-hashes every page it is about to inject (mutation-checked: disabling it makes the same-size-edit test fail); packages are pinned to the first turn. A file watcher is not built (scan on open/retrieval instead). |
+| 8 | Free text changes MATCH semantics; Porter hurts identifiers; recency rewards poisoned edits; ambiguous links. | Right. | **Adopted:** quoted terms only, `unicode61` + identifier expansion + prefix terms, recency is a small bonus applied only after eligibility, ambiguous wikilinks are recorded not guessed. |
+
+Not adopted: separate immutable review-record store with transactional-only audit (the `knowledge_review` table in the same
+database serves; the generic best-effort `audit()` is not used for verification), in-process MCP memory channel (V2).
+
 ## Live validation of the whole path (not a review finding, recorded for honesty)
 
 * Real Claude Code via the Agent SDK through FORGE, `haiku`, one Write approved by hand: file created in the

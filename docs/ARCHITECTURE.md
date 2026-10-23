@@ -59,7 +59,34 @@ sessions; Job Objects map 1:1 to sessions.
 Engine events have strictly increasing `seq` per session. Core-originated events (approvals, turn completion) use
 negative `seq` so the namespaces never collide. Duplicates are ignored by the unique key; display order is the row id.
 
+## Verification, review and merge (Phase 2)
+
+`contract.rs` (pure: scope globs, criterion status derivation) → `verify.rs` (check runner: timeout, tree kill, bounded
+output, log file) → `proof.rs` (pure: verification report, Proof Pack JSON/Markdown) → `merge.rs` (clean-checkout
+precondition, `git merge-tree` conflict detection, restore-on-failure) → orchestration in `supervisor/review.rs`.
+A criterion's status is *derived from evidence* (Not checked / Check pending / Verified by checks / Verified manually /
+Within scope / Failed / Inconclusive / Requires manual review); an agent saying "done" changes nothing. Evidence is tied to
+the change-set **fingerprint**; any change after a check makes its result stale, and merge refuses anything that differs
+from what was approved.
+
+## Memory (Phase 3)
+
+```
+ page files (managed folder | Obsidian vault)  ──scan/hash──►  SQLite index (pages, FTS5, links, sources)
+        ▲ atomic write under writer lock                              │  trust = review records bound to content hash
+        │ (revisions, journaled)                                      ▼
+   propose / edit  ◄── human verify (exact revision) ──►  retrieve.rs: verified-only, re-hash at packaging,
+                                                           sanitise, budget, provenance ──► context_package
+                                                                                              │ persisted bytes
+                                                           first user turn (never system prompt) ◄┘
+```
+* `knowledge/page.rs` strict frontmatter subset (no YAML anchors/tags), slugs, wikilinks, normalisation, atomic writes.
+* `knowledge/vault.rs` filesystem boundary: reparse points, hardlinks, `.obsidian`/`.git` refused; per-root file lock.
+* `knowledge/service.rs` scan, create, revisions, sources + freshness, generated `index.md`/`log.md`, crash recovery.
+* `knowledge/retrieve.rs` ranking (BM25 + file overlap + recency − staleness), one page per topic, budget, injection text.
+* `knowledge/lint.rs` advisory quality checks. `supervisor/memory.rs` ties it to missions; failures never block a mission.
+
 ## Planned domains (not yet built)
 
-Memory/indexing, context compiler, harness configuration service, verification engine (Proof Packs), experiment runner —
-each a separate Rust module behind `Core`-level commands; see ROADMAP.md. Tables are added by forward-only migrations.
+Harness configuration service (Phase 4), experiment runner (Phase 6), second provider adapter — Codex (Phase 5): each a
+separate module behind `Core`-level commands; see ROADMAP.md. Tables are added by forward-only migrations.

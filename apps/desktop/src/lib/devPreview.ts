@@ -3,6 +3,7 @@
 // Marker for the production-bundle check: FORGE_DEVPREVIEW_MARKER_7f3a91
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { handleP2 } from './devPreviewP2';
+import { handleP3 } from './devPreviewP3';
 import type {
   ActivityEvent, AgentSession, Approval, CapabilityMatrix, Mission, MissionDetail, Project, ProviderInfo, RepoStatus,
 } from './types';
@@ -29,7 +30,7 @@ const projects: Project[] = [
 const mk = (o: Partial<Mission> & Pick<Mission, 'id' | 'projectId' | 'title' | 'state'>): Mission => ({
   objective: o.title, provider: 'claude', model: null, permissionProfile: 'default', baseRef: 'main',
   baseCommit: '9c1e4f7a2b3d5e6f708192a3b4c5d6e7f8091a2b', branch: `forge/${o.id}`, worktreePath: `C:\\Users\\dev\\.forge\\wt\\${o.id}`,
-  providerSessionId: null, lastError: null, createdAt: iso(300), updatedAt: iso(5), ...o,
+  providerSessionId: null, lastError: null, createdAt: iso(300), updatedAt: iso(5), useMemory: true, memoryPins: [], ...o,
 });
 
 const missions: Mission[] = [
@@ -249,6 +250,8 @@ const find = (id: string) => missions.find((m) => m.id === id);
 async function invoke(cmd: string, args: any = {}): Promise<any> {
   const p2 = handleP2(cmd, args, { iso, find, changesFor, isRunning: (id) => runningIds.has(id), emit, err });
   if (p2) return p2;
+  const p3 = handleP3(cmd, args, { iso, find, err });
+  if (p3) return p3;
   switch (cmd) {
     case 'plugin:event|listen':
       subs.push({ event: args.event, handler: args.handler });

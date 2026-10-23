@@ -6,6 +6,8 @@ export interface Notice {
   id: number;
   level: 'info' | 'warn' | 'error';
   message: string;
+  /** Optional in-app link, e.g. to a knowledge page. */
+  link?: { label: string; pageId: string };
 }
 
 export interface DataState {
@@ -111,9 +113,9 @@ export function clearMissionStreams(streams: DataState['streams'], missionId: st
   return out;
 }
 
-export function addNotice(s: Pick<DataState, 'notices' | 'noticeSeq'>, level: Notice['level'], message: string) {
+export function addNotice(s: Pick<DataState, 'notices' | 'noticeSeq'>, level: Notice['level'], message: string, link?: Notice['link']) {
   const id = s.noticeSeq + 1;
-  const notices = [...s.notices, { id, level, message }].slice(-MAX_NOTICES);
+  const notices = [...s.notices, { id, level, message, link }].slice(-MAX_NOTICES);
   return { notices, noticeSeq: id };
 }
 
