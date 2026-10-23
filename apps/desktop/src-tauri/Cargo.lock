@@ -864,6 +864,7 @@ dependencies = [
  "uuid",
  "which",
  "win32job",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

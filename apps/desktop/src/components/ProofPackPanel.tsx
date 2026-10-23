@@ -70,13 +70,14 @@ export function ProofPackPanel({ mission }: { mission: Mission }) {
       const list = await api.proofpackList(mission.id);
       const sorted = [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       setPacks(sorted);
-      setSel((cur) => cur ?? sorted[0]?.id ?? null);
+      setSel((cur) => (cur && sorted.some((p) => p.id === cur) ? cur : (sorted[0]?.id ?? null)));
       setError(null);
     } catch (e) {
       setError(errMsg(e));
     }
   }, [mission.id]);
-  useEffect(() => { void load(); }, [load]);
+  // Refetch on mount (tab activation) and whenever the mission changes state, e.g. the pack sealed by a merge.
+  useEffect(() => { void load(); }, [load, mission.state, mission.updatedAt]);
 
   const generate = async () => {
     setBusy(true);

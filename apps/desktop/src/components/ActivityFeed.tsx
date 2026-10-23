@@ -242,6 +242,7 @@ function EventRow({ ev, approvals, onFocusApprovals }: { ev: ActivityEvent; appr
                   Local model · {chip.model ?? 'unknown model'} · no provider billing
                 </Badge>
               )}
+              {chip.kind === 'scripted' && <Badge tone="idle">Scripted test agent · no provider billing</Badge>}
               {chip.kind === 'unreported' && <span className="text-muted">credential source not reported</span>}
             </div>
             {chip.kind === 'api-warning' && (

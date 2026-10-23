@@ -3,6 +3,7 @@ import type { ProviderInfo } from './types';
 export type CredentialChip =
   | { kind: 'subscription' }
   | { kind: 'local'; model: string | null }
+  | { kind: 'scripted' }
   | { kind: 'unreported' }
   | { kind: 'api-warning'; source: string };
 
@@ -10,6 +11,7 @@ export type CredentialChip =
 export function credentialChip(source: unknown, model?: unknown): CredentialChip {
   if (source === undefined || source === null || source === '') return { kind: 'unreported' };
   if (source === 'none') return { kind: 'subscription' };
+  if (source === 'scripted') return { kind: 'scripted' };
   if (source === 'local-endpoint') return { kind: 'local', model: typeof model === 'string' && model ? model : null };
   return { kind: 'api-warning', source: String(source) };
 }

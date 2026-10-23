@@ -10,6 +10,7 @@ describe('credentialChip', () => {
     expect(credentialChip('local-endpoint', 'forge-qwen')).toEqual({ kind: 'local', model: 'forge-qwen' });
     expect(credentialChip('local-endpoint')).toEqual({ kind: 'local', model: null });
   });
+  it('shows scripted as a neutral chip, not a billing warning', () => expect(credentialChip('scripted')).toEqual({ kind: 'scripted' }));
   it('warns for any other source', () => expect(credentialChip('ANTHROPIC_API_KEY')).toEqual({ kind: 'api-warning', source: 'ANTHROPIC_API_KEY' }));
   it('reports missing source as unreported', () => expect(credentialChip(undefined)).toEqual({ kind: 'unreported' }));
 });

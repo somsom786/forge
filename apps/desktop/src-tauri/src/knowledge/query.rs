@@ -113,6 +113,30 @@ pub fn path_hints(text: &str) -> Vec<String> {
     out
 }
 
+/// What goes into the full-text index for a body: the text itself plus the word-parts of identifiers and paths, so a
+/// search for `reset token` finds `resetToken`, `reset_token` and `src/auth/reset.rs`.
+pub fn index_text(body: &str) -> String {
+    let mut extra = String::new();
+    for raw in body.split(|c: char| c.is_whitespace() || "()[]{}<>,;:!?\"'`|=+*&^%$#@~".contains(c)) {
+        if raw.len() < 4 || raw.len() > 80 {
+            continue;
+        }
+        let compound = raw.chars().any(|c| c == '_' || c == '-' || c == '/' || c == '.' || c == '\\') || raw.chars().zip(raw.chars().skip(1)).any(|(a, b)| a.is_lowercase() && b.is_uppercase());
+        if compound {
+            let parts = split_identifier(raw);
+            if parts.len() > 1 {
+                extra.push_str(&parts.join(" "));
+                extra.push(' ');
+            }
+        }
+        if extra.len() > 64 * 1024 {
+            break;
+        }
+    }
+    if extra.is_empty() { body.to_string() } else { format!("{body}
+{extra}") }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +175,15 @@ mod tests {
         // a hostile column-filter attempt matches nothing special and does not error
         let q2 = fts_match("body:* OR (").unwrap_or_default();
         let _: i64 = c.query_row("SELECT count(*) FROM t WHERE t MATCH ?1", [&q2], |r| r.get(0)).unwrap_or(0);
+    }
+
+    #[test]
+    fn index_text_adds_identifier_parts_so_plain_words_find_code_names() {
+        let t = index_text("The resetToken lives in src/auth/reset_token.rs and uses snake_case.");
+        for w in ["reset token", "src auth reset token rs", "snake case"] {
+            assert!(t.contains(w), "{t}");
+        }
+        assert_eq!(index_text("plain words only"), "plain words only");
     }
 
     #[test]

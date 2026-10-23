@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { errMsg } from './lib/format';
 import { startCore } from './lib/actions';
 import { writeStore } from './lib/storage';
 import { useStore } from './lib/store';
@@ -41,10 +42,23 @@ export default function App() {
         s.setPalette(!s.paletteOpen);
       }
     };
+    // Tauri invoke rejects with plain strings; never let those vanish.
+    const onRejection = (e: PromiseRejectionEvent) => {
+      e.preventDefault();
+      useStore.getState().notify('error', errMsg(e.reason));
+    };
+    const onError = (e: ErrorEvent) => {
+      if (/ResizeObserver loop/.test(e.message)) return;
+      useStore.getState().notify('error', e.error !== undefined ? errMsg(e.error) : e.message);
+    };
+    window.addEventListener('unhandledrejection', onRejection);
+    window.addEventListener('error', onError);
     window.addEventListener('beforeunload', persist);
     document.addEventListener('visibilitychange', onVis);
     window.addEventListener('keydown', onKey);
     return () => {
+      window.removeEventListener('unhandledrejection', onRejection);
+      window.removeEventListener('error', onError);
       window.removeEventListener('beforeunload', persist);
       document.removeEventListener('visibilitychange', onVis);
       window.removeEventListener('keydown', onKey);

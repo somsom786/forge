@@ -1,4 +1,5 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import * as Dialog from '@radix-ui/react-dialog';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Play, RefreshCw, Square } from 'lucide-react';
 import { api } from '../lib/api';
 import { cancelCheck, runCheck, setVerdict } from '../lib/actions';
@@ -102,67 +103,73 @@ function CriterionRow({ k, report, missionId, canJudge }: { k: CriterionReport; 
 
 function CheckRow({ c, missionId, anyRunning, canRun }: { c: CheckReport; missionId: string; anyRunning: boolean; canRun: boolean }) {
   const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const r = c.latest;
   const stale = !!r && !c.fresh && r.state !== 'running';
   const running = r?.state === 'running';
   return (
-    <Fragment>
-      <tr className={stale ? 'opacity-60' : ''}>
-        <td>
-          <div className="font-medium">{c.spec.name}{c.spec.required && <span className="ml-1.5 text-[10.5px] text-faint">required</span>}</div>
-          <div className="mono max-w-[260px] truncate text-[11.5px] text-muted" title={c.spec.command}>{c.spec.command}</div>
-        </td>
-        <td>
+    <li className="border-b border-line px-3 py-2 last:border-b-0">
+      <div className={stale ? 'opacity-60' : ''}>
+        <div className="flex flex-wrap items-center gap-x-2">
+          <span className="font-medium">{c.spec.name}</span>
+          {c.spec.required && <span className="text-[10.5px] text-faint">required</span>}
+        </div>
+        <div className="mono break-all text-[11.5px] text-muted">{c.spec.command}</div>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
           {r ? (
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-1.5">
-                <Badge tone={RUN_TONE[r.state]}>{r.state}</Badge>
-                {r.exitCode !== null && <span className="mono text-[11.5px] text-muted">exit {r.exitCode}</span>}
-                {r.durationMs !== null && <span className="text-[11.5px] text-muted">{formatDuration(r.durationMs)}</span>}
-              </div>
-              {stale && <div className="text-[11.5px] text-warn">ran against earlier changes — re-run</div>}
-              {r.mutated && (
-                <div className="flex items-center gap-1 text-[11.5px] text-warn">
-                  <AlertTriangle className="size-3" aria-hidden /> this check modified files in the worktree
-                </div>
-              )}
-            </div>
+            <>
+              <Badge tone={RUN_TONE[r.state]}>{r.state}</Badge>
+              {r.exitCode !== null && <span className="mono text-[11.5px] text-muted">exit {r.exitCode}</span>}
+              {r.durationMs !== null && <span className="text-[11.5px] text-muted">{formatDuration(r.durationMs)}</span>}
+            </>
           ) : (
             <span className="text-muted">never run</span>
           )}
-        </td>
-        <td>
-          <div className="flex justify-end gap-1.5">
-            {r && <button className="btn btn-sm btn-ghost" onClick={() => setOpen(!open)} aria-expanded={open}>{open ? 'Hide output' : 'Output'}</button>}
-            {running ? (
-              <button className="btn btn-sm" onClick={() => void cancelCheck(missionId)}><Square className="size-3" aria-hidden /> Cancel</button>
-            ) : (
-              <button
-                className="btn btn-sm btn-primary"
-                disabled={anyRunning || !canRun}
-                title="Runs this command in the mission worktree on your machine"
-                onClick={() => {
-                  if (window.confirm(`Run "${c.spec.command}"?\n\nRuns this command in the mission worktree on your machine, with your user privileges.`)) void runCheck(missionId, c.spec.id);
-                }}
-              >
-                <Play className="size-3" aria-hidden /> {r ? 'Re-run' : 'Run'}
-              </button>
-            )}
+        </div>
+        {stale && <div className="text-[11.5px] text-warn">ran against earlier changes — re-run</div>}
+        {r?.mutated && (
+          <div className="flex items-center gap-1 text-[11.5px] text-warn">
+            <AlertTriangle className="size-3 shrink-0" aria-hidden /> this check modified files in the worktree
           </div>
-        </td>
-      </tr>
+        )}
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {running ? (
+          <button className="btn btn-sm" onClick={() => void cancelCheck(missionId)}><Square className="size-3" aria-hidden /> Cancel</button>
+        ) : (
+          <button className="btn btn-sm btn-primary" disabled={anyRunning || !canRun} title="Runs this command in the mission worktree on your machine" onClick={() => setConfirming(true)}>
+            <Play className="size-3" aria-hidden /> {r ? 'Re-run' : 'Run'}
+          </button>
+        )}
+        {r && <button className="btn btn-sm btn-ghost" onClick={() => setOpen(!open)} aria-expanded={open}>{open ? 'Hide output' : 'Output'}</button>}
+      </div>
       {open && r && (
-        <tr>
-          <td colSpan={3} className="!p-0">
-            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all border-b border-line bg-bg p-2 text-[12px]">{r.outputTail || '(no output)'}</pre>
-            <div className="bg-bg px-2 pb-1 text-[11px] text-faint">
-              {r.outputTruncated ? 'Output truncated: showing the tail only.' : 'Complete output.'}
-              {r.logPath && <> Full log: <span className="mono">{r.logPath}</span></>}
-            </div>
-          </td>
-        </tr>
+        <div className="mt-2 overflow-hidden rounded border border-line">
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all bg-bg p-2 text-[12px]">{r.outputTail || '(no output)'}</pre>
+          <div className="bg-bg px-2 pb-1 text-[11px] text-faint">
+            {r.outputTruncated ? 'Output truncated: showing the tail only.' : 'Complete output.'}
+            {r.logPath && <> Full log: <span className="mono break-all">{r.logPath}</span></>}
+          </div>
+        </div>
       )}
-    </Fragment>
+      <Dialog.Root open={confirming} onOpenChange={setConfirming}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-[60] bg-black/65" />
+          <Dialog.Content aria-describedby="run-body" className="fixed left-1/2 top-1/2 z-[60] w-[520px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-line-strong bg-panel shadow-2xl shadow-black/60">
+            <div className="border-b border-line px-4 py-3"><Dialog.Title className="m-0 text-[14px] font-semibold">Run check “{c.spec.name}”?</Dialog.Title></div>
+            <div id="run-body" className="space-y-2 p-4">
+              <p className="m-0">Runs this command in the mission worktree on your machine, with your user privileges:</p>
+              <pre className="whitespace-pre-wrap break-all rounded border border-line bg-bg p-2 text-[12px]">{c.spec.command}</pre>
+              <p className="m-0 text-muted">Timeout {c.spec.timeoutSecs}s. The check may modify files in the worktree; if it does, FORGE flags the result.</p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-line px-4 py-3">
+              <button className="btn" onClick={() => setConfirming(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={() => { setConfirming(false); void runCheck(missionId, c.spec.id); }}>Run check</button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </li>
   );
 }
 
@@ -212,16 +219,11 @@ export function VerificationPanel({ mission, report, error, loading, reload }: P
             {report.checks.length === 0 ? (
               <div className="text-muted">No checks in the contract. Checks only run when you press Run.</div>
             ) : (
-              <div className="rounded-md border border-line">
-                <table className="tbl">
-                  <thead><tr><th>Check</th><th>Latest result</th><th /></tr></thead>
-                  <tbody>
-                    {report.checks.map((c) => (
-                      <CheckRow key={c.spec.id} c={c} missionId={mission.id} anyRunning={report.checks.some((x) => x.latest?.state === 'running')} canRun={hasWorktree && !finished} />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <ul className="m-0 list-none rounded-md border border-line p-0">
+                {report.checks.map((c) => (
+                  <CheckRow key={c.spec.id} c={c} missionId={mission.id} anyRunning={report.checks.some((x) => x.latest?.state === 'running')} canRun={hasWorktree && !finished} />
+                ))}
+              </ul>
             )}
             {!hasWorktree && <div className="mt-1 text-muted">Checks need the mission worktree, which does not exist yet.</div>}
           </section>

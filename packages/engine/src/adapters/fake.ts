@@ -47,7 +47,7 @@ export const fakeAdapter: ProviderAdapter = {
     const { prompt, cwd } = ctx.start;
     const sid = 'fake-' + ctx.start.sessionId.slice(0, 8);
     ctx.providerSession(sid);
-    ctx.emit('session.started', { providerSessionId: sid, model: 'scripted-test-agent', credentialSource: 'none', cwd });
+    ctx.emit('session.started', { providerSessionId: sid, model: 'scripted-test-agent', credentialSource: 'scripted', cwd });
     ctx.delta('m1', 'Planning the change… ');
     await sleep(50, ctx.signal);
     ctx.emit('agent.text', { messageId: 'm1', text: `Plan: carry out "${prompt.slice(0, 80)}" using the scripted test agent.` });

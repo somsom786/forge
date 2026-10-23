@@ -34,7 +34,7 @@ export function Shell({ children }: { children: ReactNode }) {
     <div className="flex h-full min-h-0 flex-col">
       <TopBar />
       <div className="flex min-h-0 flex-1">
-        <nav aria-label="Primary" className="flex w-[196px] shrink-0 flex-col gap-0.5 border-r border-line bg-panel px-2 py-2">
+        <nav aria-label="Primary" className="flex w-[220px] shrink-0 flex-col gap-0.5 border-r border-line bg-panel px-2 py-2">
           {NAV.map((n) => {
             const Icon = n.icon;
             const disabled = !n.route;

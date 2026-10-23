@@ -153,6 +153,123 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX proof_mission ON proof_pack(mission_id, created_at);
     "#,
+    // v3 — knowledge (memory): authority lives here, never in page frontmatter
+    r#"
+    ALTER TABLE project ADD COLUMN vault_path TEXT;
+    ALTER TABLE project ADD COLUMN vault_write INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE mission ADD COLUMN use_memory INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE mission ADD COLUMN memory_pins TEXT;
+
+    CREATE TABLE knowledge_page (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES project(id),
+        root_kind TEXT NOT NULL,              -- managed | vault
+        rel_path TEXT NOT NULL,               -- '/'-separated, relative to that root
+        slug TEXT NOT NULL,
+        title TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'project',
+        author TEXT NOT NULL,                 -- user | agent | system
+        origin TEXT NOT NULL,                 -- forge | imported
+        status TEXT NOT NULL,                 -- proposed | verified | disputed | superseded | archived  (AUTHORITATIVE)
+        verified_sha256 TEXT,                 -- the exact revision a human verified
+        verified_at TEXT,
+        verified_note TEXT,
+        current_sha256 TEXT NOT NULL,         -- normalised hash of the file as last indexed
+        file_size INTEGER NOT NULL DEFAULT 0,
+        file_mtime INTEGER NOT NULL DEFAULT 0,
+        topic TEXT,
+        supersedes_id TEXT,
+        superseded_by_id TEXT,
+        files_json TEXT NOT NULL DEFAULT '[]',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        warnings_json TEXT NOT NULL DEFAULT '[]',
+        body_text TEXT NOT NULL DEFAULT '',
+        missing INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        indexed_at TEXT NOT NULL,
+        UNIQUE(project_id, root_kind, rel_path)
+    );
+    CREATE INDEX knowledge_page_project ON knowledge_page(project_id, status);
+    CREATE TABLE knowledge_review (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        page_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        action TEXT NOT NULL,                 -- created | content_changed | verify | dispute | archive | restore | supersede
+        revision_sha256 TEXT,
+        reviewer TEXT NOT NULL,
+        note TEXT,
+        at TEXT NOT NULL
+    );
+    CREATE INDEX knowledge_review_page ON knowledge_review(page_id, id);
+    CREATE TABLE knowledge_source (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES project(id),
+        kind TEXT NOT NULL,                   -- repo_file | commit | mission | check_run | user_note
+        locator TEXT NOT NULL,                -- path | sha | mission id | run id | free text
+        git_blob TEXT,                        -- blob id at capture for repo files
+        raw_sha256 TEXT,
+        norm_sha256 TEXT,
+        snapshot TEXT,                        -- redacted, capped
+        extractor TEXT NOT NULL DEFAULT 'forge-1',
+        state TEXT NOT NULL DEFAULT 'current',-- current | changed | missing | unknown
+        captured_at TEXT NOT NULL,
+        checked_at TEXT
+    );
+    CREATE INDEX knowledge_source_project ON knowledge_source(project_id, kind, locator);
+    CREATE TABLE knowledge_page_source (
+        page_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        PRIMARY KEY (page_id, source_id)
+    );
+    CREATE TABLE knowledge_link (
+        from_page TEXT NOT NULL,
+        kind TEXT NOT NULL,                   -- wikilink | file
+        target TEXT NOT NULL,
+        to_page TEXT,
+        ambiguous INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (from_page, kind, target)
+    );
+    CREATE TABLE knowledge_revision (
+        id TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL,
+        base_sha256 TEXT NOT NULL,
+        text TEXT NOT NULL,
+        author TEXT NOT NULL,
+        note TEXT,
+        state TEXT NOT NULL,                  -- proposed | applied | rejected | conflict
+        created_at TEXT NOT NULL,
+        decided_at TEXT
+    );
+    CREATE TABLE knowledge_op (
+        id TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        old_sha256 TEXT,
+        new_sha256 TEXT,
+        state TEXT NOT NULL,                  -- started | done | failed
+        started_at TEXT NOT NULL,
+        finished_at TEXT
+    );
+    CREATE TABLE context_package (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES mission(id),
+        created_at TEXT NOT NULL,
+        query TEXT NOT NULL,
+        params_json TEXT NOT NULL,
+        items_json TEXT NOT NULL,
+        omitted_json TEXT NOT NULL,
+        injected_text TEXT NOT NULL,
+        injected_sha256 TEXT NOT NULL,
+        char_budget INTEGER NOT NULL
+    );
+    CREATE INDEX context_package_mission ON context_package(mission_id, created_at);
+    CREATE VIRTUAL TABLE knowledge_fts USING fts5(
+        page_id UNINDEXED, project_id UNINDEXED, title, body, files, tags,
+        tokenize = 'unicode61 remove_diacritics 2'
+    );
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

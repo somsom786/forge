@@ -21,11 +21,11 @@ export function EvidenceGraph({ report }: { report: VerificationReport }) {
   const X = { reqEnd: '31%', checkStart: '36%', checkEnd: '64%', resStart: '69%' };
 
   return (
-    <div className="relative overflow-x-auto" aria-label="Evidence graph">
+    <div className="relative" aria-label="Evidence graph">
       <div className="mb-1 grid grid-cols-[31%_5%_28%_5%_31%] px-0 text-[11px] uppercase tracking-wide text-faint">
         <span>Requirement</span><span /><span>Check</span><span /><span>Result</span>
       </div>
-      <div className="relative min-w-[520px]" style={{ height }}>
+      <div className="relative" style={{ height }}>
         <svg className="absolute inset-0 h-full w-full" aria-hidden>
           {report.criteria.map((k, i) => {
             const linked = k.verifiedBy.filter((id) => checkIndex.has(id));
@@ -77,6 +77,7 @@ export function EvidenceGraph({ report }: { report: VerificationReport }) {
               key={c.spec.id}
               className={`absolute left-[69%] flex w-[31%] flex-col justify-center overflow-hidden rounded border px-2 ${r ? 'bg-raised' : 'bg-transparent'} ${stale || !r ? 'border-dashed opacity-70' : ''}`}
               style={{ top: j * ROW + (ROW - BOX) / 2, height: BOX, borderColor: TONE_STROKE[tone] }}
+              title={r ? `${c.spec.name}: ${r.state}${r.exitCode !== null ? `, exit ${r.exitCode}` : ''}${stale ? ' (ran against earlier changes)' : ''}` : `${c.spec.name}: never run`}
             >
               {r ? (
                 <>
