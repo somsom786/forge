@@ -33,7 +33,7 @@ certification, and no remote service. Treat everything below as the implemented 
 
 | Control | Where | Test |
 |---|---|---|
-| Repo-defined execution surfaces are neutralised: project hooks and `.mcp.json` servers do not run (`allowManagedHooksOnly`, `strictMcpConfig`, empty `mcpServers`), while CLAUDE.md/rules/skills still load and FORGE's own hook still fires. Verified with a hostile-repo experiment (control vs locked). | `adapters/claude.ts` | `claudeOptions.test.ts`, `scripts/lockdown-experiment.mjs` (live) |
+| Repo-defined execution surfaces are neutralised: project hooks and `.mcp.json` servers do not run (`allowManagedHooksOnly`, `strictMcpConfig`, and `mcpServers` limited to what the user authorized; see MCP authorization), while CLAUDE.md/rules/skills still load and FORGE's own hook still fires. Verified with a hostile-repo experiment (control vs locked). | `adapters/claude.ts` | `claudeOptions.test.ts`, `scripts/lockdown-experiment.mjs` (live) |
 | Approvals are bound to `tool_use_id` + digest of the exact tool input; a changed re-ask is a new request; hooks never rewrite input. | `supervisor.rs` | `a_reask_with_changed_input…` |
 | Path identity: policy evaluates the *real* path (junctions, short names resolved); trailing-dot/space and 8.3 spellings rejected; comparison is case-insensitive. | `paths.rs`, `policy.rs` | `protection_follows_the_real_path…` |
 | Atomic per-mission reservation: one start/discard/merge owner, concurrency counted for in-flight starts. | `supervisor.rs` | `only_one_of_many_concurrent_starts_wins` |
@@ -97,6 +97,21 @@ certification, and no remote service. Treat everything below as the implemented 
 
 Remaining window: between FORGE's decision-time check and the agent's own write there is still a small gap that only a brokered
 file layer or an OS sandbox closes (limit 3).
+
+## MCP authorization (Milestone 2)
+
+| Control | Where | Test |
+|---|---|---|
+| A repository's `.mcp.json` gives a mission no servers. The Claude adapter keeps `strictMcpConfig` and receives **only** the servers the user authorized for that project, built by the core from the stored definitions. Codex missions receive none. | `mcp.rs`, `supervisor/mcp.rs`, `spawn_session`, `adapters/claude.ts` | `tests::mcp::a_repository_mcp_json_alone…`, `claudeOptions.test.ts` |
+| Authorizing pins the exact definition FORGE read and showed (command, args, URL, env *names*) by SHA-256; the UI must echo the hash, so a file changed after review cannot be authorized. Literal env values in `.mcp.json` are never read into FORGE; values come from FORGE's environment at mission start and are never stored. | `mcp::from_project_file`, `Core::mcp_authorize` | `tests::mcp::only_the_authorized_definition…`, `mcp::tests` |
+| Editing `.mcp.json` after authorization changes nothing that runs; the UI flags "changed since authorized". | `mcp_servers_for_mission`, `mcp_authorizations` | `tests::mcp::only_the_authorized_definition…` |
+| The core denies, without asking, any `mcp__server__tool` call for a server not authorized for the mission's project or a tool outside the server's allow-list. Allowed calls still go through policy (Ask). | `Core::mcp_gate`, `on_permission` | both tests above |
+| Servers that would receive `ANTHROPIC_API_KEY`, `*_BASE_URL` and similar, names with `__`, multi-line args or non-loopback plain-http URLs are refused. Authorize/revoke are audited. | `McpDefinition::validate` | `tests::mcp::servers_that_would_redirect…`, `mcp::tests` |
+
+Honest limits: an authorized stdio server is a program running **on the host with the user's privileges** from the moment the
+mission starts (not in an execution backend, not before any approval); FORGE cannot restrict what that program does, only which
+of its tools the agent may call and with whose approval. Package-runner commands (`npx`, `uvx`) without a pinned version can
+change between runs; the dialog says so.
 
 ## Execution backends (Stage B; docs/EXECUTION.md)
 

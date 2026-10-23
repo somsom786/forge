@@ -6,6 +6,7 @@ import type {
   ActivityEvent, AppInfo, Approval, Mission, MissionChanges, MissionDetail, MissionDiff, NewMissionArgs,
   Project, ProviderInfo, RecoveryReport, RepoStatus, UiEvent,
   ContextPackage, ContextPackageRow, KnowledgePage, KnowledgePageDetail, KnowledgeRevision, KnowledgeStatus, LintIssue, NewKnowledgeArgs, ScanResult,
+  McpAuthorization, McpAuthorizationStatus, McpPreview,
   DoctorFinding, HarnessApplyArgs, HarnessBackupUsage, HarnessChange, HarnessFile, HarnessInventory, HarnessPreview, HarnessPruneReport, HookDryRun, HookSpec, HookTemplate, RollbackPreview,
   CheckSpec, Contract, MergeOutcome, Seen, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
   Experiment, ExperimentDetail, NewExperiment,
@@ -111,6 +112,14 @@ export const api = {
   /** Read-only: overlap, predicted textual conflicts and base drift across the project's active missions. */
   agentsOverview: (days: number) => invoke<AgentsOverview>('agents_overview', { days }),
   missionConflicts: (projectId: string) => invoke<ConflictReport>('mission_conflicts', { projectId }),
+
+  // ---- MCP authorization: nothing a repository declares runs until the user authorizes that exact definition. ----
+  mcpPreview: (projectId: string, name: string) => invoke<McpPreview>('mcp_preview', { projectId, name }),
+  /** `definitionSha256` from the preview; refused if `.mcp.json` changed since. */
+  mcpAuthorize: (projectId: string, name: string, definitionSha256: string, toolAllowlist: string[]) =>
+    invoke<McpAuthorization>('mcp_authorize', { projectId, name, definitionSha256, toolAllowlist }),
+  mcpRevoke: (authorizationId: string) => invoke<McpAuthorization>('mcp_revoke', { authorizationId }),
+  mcpAuthorizations: (projectId: string) => invoke<McpAuthorizationStatus[]>('mcp_authorizations', { projectId }),
 
   executionBackends: () => invoke<ExecutionBackendInfo[]>('execution_backends'),
   /** Refused for a backend that cannot run on this machine; never downgraded. */

@@ -9,6 +9,7 @@ pub mod execution;
 mod execution_tests;
 pub mod experiment;
 pub mod git;
+pub mod mcp;
 pub mod merge;
 pub mod harness;
 pub mod knowledge;
@@ -192,6 +193,10 @@ pub fn run() {
             commands::mission_conflicts,
             commands::execution_backends,
             commands::project_set_execution_backend,
+            commands::mcp_preview,
+            commands::mcp_authorize,
+            commands::mcp_revoke,
+            commands::mcp_authorizations,
             commands::agents_overview,
             commands::knowledge_open_in_obsidian,
             commands::context_preview,

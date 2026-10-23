@@ -88,6 +88,12 @@ Authority for *trust* lives in SQLite; the page files hold *content*.
 `approval_request.binding_sha256`, `policy_rev`, `executes_on`, `expires_at`. NULL on rows created before migration 9 (their
 sessions have ended; they can no longer be decided).
 
+## Implemented (migration 10 — MCP authorization)
+
+`mcp_authorization(id, project_id, name, definition_json, definition_sha256, tool_allowlist_json, authorized_at, revoked_at)`;
+at most one active (unrevoked) row per project and server name (partial unique index). Re-authorizing revokes the previous row,
+so history is kept. `definition_json` holds env variable *names* only.
+
 ## Designed, not yet implemented
 
 | Entity | Purpose | Phase |

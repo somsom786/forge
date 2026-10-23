@@ -2,6 +2,7 @@
 // Marker for the production-bundle check: FORGE_DEVPREVIEW_MARKER_7f3a91
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type {
+  McpAuthorization, McpDefinition,
   DoctorFinding, HarnessChange, HarnessFile, HarnessInventory, HarnessItem, HarnessPreview, HookDef, HookDryRun, HookTemplate, RollbackPreview,
 } from './types';
 
@@ -40,7 +41,7 @@ const inventory = (): HarnessInventory => ({
   ],
   hooks: hooks(),
   mcpServers: [{ name: 'docs', transport: 'stdio', command: 'npx docs-mcp', url: null, sourceItem: 'i5', scope: 'project', runsInForgeMissions: false }],
-  notes: ['FORGE missions read CLAUDE.md and rules from the project. Settings, hooks and MCP servers are not loaded by FORGE missions.', 'User-level files are shown for reference and never edited by FORGE.'],
+  notes: ['FORGE missions read CLAUDE.md and rules from the project. Settings and hooks are not loaded by FORGE missions; a .mcp.json server runs only after you authorize it.', 'User-level files are shown for reference and never edited by FORGE.'],
   truncated: false,
 });
 
@@ -64,6 +65,9 @@ function preview(rel: string, text: string, extra: Partial<HarnessPreview> = {})
   };
 }
 
+const mcpDef: McpDefinition = { name: 'docs', transport: 'stdio', command: 'npx', args: ['docs-mcp'], url: null, envNames: [] };
+let mcpAuth: McpAuthorization | null = null;
+
 const templates: HookTemplate[] = [
   { id: 'block-rm', name: 'Block destructive rm', description: 'Denies Bash commands that contain rm -rf.', event: 'PreToolUse', matcher: 'Bash', timeoutSecs: 10, requires: 'bash, grep', params: [{ key: 'pattern', label: 'Pattern to block', default: 'rm -rf' }] },
 ];
@@ -82,7 +86,11 @@ export function handleP4(cmd: string, args: any): Promise<any> | undefined {
       ]);
     }
     case 'project_set_execution_backend': return Promise.reject('"Isolated: Windows Sandbox" cannot be used on this machine: Not implemented in this build.');
-    case 'harness_inventory': return done(inventory());
+    case 'harness_inventory': { const inv = inventory(); inv.mcpServers = inv.mcpServers.map((s) => ({ ...s, runsInForgeMissions: mcpAuth !== null && s.name === mcpAuth.name })); return done(inv); }
+    case 'mcp_preview': return done({ definition: mcpDef, definitionSha256: 'a3f1c0de'.repeat(8), summary: ['Starts the program `npx` on this computer, with your privileges, whenever a Claude mission in this project starts — before any tool call is approved. It is not sandboxed.', 'It is fetched by a package runner: unless the arguments pin an exact version, a different version can run next time.', 'FORGE passes it no extra environment variables.', 'Its tools can only be used with your approval, one call at a time; what they return is treated as untrusted data.'], authorized: mcpAuth });
+    case 'mcp_authorize': mcpAuth = { id: 'ma1', projectId: args.projectId, name: args.name, definition: mcpDef, definitionSha256: args.definitionSha256, toolAllowlist: args.toolAllowlist, authorizedAt: new Date().toISOString(), revokedAt: null }; return done(mcpAuth);
+    case 'mcp_revoke': { const a = { ...mcpAuth!, revokedAt: new Date().toISOString() }; mcpAuth = null; return done(a); }
+    case 'mcp_authorizations': return done(mcpAuth ? [{ authorization: mcpAuth, changedSinceAuthorization: false, summary: [] }] : []);
     case 'harness_doctor': return done(doctor());
     case 'harness_read': { const t = files[args.rel]; return done({ rel: args.rel, exists: t !== undefined, text: t ?? '', sha256: t !== undefined ? H(args.rel) : null, bytes: (t ?? '').length, editable: true } as HarnessFile); }
     case 'harness_preview': return done(preview(args.rel, args.text));

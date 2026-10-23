@@ -25,6 +25,14 @@ describe('repo-defined execution surfaces are locked down', () => {
     expect(LOCKDOWN.managedSettings.allowManagedHooksOnly).toBe(true);
   });
 
+  it('passes only the MCP servers the core authorized, with strictMcpConfig still on', () => {
+    const servers = { docs: { type: 'stdio' as const, command: 'docs-mcp', args: ['--ro'] } };
+    const { o } = opts(undefined, { mcpServers: servers });
+    expect(o.mcpServers).toEqual(servers);
+    expect(o.strictMcpConfig).toBe(true);
+    expect(LOCKDOWN.mcpServers).toEqual({}); // the shared constant is never mutated
+  });
+
   it('never enables bypass or dangerous permission modes', () => {
     for (const mode of ['default', 'acceptEdits'] as const) {
       const { o } = opts(undefined, { permissionMode: mode });

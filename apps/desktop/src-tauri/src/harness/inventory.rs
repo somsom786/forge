@@ -411,7 +411,7 @@ pub fn scan(root: &Path, user_home: Option<&Path>) -> Inventory {
     }
     inv.notes = vec![
         "FORGE missions load this project's CLAUDE.md, rules, skills, subagents and commands.".into(),
-        "FORGE missions do NOT run project hooks or .mcp.json servers: a repository must not execute code when a session starts. Hooks defined here run in your own Claude Code sessions.".into(),
+        "FORGE missions do NOT run project hooks, and run a .mcp.json server only after you authorize it (Harness Studio → .mcp.json): a repository must not execute code when a session starts. Hooks defined here run in your own Claude Code sessions.".into(),
         "Your user-level (~/.claude) configuration is shown for reference only; FORGE never loads or edits it.".into(),
     ];
     inv

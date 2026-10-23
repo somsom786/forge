@@ -477,6 +477,9 @@ impl Core {
         if matches!(m.provider.as_str(), "claude" | "claude-local") && self.cfg.claude.is_none() {
             return Err(ForgeError::Provider("Claude Code was not found on PATH; install it and sign in with `claude`".into()));
         }
+        // Only servers the user authorized for this project, from their stored (reviewed) definitions; never the repo's .mcp.json.
+        // Codex receives none: its MCP configuration lives in the user's own ~/.codex/config.toml, which FORGE does not touch.
+        let mcp_servers = if m.provider == "codex" { serde_json::Map::new() } else { self.mcp_servers_for_mission(&m.project_id)? };
         if m.provider == "codex" && self.cfg.codex.is_none() {
             return Err(ForgeError::Provider("Codex was not found (or only an npm shim was found); install the Codex app/CLI and sign in with `codex login`".into()));
         }
@@ -626,6 +629,7 @@ impl Core {
             "appendSystemPrompt": MISSION_GUIDANCE,
             "allowApiBilling": false,
             "localEndpoint": if local { Some(self.cfg.ollama_url.clone()) } else { None },
+            "mcpServers": mcp_servers,
         }));
         Ok(())
     }
@@ -718,7 +722,16 @@ impl Core {
         let mut detail = json!({"tool": req.tool, "input": req.input, "source": req.source, "blockedPath": req.blocked_path, "providerReason": req.reason});
         redact::redact_value(&mut detail);
 
-        match policy::evaluate(&req.tool, &req.input, &h.worktree, h.profile) {
+        // MCP tools: only servers (and tools) the user authorized for this project can even be asked about.
+        let decision = if req.tool.starts_with("mcp__") {
+            match self.mcp_gate(&h.mission_id, &req.tool) {
+                Ok(()) => policy::evaluate(&req.tool, &req.input, &h.worktree, h.profile),
+                Err(reason) => Decision::Deny { reason },
+            }
+        } else {
+            policy::evaluate(&req.tool, &req.input, &h.worktree, h.profile)
+        };
+        match decision {
             Decision::Allow => reply("allow", None),
             Decision::Deny { reason } => {
                 let note = format!("Blocked by FORGE policy: {reason}");
@@ -1025,6 +1038,7 @@ fn derive_title(objective: &str) -> String {
 }
 
 mod execution;
+mod mcp;
 mod agents;
 mod experiment;
 mod harness;
@@ -1032,6 +1046,7 @@ mod memory;
 mod review;
 pub use agents::{AgentsOverview, ProviderUsage, SessionRow};
 pub use experiment::ExperimentDetail;
+pub use mcp::{McpAuthorizationStatus, McpPreview};
 pub use harness::{BackupUsage, DEFAULT_KEEP_BACKUPS_PER_FILE, HookSpec, PruneReport, RollbackPreview};
 mod conflicts;
 pub use conflicts::{ConflictReport, MissionChangeSet, SkippedMission};

@@ -583,6 +583,43 @@ export interface McpServerDef {
   runsInForgeMissions: boolean;
 }
 
+/** A server definition as FORGE pins it: env *names* only, never values. */
+export interface McpDefinition {
+  name: string;
+  transport: 'stdio' | 'http' | string;
+  command: string | null;
+  args: string[];
+  url: string | null;
+  envNames: string[];
+}
+
+export interface McpAuthorization {
+  id: string;
+  projectId: string;
+  name: string;
+  definition: McpDefinition;
+  definitionSha256: string;
+  /** Empty: every tool of the server may be asked for. */
+  toolAllowlist: string[];
+  authorizedAt: string;
+  revokedAt: string | null;
+}
+
+export interface McpPreview {
+  definition: McpDefinition;
+  /** Echo back to authorize: proves the user saw this exact definition. */
+  definitionSha256: string;
+  summary: string[];
+  authorized: McpAuthorization | null;
+}
+
+export interface McpAuthorizationStatus {
+  authorization: McpAuthorization;
+  /** `.mcp.json` now differs (missions still get the authorized definition). */
+  changedSinceAuthorization: boolean;
+  summary: string[];
+}
+
 export interface HarnessInventory {
   items: HarnessItem[];
   hooks: HookDef[];

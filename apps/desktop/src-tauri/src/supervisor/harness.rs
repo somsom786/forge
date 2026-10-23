@@ -86,7 +86,13 @@ impl Core {
 
     pub fn harness_inventory(&self, project_id: &str) -> Result<inventory::Inventory> {
         let root = self.harness_root(project_id)?;
-        Ok(inventory::scan(&root, self.user_claude_home().as_deref()))
+        let mut inv = inventory::scan(&root, self.user_claude_home().as_deref());
+        // A project server runs in missions only once the user authorized it (and then from the stored definition).
+        let authorized: Vec<String> = self.store.mcp_active(project_id)?.into_iter().map(|a| a.name).collect();
+        for s in inv.mcp_servers.iter_mut().filter(|s| s.scope == "project") {
+            s.runs_in_forge_missions = authorized.contains(&s.name);
+        }
+        Ok(inv)
     }
 
     /// Doctor findings plus "changed since you last reviewed it" for files FORGE wrote or the user marked as reviewed.

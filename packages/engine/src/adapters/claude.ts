@@ -104,6 +104,8 @@ export function buildQueryOptions(
     // reproducible and a user's global allow-rules / bypass defaults cannot widen what FORGE has approved.
     settingSources: ['project'],
     ...LOCKDOWN,
+    // Only what the user authorized (stored definitions from the core); strictMcpConfig stays on so .mcp.json is ignored.
+    mcpServers: { ...(s.mcpServers ?? {}) },
     includePartialMessages: true,
     persistSession: true,
     executable: 'node',

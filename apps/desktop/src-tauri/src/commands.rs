@@ -688,3 +688,28 @@ use crate::supervisor::AgentsOverview;
 pub async fn agents_overview(core: CoreState<'_>, days: u32) -> Result<AgentsOverview> {
     blocking(&core, move |c| c.agents_overview(days)).await
 }
+
+// ---- MCP authorization -----------------------------------------------------------------------------------------------
+
+use crate::mcp::McpAuthorization;
+use crate::supervisor::{McpAuthorizationStatus, McpPreview};
+
+#[tauri::command]
+pub async fn mcp_preview(core: CoreState<'_>, project_id: String, name: String) -> Result<McpPreview> {
+    blocking(&core, move |c| c.mcp_preview(&project_id, &name)).await
+}
+
+#[tauri::command]
+pub async fn mcp_authorize(core: CoreState<'_>, project_id: String, name: String, definition_sha256: String, tool_allowlist: Vec<String>) -> Result<McpAuthorization> {
+    blocking(&core, move |c| c.mcp_authorize(&project_id, &name, &definition_sha256, &tool_allowlist)).await
+}
+
+#[tauri::command]
+pub async fn mcp_revoke(core: CoreState<'_>, authorization_id: String) -> Result<McpAuthorization> {
+    blocking(&core, move |c| c.mcp_revoke(&authorization_id)).await
+}
+
+#[tauri::command]
+pub async fn mcp_authorizations(core: CoreState<'_>, project_id: String) -> Result<Vec<McpAuthorizationStatus>> {
+    blocking(&core, move |c| c.mcp_authorizations(&project_id)).await
+}

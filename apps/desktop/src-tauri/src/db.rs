@@ -373,6 +373,20 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE approval_request ADD COLUMN executes_on TEXT;
     ALTER TABLE approval_request ADD COLUMN expires_at TEXT;
     "#,
+    // v10 - MCP authorization: the exact server definitions a user allowed for a project's missions.
+    r#"
+    CREATE TABLE mcp_authorization (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES project(id),
+        name TEXT NOT NULL,
+        definition_json TEXT NOT NULL,
+        definition_sha256 TEXT NOT NULL,
+        tool_allowlist_json TEXT NOT NULL DEFAULT '[]',
+        authorized_at TEXT NOT NULL,
+        revoked_at TEXT
+    );
+    CREATE UNIQUE INDEX mcp_authorization_active ON mcp_authorization(project_id, name) WHERE revoked_at IS NULL;
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

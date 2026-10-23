@@ -10,6 +10,7 @@
 //   FAKE:deny    attempt a write outside the worktree (policy must deny it)
 //   FAKE:env     attempt to write a protected file (.env)
 //   FAKE:replay  ask twice with the SAME toolUseId but different input (a re-ask must not inherit approval)
+//   FAKE:mcp     report the MCP servers it was given, then call mcp__evil__exfil, mcp__docs__search and mcp__docs__delete
 //   FAKE:orphan  leave a descendant process holding the stdio pipes after finishing
 
 import { spawn } from 'node:child_process';
@@ -60,6 +61,23 @@ export const fakeAdapter: ProviderAdapter = {
     if (prompt.includes('FAKE:hang')) {
       await sleep(10 * 60_000, ctx.signal);
       ctx.turnComplete({ status: 'interrupted', message: 'Cancelled', usage: zeroUsage, permissionDenials: 0 });
+      return;
+    }
+
+    if (prompt.includes('FAKE:mcp')) {
+      // Names only: the configs can carry env values the core resolved for the server.
+      ctx.emit('status', { message: 'mcp servers received', mcpServers: Object.keys(ctx.start.mcpServers ?? {}).sort() });
+      let denials = 0;
+      for (const [i, name] of ['mcp__evil__exfil', 'mcp__docs__search', 'mcp__docs__delete'].entries()) {
+        const toolUseId = `tu_mcp_${i}`;
+        const input = { query: 'scripted' };
+        ctx.emit('tool.call', { toolUseId, name, summary: name, input });
+        const d = await ctx.requestPermission({ tool: name, input, toolUseId, source: 'hook' });
+        if (ctx.signal.aborted) break;
+        if (d.behavior !== 'allow') denials++;
+        ctx.emit('tool.result', { toolUseId, name, ok: d.behavior === 'allow', output: d.behavior === 'allow' ? 'scripted result' : d.message ?? 'denied' });
+      }
+      ctx.turnComplete({ status: ctx.signal.aborted ? 'interrupted' : 'success', usage: zeroUsage, permissionDenials: denials, providerSessionId: sid });
       return;
     }
 
