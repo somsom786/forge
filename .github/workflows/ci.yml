@@ -1,7 +1,9 @@
-# Tests on every push and pull request, on Linux and on a GitHub-hosted Windows runner.
+# Tests on every push and pull request, on Linux and on a GitHub-hosted Windows runner; checks the Windows validation
+# scripts; builds the unsigned Windows installer as a workflow artifact.
 #
 # Never runs anything that needs a provider login or spends quota: live tests are #[ignore]d in Rust and are never
 # selected here (no --ignored / --include-ignored), and no step has access to Claude or Codex credentials.
+# Every action is pinned to a full commit SHA (the tag is in the trailing comment).
 name: CI
 
 on:
@@ -29,16 +31,18 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-23
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: apps/desktop/src-tauri
 
@@ -77,3 +81,174 @@ jobs:
         env:
           FORGE_REQUIRE_SANDBOX_TESTS: ${{ runner.os == 'Linux' && '1' || '0' }}
         run: cargo test --lib
+
+  windows-scripts:
+    # The PowerShell scripts in scripts/windows are the entry point for validating FORGE on a physical Windows PC.
+    # Here they are parsed by Windows PowerShell 5.1 and PowerShell 7, linted, and smoke-run with every expensive step
+    # skipped (the real builds and tests are the `test` job's work).
+    name: windows scripts (parse, PSScriptAnalyzer, smoke)
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Scripts are ASCII (Windows PowerShell 5.1 reads BOM-less files in the ANSI code page)
+        shell: pwsh
+        run: |
+          $bad = @()
+          foreach ($f in Get-ChildItem -Path scripts/windows -Recurse -Include *.ps1, *.psm1 -File) {
+            $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+            for ($i = 0; $i -lt $bytes.Length; $i++) {
+              if ($bytes[$i] -gt 127) { $bad += "$($f.FullName): non-ASCII byte at offset $i"; break }
+            }
+          }
+          if ($bad.Count -gt 0) { $bad | ForEach-Object { Write-Host "::error::$_" }; exit 1 }
+
+      - name: Parse every script with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $files = @(Get-ChildItem -Path scripts/windows -Recurse -Include *.ps1, *.psm1 -File)
+          if ($files.Count -eq 0) { throw 'no scripts found under scripts/windows' }
+          $failed = 0
+          foreach ($f in $files) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $failed++
+              foreach ($e in $errors) { Write-Host ("::error file={0},line={1}::{2}" -f $f.FullName, $e.Extent.StartLineNumber, $e.Message) }
+            } else { Write-Host "parsed (5.1): $($f.FullName)" }
+          }
+          if ($failed -gt 0) { exit 1 }
+
+      - name: Parse every script with PowerShell 7
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path scripts/windows -Recurse -Include *.ps1, *.psm1 -File)
+          if ($files.Count -eq 0) { throw 'no scripts found under scripts/windows' }
+          $failed = 0
+          foreach ($f in $files) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $failed++
+              foreach ($e in $errors) { Write-Host ("::error file={0},line={1}::{2}" -f $f.FullName, $e.Extent.StartLineNumber, $e.Message) }
+            } else { Write-Host "parsed (7): $($f.FullName)" }
+          }
+          if ($failed -gt 0) { exit 1 }
+
+      - name: PSScriptAnalyzer (severity Error and 5.1 syntax compatibility fail the job)
+        shell: pwsh
+        run: |
+          $version = [version]'1.25.0'
+          if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer | Where-Object { $_.Version -eq $version })) {
+            Install-Module -Name PSScriptAnalyzer -RequiredVersion $version -Repository PSGallery -Scope CurrentUser -Force
+          }
+          Import-Module -Name PSScriptAnalyzer -RequiredVersion $version
+          $all = @(Invoke-ScriptAnalyzer -Path scripts/windows -Recurse)
+          $all | Sort-Object Severity, ScriptName, Line | Format-Table -AutoSize Severity, RuleName, ScriptName, Line, Message | Out-String -Width 300 | Write-Host
+          $compatSettings = @{
+            IncludeRules = @('PSUseCompatibleSyntax')
+            Rules        = @{ PSUseCompatibleSyntax = @{ Enable = $true; TargetVersions = @('5.1', '7.0') } }
+          }
+          $compat = @(Invoke-ScriptAnalyzer -Path scripts/windows -Recurse -Settings $compatSettings)
+          $errors = @($all | Where-Object { $_.Severity -eq 'Error' -or $_.Severity -eq 'ParseError' })
+          foreach ($e in @($errors + $compat)) { Write-Host ("::error file={0},line={1}::{2}: {3}" -f $e.ScriptPath, $e.Line, $e.RuleName, $e.Message) }
+          Write-Host ("{0} findings, {1} errors, {2} compatibility findings" -f $all.Count, $errors.Count, $compat.Count)
+          if ($errors.Count -gt 0 -or $compat.Count -gt 0) { exit 1 }
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Smoke-run every script with the expensive steps skipped (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $allowed = @(('PASS ' + [char]0x2014 + ' Windows CI'), 'FAIL', 'BLOCKED', 'NOT RUN')
+          function Invoke-Smoke([string]$Script, [hashtable]$Parameters, [int[]]$AcceptedExitCodes) {
+            $started = Get-Date
+            & ".\scripts\windows\$Script.ps1" @Parameters
+            $code = $LASTEXITCODE
+            Write-Host "$Script exit code: $code"
+            if ($AcceptedExitCodes -notcontains $code) { throw "$Script exited with $code" }
+            $report = Get-ChildItem -Path validation-results -Filter "$Script-*.json" -File | Where-Object { $_.LastWriteTime -ge $started } | Sort-Object LastWriteTime | Select-Object -Last 1
+            if ($null -eq $report) { throw "$Script wrote no JSON report" }
+            $json = Get-Content -LiteralPath $report.FullName -Raw | ConvertFrom-Json
+            if ($json.exitCode -ne $code) { throw "$Script report says exit code $($json.exitCode), process said $code" }
+            if ($json.environment.githubActions -ne $true) { throw "$Script report does not record GitHub Actions" }
+            if (@($json.checks).Count -lt 1) { throw "$Script report has no checks" }
+            foreach ($c in $json.checks) {
+              if ($allowed -notcontains $c.status) { throw "$Script used a status label outside the allowed set: '$($c.status)'" }
+              foreach ($field in @('name', 'status', 'durationSeconds', 'command', 'logPath')) {
+                if ($null -eq $c.PSObject.Properties[$field]) { throw "$Script check '$($c.name)' has no '$field'" }
+              }
+            }
+          }
+          # 0 = everything required passed; 2 = a prerequisite is missing on this runner (BLOCKED). 1 (FAIL) is never accepted.
+          Invoke-Smoke 'verify-windows' @{ SkipInstall = $true; SkipEngine = $true; SkipUi = $true; SkipRust = $true } @(0, 2)
+          Invoke-Smoke 'test-provider-adapters' @{ SkipEngineTests = $true; SkipRust = $true } @(0, 2)
+          Invoke-Smoke 'test-execution-backends' @{ SkipRust = $true } @(0, 2)
+          Invoke-Smoke 'test-obsidian' @{ SkipRust = $true } @(0, 2)
+          # No installer exists, so every install step must report BLOCKED (exit code 2), never PASS.
+          Invoke-Smoke 'test-release' @{ InstallerPath = 'does-not-exist-setup.exe' } @(2)
+          # The scripts' own exit codes were checked above; do not let the last one (2) become this step's result.
+          $global:LASTEXITCODE = 0
+
+      - name: Upload smoke-run reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-scripts-smoke-reports
+          path: validation-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  tauri-windows-build:
+    # Builds the real installer with the repository's packaging command. Unsigned; never published or released.
+    name: tauri windows build (unsigned NSIS installer artifact)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-23
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: apps/desktop/src-tauri
+          key: release
+
+      - name: Install
+        shell: bash
+        run: npm ci
+
+      - name: Build the installer (npm run package; NSIS, per-user, no signing)
+        shell: bash
+        run: npm run package
+
+      - name: SHA-256 of the installer
+        shell: pwsh
+        run: |
+          $dir = 'apps/desktop/src-tauri/target/release/bundle/nsis'
+          $setup = @(Get-ChildItem -Path $dir -Filter '*-setup.exe' -File)
+          if ($setup.Count -ne 1) { throw "expected exactly one *-setup.exe in $dir, found $($setup.Count)" }
+          $lines = foreach ($f in $setup) { '{0}  {1}' -f (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $f.Name }
+          $lines | Set-Content -LiteralPath (Join-Path $dir 'SHA256SUMS.txt') -Encoding ascii
+          $lines | Write-Host
+
+      - name: Upload the installer (workflow artifact only, 7 days)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: forge-windows-installer-${{ github.sha }}
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+            apps/desktop/src-tauri/target/release/bundle/nsis/SHA256SUMS.txt
+          retention-days: 7
+          if-no-files-found: error

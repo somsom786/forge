@@ -1,0 +1,32 @@
+# gitleaks configuration (used by .github/workflows/security.yml: `gitleaks git --config .gitleaks.toml`).
+#
+# Default rules, plus one narrow allowlist: the fake credentials that FORGE's own tests feed to its redaction and
+# environment-scrubbing code. A finding is ignored only when BOTH the file and the matched secret are listed below, so a
+# real secret added to the same files, or the same fake value anywhere else, is still reported.
+# To add an entry: confirm the value is fake, add the file and the exact value, and say why in the commit message.
+
+title = "FORGE gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake credentials used as test data for redaction, env scrubbing and MCP env handling"
+condition = "AND"
+paths = [
+    '''^apps/desktop/src-tauri/src/redact\.rs$''',
+    '''^apps/desktop/src-tauri/src/knowledge/(hardening_tests|service_tests)\.rs$''',
+    '''^apps/desktop/src-tauri/src/supervisor/tests/(mcp|harness)\.rs$''',
+    '''^apps/desktop/src-tauri/src/(mcp|verify)\.rs$''',
+    '''^packages/engine/test/(claudeOptions|normalize)\.test\.ts$''',
+]
+regexes = [
+    '''AKIAABCDEFGHIJKLMNOP''',
+    '''ghp_abcdefghijklmnopqrstuvwxyz0123''',
+    '''sk-ant-api03-abcdefghijklmnopqrstuvwx''',
+    '''hunter2hunter2''',
+    '''swordfish99''',
+    '''literal-value-never-carried''',
+    '''s3cret-literal''',
+    '''supersecretvalue123''',
+]
