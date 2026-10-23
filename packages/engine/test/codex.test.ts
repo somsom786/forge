@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CODEX_DISABLED_FEATURES, codexServerArgs, createCodexAdapter, innerCommand, projectCodexConfig } from '../src/adapters/codex.js';
+import { CODEX_DISABLED_FEATURES, codexServerArgs, createCodexAdapter, homeInside, innerCommand, projectCodexConfig, userAllowRules } from '../src/adapters/codex.js';
 import { type CodexRpc, RpcError, sanitizedCodexEnv } from '../src/adapters/codexRpc.js';
 import type { PermissionDecision, PermissionRequest, RunContext } from '../src/adapters/types.js';
 import type { StartCommand } from '../src/protocol.js';
@@ -52,6 +52,7 @@ function context(start: Partial<StartCommand> = {}, decide: (r: PermissionReques
 
 const baseHandlers = (extra: Record<string, Handler> = {}): Record<string, Handler> => ({
   initialize: () => ({}),
+  'account/read': () => ({ account: { type: 'chatgpt', email: null, planType: 'plus' } }),
   'config/read': () => ({ config: { mcp_servers: { evil: { command: 'node' }, node_repl: { command: 'x' } } } }),
   'thread/start': () => ({ thread: { id: 'th1' } }),
   'thread/resume': () => ({ thread: { id: 'th1' } }),
@@ -205,5 +206,41 @@ describe('codex adapter', () => {
     const clean = mkdtempSync(join(tmpdir(), 'forge-codex-clean-'));
     mkdirSync(join(clean, '.git'));
     expect(projectCodexConfig(clean)).toEqual([]);
+  });
+
+  it('refuses API-key / custom-provider logins: only a ChatGPT login may run a mission', async () => {
+    const p = peer(baseHandlers({ 'account/read': () => ({ account: { type: 'apiKey' } }) }));
+    const c = context();
+    await createCodexAdapter({ spawnServer: () => p.server }).run(c.ctx);
+    expect(c.result().status).toBe('error');
+    expect(c.result().message).toContain('not with a ChatGPT login');
+    expect(p.calls.some((x) => x.method === 'turn/start' || x.method === 'thread/start')).toBe(false);
+  });
+
+  it('closes notify and live web search at the process level, and pins the provider', async () => {
+    expect(codexServerArgs().join(' ')).toContain('-c notify=[]');
+    expect(codexServerArgs().join(' ')).toContain('-c web_search="disabled"');
+    const p = peer(baseHandlers());
+    const c = context();
+    const run = createCodexAdapter({ spawnServer: () => p.server }).run(c.ctx);
+    await new Promise((r) => setTimeout(r, 20));
+    p.push('turn/completed', completed());
+    await run;
+    expect(p.calls.find((x) => x.method === 'thread/start')!.params.modelProvider).toBe('openai');
+  });
+
+  it('user exec allow-rules and a Codex home inside the repo are detected', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-codexhome-'));
+    expect(userAllowRules(home)).toEqual([]);
+    mkdirSync(join(home, 'rules'));
+    writeFileSync(join(home, 'rules', 'default.rules'), 'prefix_rule(pattern=["rg"], decision="allow")');
+    writeFileSync(join(home, 'rules', 'other.rules'), 'prefix_rule(pattern=["rm"], decision="forbidden")');
+    expect(userAllowRules(home)).toEqual(['default.rules (1 allow rule)']);
+    expect(homeInside(join(home, 'repo'), join(home, 'repo', '.codex'))).toBe(true);
+    expect(homeInside(join(home, 'repo'), join(home, 'elsewhere'))).toBe(false);
+  });
+
+  it('environment scrubbing is case-insensitive (Windows)', () => {
+    expect(sanitizedCodexEnv({ openai_api_key: 'x', Codex_Api_Key: 'y', Path: 'p' })).toEqual({ Path: 'p' });
   });
 });

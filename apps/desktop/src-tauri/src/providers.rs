@@ -93,10 +93,11 @@ pub fn codex_capabilities() -> Value {
 /// The Codex executable FORGE can spawn directly. `which` may find an npm `.cmd`/`.ps1` shim, which modern Node/Rust cannot
 /// start without a shell (and FORGE never uses a shell for agents), so only a real `.exe` counts.
 pub fn locate_codex() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("FORGE_CODEX_PATH") {
-        return dunce::canonicalize(PathBuf::from(p)).ok();
-    }
-    let found = which::which("codex").ok()?;
+    let found = match std::env::var_os("FORGE_CODEX_PATH") {
+        Some(p) => dunce::canonicalize(PathBuf::from(p)).ok()?,
+        None => which::which("codex").ok()?,
+    };
+    // The same rule for an override as for PATH: a real executable, never a script shim.
     let is_exe = found.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")) || !cfg!(windows);
     is_exe.then(|| dunce::simplified(&found).to_path_buf())
 }

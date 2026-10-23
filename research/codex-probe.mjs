@@ -63,7 +63,7 @@ if (process.env.PROBE_LIST) {
   console.log(JSON.stringify((ml.data ?? ml.models ?? ml).map?.((m) => ({ id: m.id ?? m.model, name: m.displayName, efforts: (m.supportedReasoningEfforts ?? []).map((e) => e.reasoningEffort ?? e), def: m.defaultReasoningEffort, hidden: m.hidden })), null, 0));
   p.stdin.end(); setTimeout(() => process.exit(0), 300); await new Promise(() => {});
 }
-const started = await send('thread/start', { cwd, approvalPolicy: 'untrusted', sandbox: 'workspace-write', ephemeral: true, ...(model ? { model } : {}), ...(modelProvider ? { modelProvider } : {}), ...(process.env.PROBE_THREAD_CONFIG ? { config: JSON.parse(process.env.PROBE_THREAD_CONFIG) } : {}) });
+const started = await send('thread/start', { cwd, approvalPolicy: process.env.PROBE_APPROVAL ? JSON.parse(process.env.PROBE_APPROVAL) : 'untrusted', sandbox: 'workspace-write', ephemeral: true, ...(model ? { model } : {}), ...(modelProvider ? { modelProvider } : {}), ...(process.env.PROBE_THREAD_CONFIG ? { config: JSON.parse(process.env.PROBE_THREAD_CONFIG) } : {}) });
 console.log('thread/start ->', JSON.stringify(started).slice(0, 600));
 threadId = started.thread?.id ?? started.threadId;
 const turn = await send('turn/start', { threadId, input: [{ type: 'text', text: prompt, text_elements: [] }], ...(process.env.PROBE_EFFORT ? { effort: process.env.PROBE_EFFORT } : {}) });

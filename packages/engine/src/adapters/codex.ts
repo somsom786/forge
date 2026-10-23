@@ -10,8 +10,9 @@
 //     with `config/read` and each one is disabled by name, and any server that still reports starting aborts the session.
 //   * The child gets no API-key environment, so a mission can never silently bill an API.
 
-import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join, relative, isAbsolute, resolve as resolvePath } from 'node:path';
 import type { CapabilityMatrix, UsageReport } from '../protocol.js';
 import { MAX_FIELD_BYTES } from '../protocol.js';
 import { errMessage, truncate, truncateDeep } from '../util.js';
@@ -35,8 +36,40 @@ export const CODEX_CAPABILITIES: CapabilityMatrix = {
 /** Features that load code or tools from plugins, apps, hooks and other agents. Disabled for every mission session. */
 export const CODEX_DISABLED_FEATURES = ['hooks', 'plugins', 'apps', 'computer_use', 'browser_use', 'browser_use_external', 'multi_agent', 'remote_plugin'];
 
+/** Config overrides that close command-running and network surfaces Codex has outside the approval flow. */
+export const CODEX_CONFIG_OVERRIDES = ['notify=[]', 'web_search="disabled"'];
+
 export function codexServerArgs(): string[] {
-  return ['app-server', ...CODEX_DISABLED_FEATURES.flatMap((f) => ['--disable', f])];
+  return ['app-server', ...CODEX_DISABLED_FEATURES.flatMap((f) => ['--disable', f]), ...CODEX_CONFIG_OVERRIDES.flatMap((c) => ['-c', c])];
+}
+
+/** The Codex home Codex will use (it holds the user's login and exec rules). */
+export function effectiveCodexHome(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CODEX_HOME && env.CODEX_HOME.trim() ? env.CODEX_HOME : join(homedir(), '.codex');
+}
+
+/** Exec-policy files in the Codex home that ALLOW commands without a prompt. They run commands outside FORGE's approval flow
+ *  (and outside Codex's sandbox), so a mission refuses to start while any exist, unless the user opts in explicitly. */
+export function userAllowRules(home: string): string[] {
+  const dir = join(home, 'rules');
+  const found: string[] = [];
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.rules')) continue;
+      const text = readFileSync(join(dir, f), 'utf8');
+      const n = (text.match(/decision\s*=\s*["']allow["']/g) ?? []).length;
+      if (n > 0) found.push(`${f} (${n} allow rule${n === 1 ? '' : 's'})`);
+    }
+  } catch {
+    /* no rules directory */
+  }
+  return found;
+}
+
+/** A Codex home inside the repository would let the repository supply the login, config and rules. */
+export function homeInside(cwd: string, home: string): boolean {
+  const rel = relative(resolvePath(cwd), resolvePath(home));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
 const isJson = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object'; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -87,6 +120,20 @@ export function createCodexAdapter(deps: CodexDeps = {}): ProviderAdapter {
         ctx.turnComplete({ status: 'error', message, usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, permissionDenials: 0 });
         return;
       }
+      if (!deps.spawnServer) {
+        const home = effectiveCodexHome();
+        const rules = userAllowRules(home);
+        const refuse = (message: string) => {
+          ctx.emit('status', { message, provider: 'codex', refused: true });
+          ctx.turnComplete({ status: 'error', message, usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, permissionDenials: 0 });
+        };
+        if (homeInside(ctx.start.cwd, home)) return refuse(`The Codex home (${home}) is inside the repository, which would let the repository supply Codex's login, configuration and rules. FORGE will not run a Codex mission.`);
+        if (rules.length > 0 && process.env.FORGE_CODEX_ALLOW_USER_RULES !== '1') {
+          return refuse(
+            `Your Codex exec rules (${join(home, 'rules')}: ${rules.join(', ')}) allow commands to run without asking, which would bypass FORGE's approvals. FORGE will not run a Codex mission until those allow rules are removed or moved (set FORGE_CODEX_ALLOW_USER_RULES=1 to accept the bypass knowingly).`,
+          );
+        }
+      }
       const server = (deps.spawnServer ?? defaultSpawn)(ctx);
       try {
         await runSession(ctx, server);
@@ -110,6 +157,7 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
   let threadId = '';
   let turnId = '';
   let denials = 0;
+  let callbackSeq = 0;
   let usage: UsageReport = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
   let failure: string | undefined;
   let tripwire: string | undefined;
@@ -170,12 +218,14 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
         if (p.status === 'starting' || p.status === 'ready') {
           tripwire = `the MCP server "${String(p.name)}" started although all MCP servers were disabled for this mission`;
           interrupt();
+          server.kill();
           finishTurn({ status: 'failed', error: tripwire });
         }
         break;
       case 'hook/started':
         tripwire = 'a Codex hook started although hooks were disabled for this mission';
         interrupt();
+        server.kill();
         finishTurn({ status: 'failed', error: tripwire });
         break;
       case 'turn/completed': {
@@ -263,7 +313,8 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
       const net = isJson(p.networkApprovalContext) ? p.networkApprovalContext : null;
       const tool = net ? 'WebFetch' : toolName({ type: 'commandExecution' });
       const input = net ? { url: String(net.host ?? net.url ?? command) } : { command, cwd: p.cwd ?? item.cwd };
-      const d = await ctx.requestPermission({ tool, input, toolUseId: String(p.itemId), source: 'can_use_tool', reason: typeof p.reason === 'string' ? p.reason : undefined, signal: ctx.signal });
+      const cb = String(p.approvalId ?? `${p.itemId}:${++callbackSeq}`);
+      const d = await ctx.requestPermission({ tool, input, toolUseId: `${String(p.itemId)}:${cb}`, source: 'can_use_tool', reason: typeof p.reason === 'string' ? p.reason : undefined, signal: ctx.signal });
       if (d.behavior === 'allow') return { decision: 'accept' };
       denials++;
       return { decision: 'decline' };
@@ -311,6 +362,13 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
     await rpc.request('initialize', { clientInfo: { name: 'forge', title: 'FORGE', version: '0.1.0' }, capabilities: null });
     rpc.notify('initialized', {});
 
+    // Never bill an API key or a custom provider: only the user's ChatGPT login is acceptable (token-free metadata only).
+    const acct = await rpc.request('account/read', { refreshToken: false });
+    const acctType = String(acct?.account?.type ?? 'none');
+    if (acctType !== 'chatgpt') {
+      throw new Error(`Codex is signed in as "${acctType}", not with a ChatGPT login; FORGE only runs Codex missions on the ChatGPT subscription so nothing is billed to an API key. Run \`codex login\`.`);
+    }
+
     // Effective MCP servers as Codex will see them from the worktree — including any the repository defines.
     const cfg = await rpc.request('config/read', { cwd: start.cwd, includeLayers: false });
     const mcpNames = Object.keys(isJson(cfg?.config?.mcp_servers) ? cfg.config.mcp_servers : {});
@@ -319,6 +377,7 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
       approvalPolicy: 'untrusted',
       sandbox: 'workspace-write',
       approvalsReviewer: 'user',
+      modelProvider: start.localEndpoint ? 'ollama' : 'openai',
       ...(start.model ? { model: start.model } : {}),
       ...(start.appendSystemPrompt ? { developerInstructions: start.appendSystemPrompt } : {}),
       config: { mcp_servers: Object.fromEntries(mcpNames.map((n) => [n, { enabled: false }])) },

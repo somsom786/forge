@@ -31,11 +31,14 @@ export interface CodexServer {
 }
 
 /** Variables that could make Codex bill an API key or talk to another endpoint instead of the user's own login. */
+const REQUEST_TIMEOUT_MS = 90_000;
 const STRIPPED_ENV = ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_API_BASE', 'OPENAI_ORG_ID', 'OPENAI_ORGANIZATION'];
 
+/** Windows environment names are case-insensitive, so `openai_api_key` must go too. */
 export function sanitizedCodexEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out = { ...env };
-  for (const k of STRIPPED_ENV) delete out[k];
+  const drop = new Set(STRIPPED_ENV.map((k) => k.toUpperCase()));
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(env)) if (!drop.has(k.toUpperCase())) out[k] = v;
   return out;
 }
 
@@ -113,7 +116,9 @@ export function spawnCodexServer(exe: string, args: string[], cwd: string, env: 
       }
       if (child.pid && process.platform === 'win32') {
         // Whole tree: a shell command the agent started must not outlive the session.
-        spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {});
+        // Absolute path and a neutral cwd: the working directory is the (hostile) worktree and Windows looks there first.
+        const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+        spawn(`${root}\\System32\\taskkill.exe`, ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, cwd: root }).on('error', () => {});
       } else {
         child.kill('SIGKILL');
       }
@@ -122,7 +127,15 @@ export function spawnCodexServer(exe: string, args: string[], cwd: string, env: 
       request: (method, params) =>
         new Promise((resolve, reject) => {
           const id = ++nextId;
-          pending.set(id, { resolve, reject });
+          // A server that stops answering must not hang the session forever.
+          const timer = setTimeout(() => {
+            if (pending.delete(id)) reject(new Error(`codex did not answer ${method} within ${REQUEST_TIMEOUT_MS / 1000}s`));
+          }, REQUEST_TIMEOUT_MS);
+          timer.unref();
+          pending.set(id, {
+            resolve: (v) => { clearTimeout(timer); resolve(v); },
+            reject: (e) => { clearTimeout(timer); reject(e); },
+          });
           write({ jsonrpc: '2.0', id, method, params: params ?? {} });
         }),
       notify: (method, params) => write({ jsonrpc: '2.0', method, params: params ?? {} }),

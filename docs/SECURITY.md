@@ -61,6 +61,14 @@ certification, and no remote service. Treat everything below as the implemented 
 | Shipped hook templates are executed in the real shell by tests; the formatter never uses a shell. | `harness/hooks.rs`, `harness/dryrun.rs` | `every_shipped_template_runs…`, `the_formatter_passes_hostile_file_names…` |
 | Inventory and Doctor are bounded (entry budget, skipped dependency trees, bounded reads, per-kind finding cap) and never follow links or junctions, including a linked `.claude`. | `harness/inventory.rs`, `harness/doctor.rs` | `scanning_is_bounded…`, `a_linked_dot_claude_directory…`, `a_repetitive_hostile_pair…` |
 
+## Codex missions (Phase 5; review 5 in ENGINEERING_REVIEWS.md)
+
+* Every command and file change is an approval request decided by FORGE (policy, then a human); Codex's `workspace-write` sandbox stays on as defence in depth (requested, not verified).
+* **Codex starts MCP servers from a repository's `.codex/config.toml` even though it calls project config untrusted** (reproduced). FORGE refuses to run Codex in a worktree with project Codex config, disables every other server by name, disables hooks/plugins/apps/computer-use/browser/multi-agent, sets `notify=[]` and `web_search="disabled"`, and aborts on any MCP/hook startup.
+* **User exec allow-rules bypass approvals** (reproduced: an allowed command ran with no request). A Codex mission refuses to start while the Codex home contains allow rules unless `FORGE_CODEX_ALLOW_USER_RULES=1`.
+* Only a ChatGPT login is accepted (`account/read`); API-key/custom-provider logins and API-key environment variables are refused/scrubbed (case-insensitive). FORGE never reads `~/.codex/auth.json`.
+* Not verified: the effective sandbox settings Codex applies when the user's config widens them.
+
 ## Known limits (do not assume these are solved)
 
 1. **An approved shell command runs with the user's privileges and no sandbox.** FORGE shows risk warnings but cannot

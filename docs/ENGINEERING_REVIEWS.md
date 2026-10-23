@@ -105,6 +105,29 @@ Missing tests Astra asked for: (1) formatter injection — added; (2) determinis
 `write_checked` level (changed content, swapped junction) but not with an injected pause between check and write; (3) hook
 execution-definition table — added.
 
+## Review 5 — Codex adapter  (2026-10-23, GPT-6.1 Sol, high effort, read-only)
+
+Before the review I found by experiment that a repository's `.codex/config.toml` MCP server runs although Codex calls project config untrusted,
+that `config/read` inside a git worktree omits servers `thread/start` still starts, and that only per-name `enabled=false` disables a server.
+The adapter therefore refuses repositories with project Codex config. The reviewer found 5 HIGH, 3 MEDIUM, 1 LOW; it also confirmed several safeguards
+(per-path file approvals, no `acceptForSession`, unsupported requests answered with errors, Job Object containment, redaction).
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 HIGH | Cleanup runs `taskkill` resolved through the hostile worktree (cwd) | **Fixed**: absolute `%SystemRoot%\System32\taskkill.exe`, neutral cwd |
+| 2 HIGH | User/project exec allow-rules run commands with no approval request | **Reproduced** here (`rg --version` ran unprompted from the user's `default.rules`). **Mitigated by refusing**: a Codex mission will not start while the Codex home has allow rules (explicit opt-in `FORGE_CODEX_ALLOW_USER_RULES=1`). `askForApproval.granular` needs an experimental capability and does not remove allow-rules. A cleaner fix (an isolated Codex home) is blocked by the login living in that home; not done. |
+| 3 HIGH | API billing still possible (stored API-key login, custom provider); env scrub case-sensitive | **Fixed**: `account/read` must report `chatgpt` before any thread starts; provider pinned (`openai`/`ollama`); env names scrubbed case-insensitively |
+| 4 HIGH | `notify` runs commands outside hooks; `CODEX_HOME` could sit inside the repo | **Fixed**: `-c notify=[]`; refuses a Codex home inside the repository |
+| 5 HIGH | Native web search has no FORGE gate | **Fixed**: `-c web_search="disabled"`. Image generation / sub-agent / unexpected MCP items have no gate but their prerequisites (plugins, apps, multi-agent, MCP) are disabled; not independently proven |
+| 6 MED | Approval callbacks can collapse into one cached authorization | **Fixed for commands**: the Rust approval is bound to the callback id; item-scope validation not done |
+| 7 MED | A tripwire can leave the process running; no RPC deadlines | **Fixed**: tripwire kills the server at once; every request has a 90 s deadline |
+| 8 MED | Effective sandbox settings not constrained or verified (extra writable roots/network from user config) | **Not done**: the session record states the *requested* sandbox, not a verified one |
+| 9 LOW | Detection and launch use different Codex resolvers | **Fixed**: one resolver (`locate_codex`), including the override |
+
+Tests added: account type, notify/web-search flags and provider pinning, allow-rule and home detection, case-insensitive scrub, refusal on project config. Live: real mission passes
+(`FORGE_CODEX_ALLOW_USER_RULES=1` on this machine), refusal verified with and without the opt-in. Missing tests the reviewer asked for and not written: hostile `taskkill.exe` sentinel, a real
+Codex run with every FORGE permission denied (checking no file exists before consent).
+
 ## Live validation of the whole path (not a review finding, recorded for honesty)
 
 * Real Claude Code via the Agent SDK through FORGE, `haiku`, one Write approved by hand: file created in the
@@ -114,5 +137,5 @@ execution-definition table — added.
   `credentialSource:"local-endpoint"`, no provider cost reported.
 
 ## Consultation budget
-4 of the planned 4–6 consultations used (reviews 1–4). Candidates remaining: the Codex adapter's approval/sandbox mapping
+5 of the planned 4–6 consultations used (reviews 1–5; review 5 used GPT-6.1 Sol at the user's request). Candidates remaining: the Codex adapter's approval/sandbox mapping
 (Phase 5), and a final pre-release review of packaging and the update path.
