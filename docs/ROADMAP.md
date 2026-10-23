@@ -2,30 +2,21 @@
 
 Status key: ✅ done & verified · 🟡 partly done · ⬜ not started. Detail and evidence live in PROGRESS.md.
 
-## Phase 1 — Working daily driver (P0)
-✅ core (Rust supervisor, store, policy, worktrees, recovery, process containment) · ✅ Claude adapter (live-verified) ·
-🟡 desktop UI (in progress) · ⬜ packaged installer.
-**Gate:** select a project, run a real mission, see what happened, return later.
+## Phase 1 — Working daily driver (P0) ✅
+Core, Claude adapter, desktop UI done and verified in the real window. 🟡 Installer built, **not install-tested**.
 
-## Phase 2 — Verification (P0)
-⬜ mission contracts (lightweight → strict) · ⬜ review UX (diff already exists read-only) · ⬜ test/lint/build runner
-capturing evidence · ⬜ Proof Pack + requirement→code→check graph · ⬜ approve/reject/request-changes ·
-⬜ safe merge (clean tree check, conflict detection, FORGE-authored commit, branch/worktree cleanup).
-**Gate:** decide whether a change satisfies explicit acceptance criteria without reading terminal history.
+## Phase 2 — Verification (P0) ✅
+Contracts, check runner, review with fingerprint-bound approval, Proof Pack, safe merge. Verified in the real window.
 
-## Phase 3 — Memory & Obsidian (P0)
-⬜ sources + hashes · ⬜ Markdown wiki + index/log · ⬜ FTS5 retrieval + ranking · ⬜ context package + inspector ·
-⬜ lifecycle (proposed/verified/superseded/disputed/archived) · ⬜ lint (duplicates, contradictions, staleness, orphans) ·
-⬜ Obsidian vault (read-only default, scoped writes, conflict display, optional).
-**Gate:** a verified discovery from mission A is retrieved with provenance in mission B.
+## Phase 3 — Memory & Obsidian (P0) ✅
+Knowledge store, vault boundary, verified-only retrieval, inspector, lint. Verified in the real window; Obsidian opening untested (not installed).
 
-## Phase 4 — Harness Studio (P1)
-⬜ inventory · ⬜ hook templates with preview/backup/rollback · ⬜ skills browser · ⬜ Harness Doctor ·
-⬜ project-settings trust gate (see SECURITY.md limit 4).
+## Phase 4 — Harness Studio (P1) ✅
+Inventory, Doctor, safe edit with preview/backup/rollback, hook templates and dry-run. Verified in the real window and against real Claude Code.
 
-## Phase 5 — Multi-agent (P1)
-⬜ Codex adapter via app-server (protocol schema already generated and read) · ✅ parallel worktrees + concurrency limit
-(core, tested with the scripted agent) · ⬜ conflict detection between missions · ⬜ independent review missions.
+## Phase 5 — Multi-agent (P1) 🟡
+✅ Codex adapter via `codex app-server` (real mission verified; independent review 5) · ✅ parallel worktrees + concurrency limit ·
+⬜ conflict detection between missions · ⬜ independent review missions.
 
 ## Phase 6 — Experiments (P2)  ⬜
 ## Phase 7 — Enterprise extensions (future)  ⬜ — nothing implemented; no claims.

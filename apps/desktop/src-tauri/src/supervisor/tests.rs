@@ -330,7 +330,11 @@ fn invalid_projects_and_empty_objectives_are_rejected() {
     let plain = tempfile::tempdir().unwrap();
     assert!(f.core.add_project(plain.path()).is_err(), "non-repo");
     assert!(f.core.create_mission(&f.project.id, "   ", None, "fake", None, PermissionProfile::Default).is_err());
-    assert!(f.core.create_mission(&f.project.id, "x", None, "codex", None, PermissionProfile::Default).is_err(), "unavailable provider is refused, not faked");
+    assert!(f.core.create_mission(&f.project.id, "x", None, "no-such-provider", None, PermissionProfile::Default).is_err(), "unknown provider is refused, not faked");
+    // A known provider whose executable is missing is refused when it is started, with an actionable message.
+    let m = f.core.create_mission(&f.project.id, "x", None, "codex", None, PermissionProfile::Default).unwrap();
+    let err = f.core.start_mission(&m.id, None).unwrap_err().to_string();
+    assert!(err.contains("Codex was not found"), "{err}");
 }
 
 mod regressions;
