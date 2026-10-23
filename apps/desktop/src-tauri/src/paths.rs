@@ -83,10 +83,25 @@ fn reject_suspicious(candidate: &Path) -> Result<()> {
 /// Resolve `candidate` (absolute, or relative to `root`) and prove it stays inside `root`,
 /// following symlinks/junctions on the deepest existing ancestor.
 pub fn resolve_within(root: &Path, candidate: &Path) -> Result<PathBuf> {
-    reject_suspicious(candidate)?;
     let canon_root = dunce::canonicalize(root)
         .map_err(|e| ForgeError::PathRejected(format!("root not accessible: {e}")))?;
-    let joined = if candidate.is_absolute() { candidate.to_path_buf() } else { canon_root.join(candidate) };
+    // The root itself may be spelled with an 8.3 alias or another case (a profile under `C:\Users\RUNNER~1` is common for long
+    // user names), and an agent may echo that spelling back. Only the part *below* the root is the caller's choice, so only
+    // that part has to pass the spelling rules; the root is compared by its real path.
+    let below: PathBuf = if candidate.is_absolute() {
+        let lex = lexical_normalize(candidate);
+        match relative_components(root, &lex).or_else(|| relative_components(&canon_root, &lex)) {
+            Some(parts) => parts.iter().collect(),
+            None => {
+                reject_suspicious(candidate)?;
+                return Err(ForgeError::PathRejected(format!("{} escapes {}", lex.display(), canon_root.display())));
+            }
+        }
+    } else {
+        candidate.to_path_buf()
+    };
+    reject_suspicious(&below)?;
+    let joined = canon_root.join(&below);
     let lex = lexical_normalize(&joined);
     if !is_within(&canon_root, &lex) {
         return Err(ForgeError::PathRejected(format!(
@@ -184,6 +199,29 @@ mod tests {
         assert!(resolve_within(d.path(), Path::new("a.txt:hidden")).is_err());
         assert!(resolve_within(d.path(), Path::new("NUL")).is_err());
         assert!(resolve_within(d.path(), Path::new("sub/com1.txt")).is_err());
+    }
+
+    /// Found by CI on a GitHub Windows runner, whose temp folder is `C:\Users\RUNNER~1\...`: a worktree whose *own* path is
+    /// spelled with an 8.3 alias denied every write inside it. Spelling rules apply below the root only.
+    #[cfg(windows)]
+    #[test]
+    fn a_root_spelled_with_a_short_name_still_contains_its_files_but_short_names_below_it_are_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let long = d.path().join("averyveryverylongname");
+        std::fs::create_dir_all(long.join("src")).unwrap();
+        std::fs::create_dir_all(long.join("subdirectory_long")).unwrap();
+        // The short form of `long`, if the volume has 8.3 names enabled.
+        let short = std::process::Command::new("cmd").arg("/C").arg(format!("for %I in (\"{}\") do @echo %~sI", long.display())).output().unwrap();
+        let short = String::from_utf8_lossy(&short.stdout).trim().to_string();
+        if !short.contains('~') {
+            return; // 8.3 names are disabled on this volume; nothing to test
+        }
+        let short = PathBuf::from(short);
+        assert!(resolve_within(&short, &short.join("src").join("a.rs")).is_ok(), "an absolute path under the short-spelled root");
+        assert!(resolve_within(&short, Path::new("src/a.rs")).is_ok(), "a relative path under the short-spelled root");
+        // A short spelling of a root the caller named in full is not guessed at: it is refused (fail closed).
+        assert!(resolve_within(&long, &short.join("src").join("a.rs")).is_err());
+        assert!(resolve_within(&short, Path::new("SUBDIR~1/x")).is_err(), "a short name below the root is still refused");
     }
 
     #[test]
