@@ -60,13 +60,43 @@ impl Core {
                 .map(|s| s.trim().to_string())
                 .map_err(|_| ForgeError::Other(format!("\"{}\" is not a branch, tag or commit of this repository", r.trim())))
         };
+        let mut n = n;
         let mut commits = vec![resolve(&n.baseline_ref)?];
-        for v in &n.variants {
-            commits.push(resolve(&v.git_ref)?);
+        for v in n.variants.iter_mut() {
+            match v.mission_id.clone() {
+                Some(mid) => {
+                    commits.push(self.snapshot_mission(project_id, &root, &mid)?);
+                    v.git_ref = format!("mission:{mid}");
+                }
+                None => commits.push(resolve(&v.git_ref)?),
+            }
         }
         let e = self.store.exp_create(project_id, &n, &commits)?;
         self.store.audit("user", "experiment.create", Some(&e.id), &json!({"project": project_id, "command": e.command, "revisions": commits}));
         Ok(e)
+    }
+
+    /// Freeze a mission's current work (worktree state, through a temporary index as for review fingerprints) into a commit on
+    /// its base, kept alive by `refs/forge/snapshots/<sha>` so garbage collection cannot remove what an experiment measures.
+    /// Nothing in the mission's worktree, index or branch changes.
+    fn snapshot_mission(&self, project_id: &str, root: &Path, mission_id: &str) -> Result<String> {
+        let m = self.store.get_mission(mission_id)?;
+        if m.project_id != project_id {
+            return Err(ForgeError::InvalidState("that mission belongs to another project".into()));
+        }
+        let (Some(wt), Some(base)) = (m.worktree_path.clone(), m.base_commit.clone()) else {
+            return Err(ForgeError::InvalidState(format!("mission \"{}\" has no workspace yet", m.title)));
+        };
+        let wt = PathBuf::from(wt);
+        if !wt.exists() {
+            return Err(ForgeError::Git(format!("the worktree of mission \"{}\" no longer exists", m.title)));
+        }
+        git::verify_worktree(root, &wt, m.branch.as_deref())?;
+        let (_, tree) = git::fingerprint_and_tree(&wt, &base)?;
+        let msg = format!("FORGE experiment snapshot of mission {mission_id}");
+        let commit = git::run(root, &["-c", "user.name=FORGE", "-c", "user.email=forge@localhost", "commit-tree", &tree, "-p", &base, "-m", &msg])?.trim().to_string();
+        git::run(root, &["update-ref", &format!("refs/forge/snapshots/{commit}"), &commit])?;
+        Ok(commit)
     }
 
     pub fn experiment_list(&self, project_id: &str) -> Result<Vec<Experiment>> {

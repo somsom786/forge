@@ -39,7 +39,7 @@ fn spec(variants: &[(&str, &str)], reps: u32) -> NewExperiment {
         warmup: 1,
         timeout_secs: 60,
         baseline_ref: "main".into(),
-        variants: variants.iter().map(|(l, r)| VariantSpec { label: (*l).into(), git_ref: (*r).into() }).collect(),
+        variants: variants.iter().map(|(l, r)| VariantSpec { label: (*l).into(), git_ref: (*r).into(), mission_id: None }).collect(),
     }
 }
 
@@ -220,4 +220,43 @@ fn cancelling_stops_the_attempt_and_keeps_what_ran() {
     assert!(d.results.len() < 2 + 2 + 40, "stopped early: {}", d.results.len());
     assert!(!d.results.is_empty());
     assert_eq!(worktree_count(f.repo.path()), 1);
+}
+
+#[test]
+fn missions_can_be_compared_by_their_uncommitted_work_which_is_frozen_at_creation() {
+    let f = fixture();
+    let r = f.repo.path();
+    write_rev(r, 10.0, 0);
+    commit_all(r, "baseline bench");
+    let base = git::head_commit(r).unwrap();
+    // Two agents' attempts, left uncommitted in their worktrees as missions leave them.
+    let mut ids = vec![];
+    for (name, score) in [("quick", 3.0), ("slow", 20.0)] {
+        let m = new_mission(&f, name, PermissionProfile::Default);
+        let wt = f._home.path().join("wt").join(name);
+        git::worktree_add(r, &wt, &format!("forge/{name}"), &base).unwrap();
+        f.core.store.set_mission_workspace(&m.id, "main", &base, &format!("forge/{name}"), &wt.to_string_lossy()).unwrap();
+        write_rev(&wt, score, 0);
+        ids.push((m.id, wt));
+    }
+    let mut s = spec(&[], 3);
+    s.variants = ids.iter().zip(["quick", "slow"]).map(|((id, _), l)| VariantSpec { label: l.into(), git_ref: String::new(), mission_id: Some(id.clone()) }).collect();
+    let e = f.core.experiment_create(&f.project.id, s).unwrap();
+    // The agent keeps editing after the experiment was defined: the snapshot is what gets measured.
+    write_rev(&ids[0].1, 99.0, 0);
+    let d = f.core.experiment_run(&e.id).unwrap();
+    let rep = d.experiment.report.unwrap();
+    let quick = d.variants.iter().find(|v| v.label == "quick").unwrap();
+    assert_eq!(quick.git_ref, format!("mission:{}", ids[0].0));
+    assert_eq!(rep.winner.as_deref(), Some(quick.id.as_str()), "{rep:#?}");
+    assert_eq!(rep.variants.iter().find(|v| v.label == "slow").unwrap().verdict, Verdict::Worse);
+    // The snapshot is pinned by a hidden ref (safe from gc); the missions' worktrees and branches are untouched.
+    assert!(git::run(r, &["rev-parse", "--verify", &format!("refs/forge/snapshots/{}", quick.commit_sha)]).is_ok());
+    assert!(git::run(&ids[1].1, &["status", "--porcelain"]).unwrap().contains("bench.js"));
+    assert_eq!(git::run(r, &["rev-parse", "forge/quick"]).unwrap().trim(), base);
+    // A mission from another project, or without a workspace, is refused.
+    let draft = new_mission(&f, "no workspace", PermissionProfile::Default);
+    let mut s = spec(&[], 3);
+    s.variants = vec![VariantSpec { label: "x".into(), git_ref: String::new(), mission_id: Some(draft.id) }];
+    assert!(f.core.experiment_create(&f.project.id, s).unwrap_err().to_string().contains("no workspace"));
 }

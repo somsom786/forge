@@ -677,3 +677,13 @@ pub async fn execution_backends(core: CoreState<'_>) -> Result<Vec<crate::execut
 pub async fn project_set_execution_backend(core: CoreState<'_>, project_id: String, backend: String) -> Result<Project> {
     blocking(&core, move |c| c.project_set_execution_backend(&project_id, &backend)).await
 }
+
+// ---- Agents overview -------------------------------------------------------------------------------------------------
+
+use crate::supervisor::AgentsOverview;
+
+/// Recent agent sessions (and anything running), with provider-reported usage per provider. Read-only.
+#[tauri::command]
+pub async fn agents_overview(core: CoreState<'_>, days: u32) -> Result<AgentsOverview> {
+    blocking(&core, move |c| c.agents_overview(days)).await
+}

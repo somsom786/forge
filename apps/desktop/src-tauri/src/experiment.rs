@@ -54,8 +54,13 @@ impl Metric {
 #[serde(rename_all = "camelCase")]
 pub struct VariantSpec {
     pub label: String,
-    /// A branch, tag or commit of the project repository.
+    /// A branch, tag or commit of the project repository. Ignored when `mission_id` is set.
+    #[serde(default)]
     pub git_ref: String,
+    /// Measure a mission's current work (its worktree, committed or not) instead of a ref. FORGE snapshots it into a commit when
+    /// the experiment is created, so later edits by the agent do not change what is measured.
+    #[serde(default)]
+    pub mission_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -135,7 +140,7 @@ impl NewExperiment {
             if !labels.insert(l.to_lowercase()) {
                 return bad(format!("duplicate variant label \"{l}\" (\"baseline\" is reserved)"));
             }
-            if !ref_ok(v.git_ref.trim()) {
+            if v.mission_id.is_none() && !ref_ok(v.git_ref.trim()) {
                 return bad(format!("\"{}\" is not a branch, tag or commit FORGE accepts", v.git_ref));
             }
         }
@@ -355,7 +360,7 @@ mod tests {
             warmup: 1,
             timeout_secs: 60,
             baseline_ref: "main".into(),
-            variants: vec![VariantSpec { label: "fast".into(), git_ref: "feature/fast".into() }],
+            variants: vec![VariantSpec { label: "fast".into(), git_ref: "feature/fast".into(), mission_id: None }],
         }
     }
 
@@ -454,7 +459,7 @@ mod tests {
             ("reflog", Box::new(|e| e.variants[0].git_ref = "main@{1}".into())),
             ("space", Box::new(|e| e.variants[0].git_ref = "a b".into())),
             ("reserved label", Box::new(|e| e.variants[0].label = "Baseline".into())),
-            ("dup label", Box::new(|e| e.variants.push(VariantSpec { label: "FAST".into(), git_ref: "x".into() }))),
+            ("dup label", Box::new(|e| e.variants.push(VariantSpec { label: "FAST".into(), git_ref: "x".into(), mission_id: None }))),
             ("metric name", Box::new(|e| e.metric = Metric::Output { name: "a b".into(), direction: Direction::Lower })),
         ];
         for (what, f) in cases {

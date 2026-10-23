@@ -82,6 +82,9 @@ certification, and no remote service. Treat everything below as the implemented 
   git programs are refused before any checkout; git runs with the same hardening as missions. References are validated (no options,
   ranges or reflog expressions) before they reach git.
 * Run output is redacted (tail and log) like checks; containment is the check runner's (best-effort, limit 5).
+* A mission used as a variant is snapshotted with `commit-tree` from its worktree state (temporary index, as for review fingerprints) and the
+  commit is kept alive by a ref `refs/forge/snapshots/<sha>` in the project repository. These refs are FORGE's own namespace (not branches)
+  and are never pushed by FORGE; nothing removes them yet. The UI asks for confirmation and states the commands before a run.
 
 ## Execution backends (Stage B; docs/EXECUTION.md)
 

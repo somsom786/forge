@@ -192,6 +192,7 @@ pub fn run() {
             commands::mission_conflicts,
             commands::execution_backends,
             commands::project_set_execution_backend,
+            commands::agents_overview,
             commands::knowledge_open_in_obsidian,
             commands::context_preview,
             commands::context_for_mission,
