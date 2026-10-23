@@ -43,7 +43,7 @@ function vrun(checkId: string, name: string, command: string, state: Verificatio
   return {
     id: `vr-${checkId}-${fingerprint}`, missionId: 'm2', checkId, name, command, kind: 'test', state, exitCode,
     startedAt: ctxRef.iso(20), endedAt: ctxRef.iso(19), durationMs: 41_000, fingerprint, headCommit: null, mutated: false,
-    outputTail: out, outputTruncated: false, logPath: null, ...extra,
+    outputTail: out, outputTruncated: false, logPath: null, backend: 'trusted_local', ...extra,
   };
 }
 

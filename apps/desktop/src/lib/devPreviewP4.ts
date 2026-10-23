@@ -71,6 +71,17 @@ const templates: HookTemplate[] = [
 export function handleP4(cmd: string, args: any): Promise<any> | undefined {
   const done = (v: any) => Promise.resolve(v);
   switch (cmd) {
+    case 'execution_backends': {
+      const p = (level: string, detail: string) => ({ level, detail });
+      const caps = (l: string, d: string) => ({ operatingSystems: ['linux'], filesystemIsolation: p(l, d), processIsolation: p(l, d), networkControl: p(l, d), resourceLimits: p(l === 'enforced' ? 'partial' : l === 'none' && d.startsWith('Not') ? 'none' : 'partial', l === 'none' && d.startsWith('Not') ? d : 'Time limit and output caps only.'), workspaceMapping: p(d.startsWith('Not') ? 'none' : 'enforced', d.startsWith('Not') ? d : 'Runs in the worktree.'), credentialExposure: p(l, d), persistentState: p(l, d), interactiveTerminal: false, concurrentInstances: true });
+      return done([
+        { id: 'trusted_local', label: 'Trusted local (not isolated)', implemented: true, available: true, unavailableReason: null, capabilities: caps('none', 'Runs as you: everything your account can reach.') },
+        { id: 'linux_namespaces', label: 'Isolated: Linux namespaces (bubblewrap)', implemented: true, available: false, unavailableReason: 'Linux only. On Windows this backend is the planned inner layer of the isolated-WSL backend.', capabilities: caps('enforced', 'Enforced by namespaces.') },
+        { id: 'windows_sandbox', label: 'Isolated: Windows Sandbox', implemented: false, available: false, unavailableReason: 'Not implemented in this build. See docs/EXECUTION.md for the design.', capabilities: caps('none', 'Not implemented.') },
+        { id: 'isolated_wsl', label: 'Isolated: dedicated WSL distribution', implemented: false, available: false, unavailableReason: 'Not implemented in this build. See docs/EXECUTION.md for the design.', capabilities: caps('none', 'Not implemented.') },
+      ]);
+    }
+    case 'project_set_execution_backend': return Promise.reject('"Isolated: Windows Sandbox" cannot be used on this machine: Not implemented in this build.');
     case 'harness_inventory': return done(inventory());
     case 'harness_doctor': return done(doctor());
     case 'harness_read': { const t = files[args.rel]; return done({ rel: args.rel, exists: t !== undefined, text: t ?? '', sha256: t !== undefined ? H(args.rel) : null, bytes: (t ?? '').length, editable: true } as HarnessFile); }

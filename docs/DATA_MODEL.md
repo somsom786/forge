@@ -76,6 +76,13 @@ Authority for *trust* lives in SQLite; the page files hold *content*.
 | `experiment_result` | One row per run of every attempt (`phase` correctness/warmup/measure, `iteration`, `state` incl. `no_metric`, `exit_code`, `duration_ms`, `metric_value`, `worktree_changed`, redacted `output_tail`, `log_path`). Failed and inconclusive attempts are never deleted. |
 | Files outside SQLite | `<home>/experiments/<experiment>/<attempt>/<variant>` detached worktrees (removed when the attempt ends, or at startup after a crash) and `.../logs/*.log` (redacted, capped run logs, kept). |
 
+## Implemented (migration 8 — execution backends)
+
+| Change | Notes |
+|---|---|
+| `project.execution_backend` | `trusted_local` (default, also for every existing project) or `linux_namespaces`. Changed only by the user; audited. |
+| `verification_run.backend`, `experiment_result.backend` | Where each run actually executed. Existing rows read `trusted_local`, which is what they were. |
+
 ## Designed, not yet implemented
 
 | Entity | Purpose | Phase |

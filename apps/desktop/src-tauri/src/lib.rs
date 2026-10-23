@@ -4,6 +4,9 @@ pub mod contract;
 pub mod db;
 pub mod detect;
 pub mod error;
+pub mod execution;
+#[cfg(all(test, target_os = "linux"))]
+mod execution_tests;
 pub mod experiment;
 pub mod git;
 pub mod merge;
@@ -187,6 +190,8 @@ pub fn run() {
             commands::experiment_run,
             commands::experiment_cancel,
             commands::mission_conflicts,
+            commands::execution_backends,
+            commands::project_set_execution_backend,
             commands::knowledge_open_in_obsidian,
             commands::context_preview,
             commands::context_for_mission,

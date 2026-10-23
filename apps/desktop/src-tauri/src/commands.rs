@@ -664,3 +664,16 @@ use crate::supervisor::ConflictReport;
 pub async fn mission_conflicts(core: CoreState<'_>, project_id: String) -> Result<ConflictReport> {
     blocking(&core, move |c| c.mission_conflicts(&project_id)).await
 }
+
+// ---- Execution backends ------------------------------------------------------------------------------------------
+
+/// Every backend with what it enforces and whether it can run on this machine (probed, not assumed).
+#[tauri::command]
+pub async fn execution_backends(core: CoreState<'_>) -> Result<Vec<crate::execution::BackendInfo>> {
+    blocking(&core, move |c| Ok(c.execution_backends())).await
+}
+
+#[tauri::command]
+pub async fn project_set_execution_backend(core: CoreState<'_>, project_id: String, backend: String) -> Result<Project> {
+    blocking(&core, move |c| c.project_set_execution_backend(&project_id, &backend)).await
+}

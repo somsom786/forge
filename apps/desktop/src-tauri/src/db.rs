@@ -357,6 +357,13 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX experiment_result_attempt ON experiment_result(experiment_id, attempt, variant_id);
     "#,
+    // v8 - execution backends: where a project's checks and experiments run, and where each run actually ran.
+    // Existing projects keep running exactly as before ('trusted_local'); nothing is silently re-routed.
+    r#"
+    ALTER TABLE project ADD COLUMN execution_backend TEXT NOT NULL DEFAULT 'trusted_local';
+    ALTER TABLE verification_run ADD COLUMN backend TEXT NOT NULL DEFAULT 'trusted_local';
+    ALTER TABLE experiment_result ADD COLUMN backend TEXT NOT NULL DEFAULT 'trusted_local';
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

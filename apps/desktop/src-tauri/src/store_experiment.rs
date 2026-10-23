@@ -66,6 +66,8 @@ pub struct ExperimentResult {
     pub output_tail: String,
     pub log_path: Option<String>,
     pub started_at: String,
+    /// The execution backend this run used.
+    pub backend: String,
 }
 
 pub struct NewResult<'a> {
@@ -82,6 +84,7 @@ pub struct NewResult<'a> {
     pub output_tail: &'a str,
     pub log_path: Option<&'a str>,
     pub started_at: &'a str,
+    pub backend: &'a str,
 }
 
 const EXP_COLS: &str = "id, project_id, name, objective, command, correctness_command, metric_json, repetitions, warmup, timeout_secs, state, attempt, env_json, report_json, last_error, created_at, started_at, finished_at";
@@ -132,6 +135,7 @@ fn result_from(r: &Row) -> rusqlite::Result<ExperimentResult> {
         output_tail: r.get(11)?,
         log_path: r.get(12)?,
         started_at: r.get(13)?,
+        backend: r.get(14)?,
     })
 }
 
@@ -226,11 +230,11 @@ impl Store {
     pub fn exp_add_result(&self, r: NewResult) -> Result<ExperimentResult> {
         let id = new_id();
         self.c().execute(
-            "INSERT INTO experiment_result(id, experiment_id, variant_id, attempt, phase, iteration, state, exit_code, duration_ms, metric_value, worktree_changed, output_tail, log_path, started_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-            params![id, r.experiment_id, r.variant_id, r.attempt, r.phase, r.iteration, r.state, r.exit_code, r.duration_ms, r.metric_value, r.worktree_changed as i64, r.output_tail, r.log_path, r.started_at],
+            "INSERT INTO experiment_result(id, experiment_id, variant_id, attempt, phase, iteration, state, exit_code, duration_ms, metric_value, worktree_changed, output_tail, log_path, started_at, backend) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            params![id, r.experiment_id, r.variant_id, r.attempt, r.phase, r.iteration, r.state, r.exit_code, r.duration_ms, r.metric_value, r.worktree_changed as i64, r.output_tail, r.log_path, r.started_at, r.backend],
         )?;
         Ok(self.c().query_row(
-            "SELECT id, experiment_id, variant_id, attempt, phase, iteration, state, exit_code, duration_ms, metric_value, worktree_changed, output_tail, log_path, started_at FROM experiment_result WHERE id=?1",
+            "SELECT id, experiment_id, variant_id, attempt, phase, iteration, state, exit_code, duration_ms, metric_value, worktree_changed, output_tail, log_path, started_at, backend FROM experiment_result WHERE id=?1",
             [&id],
             result_from,
         )?)
@@ -239,7 +243,7 @@ impl Store {
     /// Every recorded run of one attempt, in the order they ran.
     pub fn exp_results(&self, experiment_id: &str, attempt: i64) -> Result<Vec<ExperimentResult>> {
         let c = self.c();
-        let mut s = c.prepare("SELECT id, experiment_id, variant_id, attempt, phase, iteration, state, exit_code, duration_ms, metric_value, worktree_changed, output_tail, log_path, started_at FROM experiment_result WHERE experiment_id=?1 AND attempt=?2 ORDER BY started_at, rowid")?;
+        let mut s = c.prepare("SELECT id, experiment_id, variant_id, attempt, phase, iteration, state, exit_code, duration_ms, metric_value, worktree_changed, output_tail, log_path, started_at, backend FROM experiment_result WHERE experiment_id=?1 AND attempt=?2 ORDER BY started_at, rowid")?;
         Ok(s.query_map(params![experiment_id, attempt], result_from)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 

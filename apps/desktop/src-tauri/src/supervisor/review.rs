@@ -138,12 +138,15 @@ impl Core {
         if self.mission_busy(mission_id) {
             return Err(ForgeError::InvalidState("stop the agent first: running checks while it edits files would make the evidence meaningless".into()));
         }
-        let (m, _p, wt, base) = self.workspace(mission_id)?;
+        let (m, project, wt, base) = self.workspace(mission_id)?;
         if MissionState::parse(&m.state).is_some_and(|s| s.is_terminal()) {
             return Err(ForgeError::InvalidState("this mission is finished".into()));
         }
         let contract = self.store.get_contract(mission_id)?;
         let spec = contract.checks.iter().find(|c| c.id == check_id).cloned().ok_or_else(|| ForgeError::NotFound(format!("check \"{check_id}\" is not in this mission's contract")))?;
+        // The project's execution backend, refused (not downgraded) if it cannot run here.
+        let backend = crate::execution::Backend::parse(&project.execution_backend)?;
+        crate::execution::require(backend)?;
 
         let cancel = Arc::new(AtomicBool::new(false));
         {
@@ -180,6 +183,7 @@ impl Core {
                 output_truncated: false,
                 log_path: None,
                 spec_rev: spec.revision(),
+                backend: backend.as_str().into(),
             };
             self.store.insert_run(&run)?;
             Ok(run)
@@ -191,14 +195,14 @@ impl Core {
                 return Err(e);
             }
         };
-        self.store.audit("user", "check.run", Some(mission_id), &json!({"check": spec.id, "command": spec.command}));
+        self.store.audit("user", "check.run", Some(mission_id), &json!({"check": spec.id, "command": spec.command, "backend": backend.as_str()}));
         self.emit(UiEvent::Verification { run: run.clone() });
 
         let core = self.clone();
         let (run_id, pre, mission) = (run.id.clone(), run.fingerprint.clone(), mission_id.to_string());
         let log = self.cfg.home.join("runs").join(format!("{run_id}.log"));
         std::thread::spawn(move || {
-            let outcome = verify::run_check(&spec.command, &wt, Duration::from_secs(spec.timeout_secs), Some(&log), cancel);
+            let outcome = verify::run_check_in(backend, &spec.command, &wt, Duration::from_secs(spec.timeout_secs), Some(&log), cancel);
             let post = git::fingerprint(&wt, &base).unwrap_or_else(|_| "unknown".into());
             let mutated = post != pre;
             let log_s = outcome.log_path.as_ref().map(|p| p.to_string_lossy().into_owned());

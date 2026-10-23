@@ -5,11 +5,12 @@
 //! user's privileges. FORGE therefore only runs checks on an explicit user action.
 
 use crate::contract::RunState;
+use crate::execution::{self, Backend, RunSpec};
 use crate::proc;
 use crate::redact;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -84,25 +85,14 @@ impl Buf {
     }
 }
 
-fn shell_command(command: &str) -> Command {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let mut c = Command::new("cmd.exe");
-        c.args(["/d", "/s", "/c"]).raw_arg(format!("\"{command}\""));
-        c.creation_flags(0x0800_0000);
-        c
-    }
-    #[cfg(not(windows))]
-    {
-        let mut c = Command::new("sh");
-        c.args(["-c", command]);
-        c
-    }
+/// Run `command` in `cwd` with the user's own shell and privileges (the `trusted_local` backend).
+pub fn run_check(command: &str, cwd: &Path, timeout: Duration, log_path: Option<&Path>, cancel: Arc<AtomicBool>) -> RunOutcome {
+    run_check_in(Backend::TrustedLocal, command, cwd, timeout, log_path, cancel)
 }
 
-/// Run `command` in `cwd`. `cancel` can be flipped from another thread to abort the run.
-pub fn run_check(command: &str, cwd: &Path, timeout: Duration, log_path: Option<&Path>, cancel: Arc<AtomicBool>) -> RunOutcome {
+/// Run `command` in `cwd` on execution backend `backend`. `cancel` can be flipped from another thread to abort the run. A
+/// backend that is not available makes the run an `Error` that says why; it never falls back to another backend.
+pub fn run_check_in(backend: Backend, command: &str, cwd: &Path, timeout: Duration, log_path: Option<&Path>, cancel: Arc<AtomicBool>) -> RunOutcome {
     let started = Instant::now();
     let fail = |msg: String| RunOutcome {
         state: RunState::Error,
@@ -113,7 +103,10 @@ pub fn run_check(command: &str, cwd: &Path, timeout: Duration, log_path: Option<
         log_path: None,
     };
 
-    let mut cmd = shell_command(command);
+    let mut cmd = match execution::command(backend, &RunSpec { command, workspace: cwd }) {
+        Ok(c) => c,
+        Err(e) => return fail(e.to_string()),
+    };
     cmd.current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

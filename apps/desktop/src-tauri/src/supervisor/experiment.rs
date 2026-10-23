@@ -90,13 +90,14 @@ impl Core {
         }
     }
 
-    fn environment(&self) -> serde_json::Value {
+    fn environment(&self, project_backend: &str) -> serde_json::Value {
         json!({
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "cpus": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
             "git": git::version().ok(),
             "forge": env!("CARGO_PKG_VERSION"),
+            "backend": project_backend,
         })
     }
 
@@ -107,6 +108,9 @@ impl Core {
         let root = PathBuf::from(&project.root_path);
         // Checkouts run clean/smudge filters: refuse before anything is checked out, as for missions.
         git::ensure_no_external_programs(&root)?;
+        // Every run goes to the project's execution backend; one that cannot run here is refused, never downgraded.
+        let backend = crate::execution::Backend::parse(&project.execution_backend)?;
+        crate::execution::require(backend)?;
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut running = lock(&self.experiments);
@@ -115,7 +119,7 @@ impl Core {
             }
             running.insert(id.to_string(), cancel.clone());
         }
-        let started = self.store.exp_begin_attempt(id, &self.environment());
+        let started = self.store.exp_begin_attempt(id, &self.environment(backend.as_str()));
         let e = match started {
             Ok(e) => e,
             Err(err) => {
@@ -123,10 +127,10 @@ impl Core {
                 return Err(err);
             }
         };
-        self.store.audit("user", "experiment.run", Some(id), &json!({"attempt": e.attempt, "command": e.command, "correctness": e.correctness_command}));
+        self.store.audit("user", "experiment.run", Some(id), &json!({"attempt": e.attempt, "command": e.command, "correctness": e.correctness_command, "backend": backend.as_str()}));
         let dir = self.experiments_dir(id).join(e.attempt.to_string());
         let mut worktrees: Vec<PathBuf> = vec![];
-        let outcome = self.run_attempt(&e, &root, &dir, &cancel, &mut worktrees);
+        let outcome = self.run_attempt(&e, &root, &dir, &cancel, &mut worktrees, backend);
         for wt in &worktrees {
             if let Err(err) = git::worktree_remove(&root, wt, true) {
                 self.notice("warn", format!("could not remove the experiment worktree {}: {err}", wt.display()));
@@ -143,7 +147,7 @@ impl Core {
         self.experiment_get(id)
     }
 
-    fn run_attempt(&self, e: &Experiment, root: &Path, dir: &Path, cancel: &Arc<AtomicBool>, worktrees: &mut Vec<PathBuf>) -> Result<Report> {
+    fn run_attempt(&self, e: &Experiment, root: &Path, dir: &Path, cancel: &Arc<AtomicBool>, worktrees: &mut Vec<PathBuf>, backend: crate::execution::Backend) -> Result<Report> {
         let variants = self.store.exp_variants(&e.id)?;
         // One detached worktree per revision, verified to be at the recorded commit.
         let mut wts = vec![];
@@ -172,7 +176,7 @@ impl Core {
             let before = worktree_state(&wts[i]);
             let started_at = crate::store::now();
             let log = logs.join(format!("{}-{}-{phase}-{iteration}.log", variants[i].position, crate::store::new_id()));
-            let out = verify::run_check(command, &wts[i], timeout, Some(&log), cancel.clone());
+            let out = verify::run_check_in(backend, command, &wts[i], timeout, Some(&log), cancel.clone());
             let wt_changed = worktree_state(&wts[i]) != before;
             changed[i] |= wt_changed;
             let mut state = state_name(out.state).to_string();
@@ -202,6 +206,7 @@ impl Core {
                 output_tail: &out.output_tail,
                 log_path: log_s.as_deref(),
                 started_at: &started_at,
+                backend: backend.as_str(),
             })?;
             Ok((state, metric))
         };

@@ -10,6 +10,7 @@ import type {
   CheckSpec, Contract, MergeOutcome, Seen, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
   Experiment, ExperimentDetail, NewExperiment,
   ConflictReport,
+  ExecutionBackendId, ExecutionBackendInfo,
 } from './types';
 
 export const api = {
@@ -108,6 +109,10 @@ export const api = {
   experimentCancel: (experimentId: string) => invoke<void>('experiment_cancel', { experimentId }),
   /** Read-only: overlap, predicted textual conflicts and base drift across the project's active missions. */
   missionConflicts: (projectId: string) => invoke<ConflictReport>('mission_conflicts', { projectId }),
+
+  executionBackends: () => invoke<ExecutionBackendInfo[]>('execution_backends'),
+  /** Refused for a backend that cannot run on this machine; never downgraded. */
+  projectSetExecutionBackend: (projectId: string, backend: ExecutionBackendId) => invoke<Project>('project_set_execution_backend', { projectId, backend }),
 
   approvalsPending: (missionId?: string) => invoke<Approval[]>('approvals_pending', { missionId: missionId ?? null }),
   approvalDecide: (approvalId: string, approved: boolean, note?: string) =>

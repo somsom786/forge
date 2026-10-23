@@ -15,6 +15,8 @@ export interface Project {
   rootPath: string;
   defaultBranch: string;
   createdAt: string;
+  /** Where this project's checks and experiments run. */
+  executionBackend: ExecutionBackendId;
 }
 
 export interface Mission {
@@ -266,6 +268,8 @@ export interface VerificationRun {
   outputTail: string;
   outputTruncated: boolean;
   logPath: string | null;
+  /** The execution backend the command ran on. */
+  backend: ExecutionBackendId;
 }
 
 /** Derived from evidence only; an agent claiming "done" changes nothing. */
@@ -819,6 +823,7 @@ export interface ExperimentResult {
   outputTail: string;
   logPath: string | null;
   startedAt: string;
+  backend: ExecutionBackendId;
 }
 
 export interface ExperimentDetail {
@@ -865,4 +870,33 @@ export interface ConflictReport {
   pairs: MissionPairConflict[];
   drift: MissionBaseDrift[];
   skipped: { missionId: string; reason: string }[];
+}
+
+// ---- Execution backends ----
+
+export type ExecutionBackendId = 'trusted_local' | 'linux_namespaces' | 'windows_sandbox' | 'isolated_wsl';
+
+export interface BackendProperty {
+  level: 'none' | 'partial' | 'enforced';
+  detail: string;
+}
+
+export interface ExecutionBackendInfo {
+  id: ExecutionBackendId;
+  label: string;
+  implemented: boolean;
+  available: boolean;
+  unavailableReason: string | null;
+  capabilities: {
+    operatingSystems: string[];
+    filesystemIsolation: BackendProperty;
+    processIsolation: BackendProperty;
+    networkControl: BackendProperty;
+    resourceLimits: BackendProperty;
+    workspaceMapping: BackendProperty;
+    credentialExposure: BackendProperty;
+    persistentState: BackendProperty;
+    interactiveTerminal: boolean;
+    concurrentInstances: boolean;
+  };
 }

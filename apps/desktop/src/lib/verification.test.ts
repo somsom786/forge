@@ -5,7 +5,7 @@ import type { Contract, CriterionStatus, VerificationRun } from './types';
 
 const run = (id: string, startedAt: string, state: VerificationRun['state'] = 'running'): VerificationRun => ({
   id, missionId: 'm1', checkId: 'c', name: 'c', command: 'x', kind: 'test', state, exitCode: null, startedAt, endedAt: null,
-  durationMs: null, fingerprint: 'f', headCommit: null, mutated: false, outputTail: '', outputTruncated: false, logPath: null,
+  durationMs: null, fingerprint: 'f', headCommit: null, mutated: false, outputTail: '', outputTruncated: false, logPath: null, backend: 'trusted_local',
 });
 
 describe('statusLabel', () => {

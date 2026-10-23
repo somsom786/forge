@@ -31,6 +31,8 @@ pub struct VerificationRun {
     pub log_path: Option<String>,
     /// Revision of the check definition this ran under; results never carry over to a changed check.
     pub spec_rev: String,
+    /// The execution backend the command ran on (part of the evidence: a pass on the host is not a pass in isolation).
+    pub backend: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -94,7 +96,7 @@ fn run_state_parse(s: &str) -> RunState {
     }
 }
 
-const RUN_COLS: &str = "id, mission_id, check_id, name, command, kind, state, exit_code, started_at, ended_at, duration_ms, fingerprint, head_commit, mutated, output_tail, output_truncated, log_path, spec_rev";
+const RUN_COLS: &str = "id, mission_id, check_id, name, command, kind, state, exit_code, started_at, ended_at, duration_ms, fingerprint, head_commit, mutated, output_tail, output_truncated, log_path, spec_rev, backend";
 
 fn run_from(r: &Row) -> rusqlite::Result<VerificationRun> {
     let state: String = r.get(6)?;
@@ -117,6 +119,7 @@ fn run_from(r: &Row) -> rusqlite::Result<VerificationRun> {
         output_truncated: r.get::<_, i64>(15)? != 0,
         log_path: r.get(16)?,
         spec_rev: r.get(17)?,
+        backend: r.get(18)?,
     })
 }
 
@@ -148,8 +151,8 @@ impl Store {
 
     pub fn insert_run(&self, run: &VerificationRun) -> Result<()> {
         self.c().execute(
-            "INSERT INTO verification_run(id,mission_id,check_id,name,command,kind,state,started_at,fingerprint,head_commit,spec_rev) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-            params![run.id, run.mission_id, run.check_id, run.name, run.command, run.kind, run_state_str(run.state), run.started_at, run.fingerprint, run.head_commit, run.spec_rev],
+            "INSERT INTO verification_run(id,mission_id,check_id,name,command,kind,state,started_at,fingerprint,head_commit,spec_rev,backend) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            params![run.id, run.mission_id, run.check_id, run.name, run.command, run.kind, run_state_str(run.state), run.started_at, run.fingerprint, run.head_commit, run.spec_rev, run.backend],
         )?;
         Ok(())
     }
@@ -276,7 +279,7 @@ mod tests {
     }
 
     fn run(mid: &str, check: &str, fp: &str) -> VerificationRun {
-        VerificationRun { id: new_id(), mission_id: mid.into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state: RunState::Running, exit_code: None, started_at: now(), ended_at: None, duration_ms: None, fingerprint: fp.into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: "r1".into() }
+        VerificationRun { id: new_id(), mission_id: mid.into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state: RunState::Running, exit_code: None, started_at: now(), ended_at: None, duration_ms: None, fingerprint: fp.into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: "r1".into(), backend: "trusted_local".into() }
     }
 
     #[test]
