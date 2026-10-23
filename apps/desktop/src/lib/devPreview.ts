@@ -2,6 +2,7 @@
 // `import.meta.env.DEV && !__TAURI_INTERNALS__`, so it never ships in production bundles.
 // Marker for the production-bundle check: FORGE_DEVPREVIEW_MARKER_7f3a91
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { handleP2 } from './devPreviewP2';
 import type {
   ActivityEvent, AgentSession, Approval, CapabilityMatrix, Mission, MissionDetail, Project, ProviderInfo, RepoStatus,
 } from './types';
@@ -246,6 +247,8 @@ const err = (m: string) => Promise.reject(m);
 const find = (id: string) => missions.find((m) => m.id === id);
 
 async function invoke(cmd: string, args: any = {}): Promise<any> {
+  const p2 = handleP2(cmd, args, { iso, find, changesFor, isRunning: (id) => runningIds.has(id), emit, err });
+  if (p2) return p2;
   switch (cmd) {
     case 'plugin:event|listen':
       subs.push({ event: args.event, handler: args.handler });

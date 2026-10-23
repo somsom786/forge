@@ -11,6 +11,10 @@ import type { ActivityEvent, Mission, MissionDetail } from '../lib/types';
 import { ActivityFeed } from '../components/ActivityFeed';
 import { ApprovalsPanel, ChangesPanel, TimelinePanel } from '../components/MissionPanels';
 import { SplitLayout } from '../components/Splitter';
+import { ContractTab } from '../components/ContractTab';
+import { ProofPackPanel } from '../components/ProofPackPanel';
+import { ReviewBar } from '../components/ReviewBar';
+import { useReport, VerificationPanel } from '../components/VerificationPanel';
 import { Callout, EmptyState, Kbd, StateBadge, useNow } from '../components/ui';
 
 const EMPTY: ActivityEvent[] = [];
@@ -54,6 +58,7 @@ export function MissionWorkspace({ id }: { id: string }) {
   const pendingCount = approvals.filter((a) => a.state === 'pending').length;
   const sessionSig = sessions.map((s) => `${s.id}:${s.state}`).join('|');
   const fileEvents = useMemo(() => events.filter((e) => e.kind === 'file.changed').length, [events]);
+  const { report, error: reportError, loading: reportLoading, reload: reloadReport } = useReport(id, mission?.updatedAt, mission?.state, fileEvents);
 
   // Initial load: detail + paged history. Live events merge into the same list, deduped by id.
   useEffect(() => {
@@ -145,6 +150,7 @@ export function MissionWorkspace({ id }: { id: string }) {
         canDiscard={canDiscard}
         sessions={sessions}
       />
+      <ReviewBar mission={mission} report={report} />
       <div className="min-h-0 flex-1">
         <SplitLayout storageKey="mission.right" fixed="end" defaultSize={500} min={340} max={1100}>
           <div className="flex min-h-0 flex-1 flex-col">
@@ -173,16 +179,19 @@ export function MissionWorkspace({ id }: { id: string }) {
             {canFollowUp && <FollowUp missionId={id} />}
           </div>
           <Tabs.Root value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col bg-panel">
-            <Tabs.List className="flex shrink-0 border-b border-line" aria-label="Mission panels">
+            <Tabs.List className="flex shrink-0 overflow-x-auto border-b border-line" aria-label="Mission panels">
               {[
                 { v: 'approvals', label: 'Approvals', count: pendingCount },
                 { v: 'changes', label: 'Changes', count: 0 },
+                { v: 'verification', label: 'Verification', count: report ? report.unresolved.length : 0 },
+                { v: 'contract', label: 'Contract', count: 0 },
+                { v: 'proof', label: 'Proof Pack', count: 0 },
                 { v: 'timeline', label: 'Timeline', count: 0 },
               ].map((t) => (
                 <Tabs.Trigger
                   key={t.v}
                   value={t.v}
-                  className="relative flex h-9 items-center gap-1.5 px-4 text-muted transition-colors hover:text-fg data-[state=active]:text-fg data-[state=active]:after:absolute data-[state=active]:after:inset-x-2 data-[state=active]:after:bottom-0 data-[state=active]:after:h-0.5 data-[state=active]:after:bg-accent"
+                  className="relative flex h-9 shrink-0 items-center gap-1.5 px-3 text-muted transition-colors hover:text-fg data-[state=active]:text-fg data-[state=active]:after:absolute data-[state=active]:after:inset-x-2 data-[state=active]:after:bottom-0 data-[state=active]:after:h-0.5 data-[state=active]:after:bg-accent"
                 >
                   {t.label}
                   {t.count > 0 && <span className="rounded-full bg-warn px-1.5 text-[11px] font-semibold text-black">{t.count}</span>}
@@ -194,6 +203,15 @@ export function MissionWorkspace({ id }: { id: string }) {
             </Tabs.Content>
             <Tabs.Content value="changes" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
               <ChangesPanel mission={mission} fileEventCount={fileEvents} />
+            </Tabs.Content>
+            <Tabs.Content value="verification" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+              <VerificationPanel mission={mission} report={report} error={reportError} loading={reportLoading} reload={() => void reloadReport()} />
+            </Tabs.Content>
+            <Tabs.Content value="contract" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+              <ContractTab mission={mission} />
+            </Tabs.Content>
+            <Tabs.Content value="proof" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+              <ProofPackPanel mission={mission} />
             </Tabs.Content>
             <Tabs.Content value="timeline" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
               <TimelinePanel transitions={detail?.transitions ?? []} sessions={sessions} />

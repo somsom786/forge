@@ -188,3 +188,28 @@ fn a_provider_withdrawing_a_tool_call_expires_its_prompt() {
     f.core.stop_mission(&m.id).unwrap();
     wait_until("stopped", || f.core.live_session_count() == 0);
 }
+
+#[test]
+fn a_verbatim_engine_path_still_launches() {
+    // Tauri hands out `\?\C:\...` paths; Node's loader fails on them (EISDIR: lstat 'C:'). The supervisor must normalise.
+    let repo = git::testutil::init_repo();
+    let home = tempfile::tempdir().unwrap();
+    let verbatim = std::fs::canonicalize(engine_script()).unwrap(); // std keeps the \?\ prefix on Windows
+    #[cfg(windows)]
+    assert!(verbatim.to_string_lossy().starts_with(r"\\?\"), "precondition: this is the hostile form");
+    let core = Core::new(
+        Store::in_memory(),
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(verbatim), claude: None, allow_fake: true, max_concurrent: 1, ollama_url: "http://127.0.0.1:11434".into() },
+        Arc::new(|_| {}),
+    );
+    let project = core.add_project(repo.path()).unwrap();
+    let m = core.create_mission(&project.id, "make a note", None, "fake", None, PermissionProfile::AcceptEdits).unwrap();
+    core.start_mission(&m.id, None).unwrap();
+    let t0 = Instant::now();
+    while core.store.get_mission(&m.id).unwrap().state != "awaiting_review" {
+        let st = core.store.get_mission(&m.id).unwrap();
+        assert!(st.state != "failed", "engine failed to start: {:?}", st.last_error);
+        assert!(t0.elapsed() < Duration::from_secs(25), "timed out in {}", st.state);
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}

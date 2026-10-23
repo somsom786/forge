@@ -427,7 +427,8 @@ impl Core {
         if !script.exists() {
             return Err(ForgeError::Provider(format!("engine not built: {} is missing; run `npm run build:engine`", script.display())));
         }
-        Ok((node, script))
+        // Never hand Node a verbatim (backslash-backslash-question-mark) path; its module loader fails on them.
+        Ok((dunce::simplified(&node).to_path_buf(), dunce::simplified(&script).to_path_buf()))
     }
 
     fn spawn_session(self: &Arc<Self>, m: &Mission, worktree: &Path, prompt: &str, resume: Option<&str>) -> Result<()> {
@@ -497,6 +498,7 @@ impl Core {
         // Start the I/O threads; if any cannot start, unwind everything instead of leaving a half-session.
         let sid8 = session.id[..8].to_string();
         let (done_tx, done_rx) = channel::<()>();
+        let (err_done_tx, err_done_rx) = channel::<()>();
         let core = self.clone();
         let setup: std::io::Result<()> = (|| {
             std::thread::Builder::new().name(format!("forge-writer-{sid8}")).spawn(move || {
@@ -518,6 +520,7 @@ impl Core {
                         t.drain(..cut);
                     }
                 }
+                let _ = err_done_tx.send(());
             })?;
             let (c2, h3) = (core.clone(), handle.clone());
             std::thread::Builder::new().name(format!("forge-reader-{sid8}")).spawn(move || {
@@ -548,6 +551,8 @@ impl Core {
             // Let the reader drain what the engine wrote before it exited; a lingering descendant holding the pipe
             // open must not delay us, so this wait is bounded and the Job is terminated right after.
             let _ = done_rx.recv_timeout(Duration::from_secs(2));
+            // Same for stderr: the last diagnostic lines are usually the ones that explain a crash.
+            let _ = err_done_rx.recv_timeout(Duration::from_secs(2));
             c3.finalize(&h4, code);
         });
         if let Err(e) = waiter {
@@ -782,7 +787,7 @@ impl Core {
                     let tail = tail.trim();
                     if !tail.is_empty() {
                         msg.push_str("\n--- last diagnostic output ---\n");
-                        msg.push_str(&redact::truncate(tail, 2048).0);
+                        msg.push_str(&redact::tail(tail, 2048));
                     }
                     let _ = self.store.set_mission_error(&h.mission_id, Some(&msg));
                     self.core_event(h, "error", json!({"message": msg, "source": "supervisor", "exitCode": exit_code}));

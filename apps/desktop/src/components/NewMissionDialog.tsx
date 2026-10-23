@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
-import { createMission, refreshProviders } from '../lib/actions';
+import { api } from '../lib/api';
+import { createMission, guarded, refreshProviders, startMission } from '../lib/actions';
+import { ContractEditor } from './ContractEditor';
+import { contractIsEmpty, normalizeContract } from '../lib/verification';
+import type { Contract } from '../lib/types';
 import { providerLabel } from '../lib/format';
 import { useStore } from '../lib/store';
 import type { PermissionProfile, ProviderId, ProviderInfo } from '../lib/types';
@@ -30,6 +34,8 @@ const PROFILES: { id: PermissionProfile; label: string; help: string }[] = [
   { id: 'accept_edits', label: 'Auto-approve edits inside the worktree; commands still ask', help: 'File edits within the mission worktree proceed; commands still wait for you.' },
 ];
 
+const EMPTY_CONTRACT: Contract = { version: 1, inScope: [], outOfScope: [], criteria: [], checks: [], securityConstraints: [], reviewExpectations: null };
+
 export function NewMissionDialog() {
   const { open, projectId: presetProject } = useStore((s) => s.newMission);
   const close = useStore((s) => s.closeNewMission);
@@ -45,6 +51,8 @@ export function NewMissionDialog() {
   const [profile, setProfile] = useState<PermissionProfile>('default');
   const [model, setModel] = useState('');
   const [busy, setBusy] = useState(false);
+  const [contract, setContract] = useState<Contract>(EMPTY_CONTRACT);
+  const [showContract, setShowContract] = useState(false);
 
   // Reset whenever the dialog opens.
   useEffect(() => {
@@ -54,6 +62,8 @@ export function NewMissionDialog() {
     setTitle('');
     setProfile('default');
     setBusy(false);
+    setContract(EMPTY_CONTRACT);
+    setShowContract(false);
     void refreshProviders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -77,7 +87,8 @@ export function NewMissionDialog() {
   const submit = async (start: boolean) => {
     if (!canSubmit || !provider) return;
     setBusy(true);
-    const m = await createMission(
+    const wantsContract = !contractIsEmpty(contract);
+    let m = await createMission(
       {
         projectId,
         objective: objective.trim(),
@@ -86,8 +97,14 @@ export function NewMissionDialog() {
         model: model.trim() || undefined,
         permissionProfile: profile,
       },
-      start,
+      start && !wantsContract,
     );
+    if (m && wantsContract) {
+      // The contract is saved on the new mission before anything runs.
+      const base = await guarded(api.contractGet(m.id), 'Mission created but its contract could not be read');
+      const saved = base && (await guarded(api.contractSet(m.id, { ...base, ...normalizeContract(contract), version: base.version }), 'Mission created but the contract was not saved'));
+      if (saved && start) m = (await startMission(m.id)) ?? m;
+    }
     setBusy(false);
     if (m) {
       close();
@@ -210,6 +227,17 @@ export function NewMissionDialog() {
                   <label className="label" htmlFor="nm-model">Model (optional; provider default if empty)</label>
                   <input id="nm-model" className="input mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. a model alias accepted by the CLI" />
                 </>
+              )}
+            </div>
+            <div className="rounded-md border border-line-strong">
+              <button type="button" className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-hover" aria-expanded={showContract} onClick={() => setShowContract(!showContract)}>
+                <span className="font-medium">Success criteria &amp; checks <span className="font-normal text-muted">(optional)</span></span>
+                <span className="text-muted">{showContract ? 'Hide' : 'Show'}</span>
+              </button>
+              {showContract && (
+                <div className="border-t border-line p-3">
+                  <ContractEditor value={contract} onChange={setContract} projectId={projectId} />
+                </div>
               )}
             </div>
           </div>

@@ -5,6 +5,7 @@ pub mod detect;
 pub mod error;
 pub mod git;
 pub mod merge;
+pub mod knowledge;
 pub mod mission;
 pub mod paths;
 pub mod proof;
@@ -36,20 +37,27 @@ fn dirs_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Where the provider engine lives. Every candidate is normalised with `dunce`: Tauri hands out verbatim `\?\C:\...`
+/// paths, which Node's module loader cannot resolve (`EISDIR: lstat 'C:'`).
 fn locate_engine(app: &tauri::App) -> Option<PathBuf> {
+    let norm = |p: PathBuf| dunce::canonicalize(&p).ok();
     if let Some(p) = std::env::var_os("FORGE_ENGINE_PATH") {
-        return Some(PathBuf::from(p));
+        return norm(PathBuf::from(p));
     }
-    // Packaged: bundled next to the app resources.
-    if let Ok(res) = app.path().resource_dir() {
-        let p = res.join("engine").join("main.js");
-        if p.exists() {
+    // Development checkout first: it has node_modules next to it, which a copied resource folder does not.
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../packages/engine/dist/main.js");
+    if cfg!(debug_assertions) {
+        if let Some(p) = norm(dev.clone()) {
             return Some(p);
         }
     }
-    // Development checkout.
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../packages/engine/dist/main.js");
-    dunce::canonicalize(dev).ok()
+    // Packaged: bundled next to the app resources.
+    if let Ok(res) = app.path().resource_dir() {
+        if let Some(p) = norm(res.join("engine").join("main.js")) {
+            return Some(p);
+        }
+    }
+    norm(dev)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

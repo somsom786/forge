@@ -1,5 +1,6 @@
 // Pure state reducers. The zustand store only wires these to set(); all logic is testable here.
-import type { ActivityEvent, AgentSession, Approval, Mission, UiEvent } from './types';
+import type { ActivityEvent, AgentSession, Approval, Mission, UiEvent, VerificationRun } from './types';
+import { upsertRun } from './verification';
 
 export interface Notice {
   id: number;
@@ -15,6 +16,10 @@ export interface DataState {
   activity: Record<string, ActivityEvent[]>;
   /** Transient streaming text per mission, keyed by messageId (NULL_MESSAGE for unkeyed deltas). */
   streams: Record<string, Record<string, string>>;
+  /** Verification runs pushed by the core, per mission. */
+  runs: Record<string, VerificationRun[]>;
+  /** Bumped on every verification event so views can refresh their report. */
+  verifyTick: Record<string, number>;
   notices: Notice[];
   noticeSeq: number;
 }
@@ -23,7 +28,7 @@ export const NULL_MESSAGE = '__unkeyed__';
 const MAX_NOTICES = 6;
 
 export function emptyData(): DataState {
-  return { missions: {}, approvals: {}, sessions: {}, activity: {}, streams: {}, notices: [], noticeSeq: 0 };
+  return { missions: {}, approvals: {}, sessions: {}, activity: {}, streams: {}, runs: {}, verifyTick: {}, notices: [], noticeSeq: 0 };
 }
 
 /** Merge events into an ordered list, dropping duplicate ids. Returns the same array if nothing changed. */
@@ -138,6 +143,12 @@ export function reduceUiEvent(s: DataState, e: UiEvent): DataState {
       return { ...s, approvals: upsertApproval(s.approvals, e.approval) };
     case 'session':
       return { ...s, sessions: upsertSession(s.sessions, e.session) };
+    case 'verification':
+      return {
+        ...s,
+        runs: { ...s.runs, [e.run.missionId]: upsertRun(s.runs[e.run.missionId], e.run) },
+        verifyTick: { ...s.verifyTick, [e.run.missionId]: (s.verifyTick[e.run.missionId] ?? 0) + 1 },
+      };
     case 'notice':
       return { ...s, ...addNotice(s, e.level, e.message) };
     default:

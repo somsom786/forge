@@ -190,3 +190,39 @@ export async function confirmDiscardLoss() {
     st().setDiscard(null);
   }
 }
+
+// ---- Phase 2: verification, review, merge ------------------------------------------------------
+
+export async function runCheck(missionId: string, checkId: string) {
+  const r = await guarded(api.checkStart(missionId, checkId), 'Could not start check');
+  return r;
+}
+
+export async function cancelCheck(missionId: string) {
+  await guarded(api.checkCancel(missionId), 'Could not cancel check');
+}
+
+export async function setVerdict(missionId: string, criterionId: string, pass: boolean, note?: string) {
+  const ok = await guarded(api.verdictSet(missionId, criterionId, pass, note?.trim() || undefined).then(() => true), 'Could not record verdict');
+  return !!ok;
+}
+
+export async function submitReview(missionId: string, decision: 'approve' | 'reject' | 'request_changes', note?: string, overrideReason?: string) {
+  const m = await guarded(api.reviewSubmit(missionId, decision, note?.trim() || undefined, overrideReason?.trim() || undefined), 'Review not recorded');
+  if (m) st().upsertMission(m);
+  return m;
+}
+
+/** Errors are returned (not toasted) so the caller can show them verbatim next to the action. */
+export async function mergeMission(missionId: string, squash: boolean) {
+  try {
+    const out = await api.missionMerge(missionId, squash);
+    const refreshed = await guarded(api.missionGet(missionId));
+    if (refreshed) st().ingestDetail(refreshed);
+    return { outcome: out, error: null as string | null };
+  } catch (e) {
+    const refreshed = await guarded(api.missionGet(missionId)); // a failed merge may have sent it back to review
+    if (refreshed) st().ingestDetail(refreshed);
+    return { outcome: null, error: errMsg(e) };
+  }
+}

@@ -62,6 +62,19 @@ pub fn truncate(s: &str, max: usize) -> (String, bool) {
     (format!("{}… [truncated {} bytes]", &s[..end], s.len() - end), true)
 }
 
+/// The last `max` bytes of `s` (on a char boundary), noting what was dropped. Diagnostics put the cause at the end.
+pub fn tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("[… {} earlier bytes omitted]
+{}", start, &s[start..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +106,13 @@ mod tests {
         redact_value(&mut v);
         assert_eq!(v["a"][0], "[REDACTED]");
         assert_eq!(v["b"]["c"], "ok");
+    }
+
+    #[test]
+    fn tail_keeps_the_end_where_the_cause_is() {
+        let t = tail(&format!("{}ROOT CAUSE", "x".repeat(5000)), 100);
+        assert!(t.ends_with("ROOT CAUSE") && t.contains("earlier bytes omitted"));
+        assert_eq!(tail("short", 100), "short");
     }
 
     #[test]
