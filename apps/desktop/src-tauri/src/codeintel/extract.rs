@@ -194,6 +194,46 @@ impl<'a> Walker<'a> {
                         self.script(body, Some(&qualify_dot(container, &name)), false, depth + 1);
                     }
                 }
+                // CommonJS and prototype style: `res.send = function send(body) {…}`, `exports.parse = (s) => …`,
+                // `Router.prototype.route = function (p) {…}`, `module.exports = function compile() {…}`.
+                "assignment_expression" if !in_class => {
+                    let (Some(left), Some(value)) = (ch.child_by_field_name("left"), ch.child_by_field_name("right")) else { continue };
+                    let kind = match value.kind() {
+                        k if is_function_value(k) => "function",
+                        "class" => "class",
+                        // `a = b = function …`: the innermost link is the one that names it.
+                        "assignment_expression" => {
+                            self.script(ch, container, in_class, depth + 1);
+                            continue;
+                        }
+                        _ => continue,
+                    };
+                    let (name, owner) = match left.kind() {
+                        "member_expression" => {
+                            let prop = left.child_by_field_name("property").map(|n| self.text(n).to_string()).unwrap_or_default();
+                            let object = left.child_by_field_name("object").map(|n| self.text(n).to_string()).unwrap_or_default();
+                            let owner = object.trim_end_matches(".prototype").to_string();
+                            if prop == "exports" && object == "module" {
+                                // The module itself: named after the function, if it has a name.
+                                match value.child_by_field_name("name") {
+                                    Some(n) => (self.text(n).to_string(), None),
+                                    None => continue,
+                                }
+                            } else {
+                                let owner = (!matches!(owner.as_str(), "exports" | "module.exports" | "this") && owner.chars().count() <= 60 && !owner.contains(['(', '[', '\n'])).then_some(owner);
+                                (prop, owner)
+                            }
+                        }
+                        "identifier" => (self.text(left).to_string(), None),
+                        _ => continue,
+                    };
+                    if name.is_empty() || name.chars().count() > 120 || !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$') {
+                        continue;
+                    }
+                    let owned = owner.map(|o| qualify_dot(container, &o));
+                    let kind = if kind == "function" && owned.is_some() { "method" } else { kind };
+                    self.push(ch, value, name, kind, owned.as_deref().or(container));
+                }
                 "lexical_declaration" | "variable_declaration" if !in_class => {
                     let is_const = self.text(ch).trim_start().starts_with("const");
                     for d in children(ch).into_iter().filter(|d| d.kind() == "variable_declarator") {

@@ -380,3 +380,25 @@ fn measured_symbol_index_selects_files_at_least_as_well_as_keyword_grep() {
     // Deterministic: the same inputs give the same selection.
     assert_eq!(select_files(&ix, CASES[0].0, &[], K), select_files(&build(d.path()).unwrap(), CASES[0].0, &[], K));
 }
+
+#[test]
+fn commonjs_and_prototype_assignments_are_symbols() {
+    let d = repo_with(&[(
+        "lib/response.js",
+        "var res = Object.create(http.ServerResponse.prototype);\n\
+         module.exports = res;\n\
+         res.send = function send(body) {\n  return this;\n};\n\
+         exports.parse = (s) => s.trim();\n\
+         Router.prototype.route = function (path) {\n  return path;\n};\n\
+         exports = module.exports = function createApplication() {};\n\
+         res.status = 404;\n\
+         function helper() {\n  inner.x = function hidden() {};\n}\n",
+    )]);
+    let ix = build(d.path()).unwrap();
+    let names: Vec<(&str, &str, Option<&str>)> = ix.symbols.iter().map(|s| (s.name.as_str(), s.kind, s.container.as_deref())).collect();
+    for want in [("send", "method", Some("res")), ("parse", "function", None), ("route", "method", Some("Router")), ("createApplication", "function", None), ("helper", "function", None)] {
+        assert!(names.contains(&want), "missing {want:?} in {names:?}");
+    }
+    assert!(!names.iter().any(|(n, _, _)| *n == "status" || *n == "hidden"), "a non-function value or a function-body assignment is not a symbol: {names:?}");
+    assert_eq!(find(&ix, "send").signature, "function send(body)");
+}

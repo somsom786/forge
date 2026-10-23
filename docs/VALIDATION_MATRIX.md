@@ -39,7 +39,7 @@ Physical Windows validation of this branch: **NOT RUN** (planned; `docs/CODEX_WI
 | NSIS installer build | n/a | CI job builds and uploads it (artifact, 7 days) | PASS — Physical Windows (earlier: silent install, launch, scripted mission, uninstall) | Upgrade over an older install never tested; unsigned |
 | Security workflow (npm audit, cargo-audit, cargo-deny, gitleaks full history, OSV-Scanner, SBOMs) | PASS — Linux (first run) | n/a | n/a | OSV-Scanner informational; FORGE's own crate is unlicensed (accepted exception until the owner chooses a licence) |
 | Experiments, conflicts, Agents screen | PASS — Linux | PASS — Windows CI | NOT RUN | UI seen only in the browser preview with mock data |
-| Code intelligence (tree-sitter index, Code Map, relevant code in context) | PASS — Linux | PASS — Windows CI (`7a1c2a4`, MSVC build incl. the tree-sitter C grammars) | NOT RUN | Measured only on a synthetic 36-file fixture (top-3 F1 0.48 grep → 0.59 index); Code Map seen in the browser preview only |
+| Code intelligence (tree-sitter index, Code Map, relevant code in context) | PASS — Linux | PASS — Windows CI (`7a1c2a4`, MSVC build incl. the tree-sitter C grammars) | NOT RUN | Synthetic fixture plus commit localization on 9 real repositories (docs/EVALUATION.md: index ≥ grep on MRR in 8 of 9; found and fixed missing CommonJS symbols); Code Map seen in the browser preview only |
 | Live provider missions (Claude, Codex) | BLOCKED (would spend the owner's quota; never run by the cloud agent) | BLOCKED (no logins) | PASS — Physical Windows (earlier, before this branch) | Re-run on this branch is a handoff item |
 
 ## Adversarial regression tests (security acceptance list, items 1–18)
