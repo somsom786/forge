@@ -692,3 +692,118 @@ export interface HookDryRun {
   /** Environment variables withheld because their names look like secrets. */
   scrubbedEnv: string[];
 }
+
+// ---- Experiments (Phase 6; backend only, no screen yet) ----
+
+export type ExperimentMetric =
+  /** Wall-clock duration of the command (ms); lower is better. */
+  | { kind: 'duration' }
+  /** A number the command prints as `FORGE_METRIC <name>=<number>` (the last such line counts). */
+  | { kind: 'output'; name: string; direction: 'lower' | 'higher' };
+
+export interface NewExperiment {
+  name: string;
+  objective?: string | null;
+  command: string;
+  /** Must exit 0 in a revision's worktree before its measurements count. */
+  correctnessCommand?: string | null;
+  metric: ExperimentMetric;
+  repetitions: number;
+  warmup?: number;
+  timeoutSecs: number;
+  baselineRef: string;
+  variants: { label: string; gitRef: string }[];
+}
+
+export interface ExperimentStats {
+  n: number;
+  median: number;
+  min: number;
+  max: number;
+  /** Median absolute deviation. */
+  mad: number;
+}
+
+export type ExperimentVerdict = 'baseline' | 'better' | 'worse' | 'no_clear_difference' | 'insufficient_runs' | 'invalid';
+
+export interface ExperimentVariantReport {
+  variantId: string;
+  label: string;
+  isBaseline: boolean;
+  commit: string;
+  stats: ExperimentStats | null;
+  failedRuns: number;
+  correctness: boolean | null;
+  worktreeChanged: boolean;
+  /** Relative change of the median against the baseline (-0.27 = 27 % lower). */
+  changeVsBaseline: number | null;
+  verdict: ExperimentVerdict;
+  reasons: string[];
+}
+
+export interface ExperimentReport {
+  metric: ExperimentMetric;
+  direction: 'lower' | 'higher';
+  minRunsForVerdict: number;
+  variants: ExperimentVariantReport[];
+  /** Variant id; only set when a variant beat the baseline in every measured run with enough runs on both sides. */
+  winner: string | null;
+  conclusion: 'winner' | 'no_winner' | 'inconclusive';
+  explanation: string;
+}
+
+export interface Experiment {
+  id: string;
+  projectId: string;
+  name: string;
+  objective: string | null;
+  command: string;
+  correctnessCommand: string | null;
+  metric: ExperimentMetric;
+  repetitions: number;
+  warmup: number;
+  timeoutSecs: number;
+  state: 'draft' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  attempt: number;
+  env: Record<string, unknown> | null;
+  report: ExperimentReport | null;
+  lastError: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface ExperimentVariant {
+  id: string;
+  experimentId: string;
+  position: number;
+  label: string;
+  isBaseline: boolean;
+  gitRef: string;
+  /** The exact commit measured by every attempt. */
+  commitSha: string;
+}
+
+export interface ExperimentResult {
+  id: string;
+  experimentId: string;
+  variantId: string;
+  attempt: number;
+  phase: 'correctness' | 'warmup' | 'measure';
+  iteration: number;
+  state: 'passed' | 'failed' | 'error' | 'timeout' | 'cancelled' | 'no_metric';
+  exitCode: number | null;
+  durationMs: number;
+  metricValue: number | null;
+  worktreeChanged: boolean;
+  outputTail: string;
+  logPath: string | null;
+  startedAt: string;
+}
+
+export interface ExperimentDetail {
+  experiment: Experiment;
+  variants: ExperimentVariant[];
+  /** Runs of the latest attempt. */
+  results: ExperimentResult[];
+}

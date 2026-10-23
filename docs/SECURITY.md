@@ -69,6 +69,16 @@ certification, and no remote service. Treat everything below as the implemented 
 * Only a ChatGPT login is accepted (`account/read`); API-key/custom-provider logins and API-key environment variables are refused/scrubbed (case-insensitive). FORGE never reads `~/.codex/auth.json`.
 * Not verified: the effective sandbox settings Codex applies when the user's config widens them.
 
+## Experiments (Phase 6, backend only)
+
+* **Running an experiment executes the user's command against code from every revision it compares** (any branch, tag or commit of the
+  project, which may contain agent-written code) with the user's privileges, exactly like a verification check (limit 4). It only runs
+  on an explicit user action. Revisions are pinned to the commit they resolved to when the experiment was defined.
+* Each revision runs in its own detached worktree under the FORGE home, never in the user's checkout; repositories configuring external
+  git programs are refused before any checkout; git runs with the same hardening as missions. References are validated (no options,
+  ranges or reflog expressions) before they reach git.
+* Run output is redacted (tail and log) like checks; containment is the check runner's (best-effort, limit 5).
+
 ## Known limits (do not assume these are solved)
 
 1. **An approved shell command runs with the user's privileges and no sandbox.** FORGE shows risk warnings but cannot

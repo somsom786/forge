@@ -305,6 +305,58 @@ const MIGRATIONS: &[&str] = &[
     CREATE UNIQUE INDEX harness_rollback_once ON harness_change(rolls_back_id)
         WHERE rolls_back_id IS NOT NULL AND state IN ('started', 'applied');
     "#,
+    // v7 - experiments (Phase 6): a baseline and variants at exact commits, one command measured N times per revision
+    r#"
+    CREATE TABLE experiment (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES project(id),
+        name TEXT NOT NULL,
+        objective TEXT,
+        command TEXT NOT NULL,
+        correctness_command TEXT,
+        metric_json TEXT NOT NULL,
+        repetitions INTEGER NOT NULL,
+        warmup INTEGER NOT NULL,
+        timeout_secs INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        env_json TEXT,
+        report_json TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT
+    );
+    CREATE INDEX experiment_project ON experiment(project_id, created_at DESC);
+    CREATE TABLE experiment_variant (
+        id TEXT PRIMARY KEY,
+        experiment_id TEXT NOT NULL REFERENCES experiment(id),
+        position INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        is_baseline INTEGER NOT NULL,
+        git_ref TEXT NOT NULL,
+        commit_sha TEXT NOT NULL,
+        UNIQUE (experiment_id, position),
+        UNIQUE (experiment_id, label)
+    );
+    CREATE TABLE experiment_result (
+        id TEXT PRIMARY KEY,
+        experiment_id TEXT NOT NULL REFERENCES experiment(id),
+        variant_id TEXT NOT NULL REFERENCES experiment_variant(id),
+        attempt INTEGER NOT NULL,
+        phase TEXT NOT NULL,
+        iteration INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        exit_code INTEGER,
+        duration_ms INTEGER NOT NULL,
+        metric_value REAL,
+        worktree_changed INTEGER NOT NULL,
+        output_tail TEXT NOT NULL,
+        log_path TEXT,
+        started_at TEXT NOT NULL
+    );
+    CREATE INDEX experiment_result_attempt ON experiment_result(experiment_id, attempt, variant_id);
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {
@@ -353,6 +405,54 @@ mod tests {
         migrate(&c).unwrap();
         let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v as usize, MIGRATIONS.len());
+    }
+
+    #[test]
+    fn migrations_apply_from_scratch_and_forward_from_every_earlier_version() {
+        let tables = |c: &Connection| -> Vec<String> {
+            let mut s = c.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").unwrap();
+            s.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<Vec<String>>>().unwrap()
+        };
+        let fresh = open_in_memory().unwrap();
+        let want = tables(&fresh);
+        for t in ["experiment", "experiment_variant", "experiment_result"] {
+            assert!(want.iter().any(|x| x == t), "{t} missing from a fresh database: {want:?}");
+        }
+        // A database created by any earlier release (user_version k) upgrades to exactly the same schema, keeping its data.
+        for k in 0..MIGRATIONS.len() {
+            let c = Connection::open_in_memory().unwrap();
+            configure(&c).unwrap();
+            for (i, sql) in MIGRATIONS.iter().enumerate().take(k) {
+                c.execute_batch(sql).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            if k >= 1 {
+                c.execute("INSERT INTO project(id, name, root_path, default_branch, created_at) VALUES ('p','p','/p','main','t')", []).unwrap();
+            }
+            migrate(&c).unwrap();
+            assert_eq!(tables(&c), want, "upgrading from v{k}");
+            let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+            assert_eq!(v as usize, MIGRATIONS.len());
+            if k >= 1 {
+                let n: i64 = c.query_row("SELECT count(*) FROM project", [], |r| r.get(0)).unwrap();
+                assert_eq!(n, 1, "data survives the upgrade from v{k}");
+            }
+        }
+        // Columns match between a fresh and an upgraded database.
+        let cols = |c: &Connection, t: &str| -> Vec<String> {
+            let mut s = c.prepare(&format!("PRAGMA table_info({t})")).unwrap();
+            s.query_map([], |r| r.get::<_, String>(1)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        let up = Connection::open_in_memory().unwrap();
+        configure(&up).unwrap();
+        for (i, sql) in MIGRATIONS.iter().enumerate().take(6) {
+            up.execute_batch(sql).unwrap();
+            up.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+        }
+        migrate(&up).unwrap();
+        for t in ["experiment", "experiment_variant", "experiment_result"] {
+            assert_eq!(cols(&up, t), cols(&fresh, t), "{t}");
+        }
     }
 
     #[test]

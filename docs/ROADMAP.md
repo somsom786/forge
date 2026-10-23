@@ -18,7 +18,9 @@ Inventory, Doctor, safe edit with preview/backup/rollback, hook templates and dr
 ✅ Codex adapter via `codex app-server` (real mission verified; independent review 5) · ✅ parallel worktrees + concurrency limit ·
 ⬜ conflict detection between missions · ⬜ independent review missions.
 
-## Phase 6 — Experiments (P2)  ⬜
+## Phase 6 — Experiments (P2)  🟡
+✅ backend: definitions pinned to commits, isolated worktrees, correctness gate, warm-up + interleaved repetitions, verdict that names no winner
+below 3 runs or with overlapping ranges, every attempt kept (`cloud/experiments-backend`, Linux tests only) · ⬜ UI · ⬜ progress events · ⬜ agent-proposed variants.
 ## Phase 7 — Enterprise extensions (future)  ⬜ — nothing implemented; no claims.
 
 ## Deferred / explicit non-goals for now

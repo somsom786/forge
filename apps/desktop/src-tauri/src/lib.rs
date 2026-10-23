@@ -3,6 +3,7 @@ pub mod contract;
 pub mod db;
 pub mod detect;
 pub mod error;
+pub mod experiment;
 pub mod git;
 pub mod merge;
 pub mod harness;
@@ -16,6 +17,7 @@ pub mod providers;
 pub mod redact;
 pub mod store;
 pub mod store_review;
+pub mod store_experiment;
 pub mod verify;
 pub mod supervisor;
 
@@ -176,6 +178,11 @@ pub fn run() {
             commands::harness_hook_preview_add,
             commands::harness_hook_preview_remove,
             commands::harness_hook_dry_run,
+            commands::experiment_create,
+            commands::experiment_list,
+            commands::experiment_get,
+            commands::experiment_run,
+            commands::experiment_cancel,
             commands::knowledge_open_in_obsidian,
             commands::context_preview,
             commands::context_for_mission,

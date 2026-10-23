@@ -8,6 +8,7 @@ import type {
   ContextPackage, ContextPackageRow, KnowledgePage, KnowledgePageDetail, KnowledgeRevision, KnowledgeStatus, LintIssue, NewKnowledgeArgs, ScanResult,
   DoctorFinding, HarnessApplyArgs, HarnessChange, HarnessFile, HarnessInventory, HarnessPreview, HookDryRun, HookSpec, HookTemplate, RollbackPreview,
   CheckSpec, Contract, MergeOutcome, Seen, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
+  Experiment, ExperimentDetail, NewExperiment,
 } from './types';
 
 export const api = {
@@ -93,6 +94,14 @@ export const api = {
   harnessHookPreviewRemove: (projectId: string, hookId: string) => invoke<HarnessPreview>('harness_hook_preview_remove', { projectId, hookId }),
   /** Executes the command on this machine with a synthetic event. Only ever call after the user confirmed the exact command. */
   harnessHookDryRun: (projectId: string, event: string, command: string) => invoke<HookDryRun>('harness_hook_dry_run', { projectId, event, command }),
+
+  // ---- Experiments (Phase 6). Running executes the user's command against repository code; explicit user action only. ----
+  experimentCreate: (projectId: string, spec: NewExperiment) => invoke<Experiment>('experiment_create', { projectId, spec }),
+  experimentList: (projectId: string) => invoke<Experiment[]>('experiment_list', { projectId }),
+  experimentGet: (experimentId: string) => invoke<ExperimentDetail>('experiment_get', { experimentId }),
+  /** Resolves when the attempt ends (it can take minutes). */
+  experimentRun: (experimentId: string) => invoke<ExperimentDetail>('experiment_run', { experimentId }),
+  experimentCancel: (experimentId: string) => invoke<void>('experiment_cancel', { experimentId }),
 
   approvalsPending: (missionId?: string) => invoke<Approval[]>('approvals_pending', { missionId: missionId ?? null }),
   approvalDecide: (approvalId: string, approved: boolean, note?: string) =>
