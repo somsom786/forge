@@ -135,10 +135,60 @@ fn revalidate(root: &Path, rel: &str, path: &Path, expect_sha: Option<&str>) -> 
     Ok(())
 }
 
+/// Create `path` with `bytes` only if nothing is there: the content is written to a temporary file and then hard-linked into
+/// place, which the OS refuses if the name exists (on Windows and Unix alike), so a file created by someone else between the
+/// last check and this call is never replaced. The result is all-or-nothing like `atomic_write`.
+pub fn create_exclusive(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    if bytes.len() > MAX_BYTES {
+        return Err(ForgeError::Other(format!("the file would be too large ({} bytes, limit {MAX_BYTES})", bytes.len())));
+    }
+    let dir = path.parent().ok_or_else(|| ForgeError::PathRejected("no parent directory".into()))?;
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!(".forge-tmp-{}", uuid::Uuid::now_v7()));
+    let result = (|| -> Result<()> {
+        {
+            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+            f.write_all(bytes)?;
+            f.sync_all()?;
+        }
+        match std::fs::hard_link(&tmp, path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(ForgeError::InvalidState("the file was created by something else while it was being saved; nothing was written".into())),
+            // A filesystem without hard links (FAT, some network shares): fall back to an exclusive create of the target itself.
+            // Still never replaces an existing file, but a crash mid-write could leave it partial (recovery reports that).
+            Err(_) => {
+                let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        ForgeError::InvalidState("the file was created by something else while it was being saved; nothing was written".into())
+                    } else {
+                        e.into()
+                    }
+                })?;
+                f.write_all(bytes)?;
+                f.sync_all()?;
+                Ok(())
+            }
+        }
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
 /// Write `bytes` to `path` (an editable file under `root`), after re-checking the path and the previous content.
+/// When the caller saw no file (`expect_sha` is None) the write is an exclusive create: it fails rather than replace a file
+/// that appeared after the check.
 pub fn write_checked(root: &Path, rel: &str, path: &Path, bytes: &[u8], expect_sha: Option<&str>) -> Result<()> {
+    write_checked_inner(root, rel, path, bytes, expect_sha, &|| {})
+}
+
+fn write_checked_inner(root: &Path, rel: &str, path: &Path, bytes: &[u8], expect_sha: Option<&str>, between_check_and_write: &dyn Fn()) -> Result<()> {
     revalidate(root, rel, path, expect_sha)?;
-    page::atomic_write(path, bytes)?;
+    between_check_and_write();
+    match expect_sha {
+        None => create_exclusive(path, bytes)?,
+        Some(_) => page::atomic_write(path, bytes)?,
+    }
     // If the directory was swapped underneath us the write landed outside the project: say so loudly.
     let after = target(root, rel).map_err(|e| ForgeError::Other(format!("the path of {rel} changed during the write ({e}); check the project folder")))?;
     if after != path {
@@ -413,6 +463,51 @@ mod tests {
         assert!(write_checked(root, ".claude/rules/a.md", &rules, b"x\n", None).is_err());
         assert!(!outside.path().join("a.md").exists(), "nothing may land outside the project");
         assert!(remove_checked(root, ".claude/rules/a.md", &rules, None).is_err());
+    }
+
+    #[test]
+    fn creating_a_file_never_replaces_one_that_appeared_between_the_check_and_the_write() {
+        let d = project();
+        let root = d.path();
+        let path = target(root, ".claude/rules/new.md").unwrap();
+        // The race: the path is checked (absent), then another process creates the file, then FORGE writes.
+        let err = write_checked_inner(root, ".claude/rules/new.md", &path, b"forge\n", None, &|| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "theirs\n").unwrap();
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("created by something else"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n", "the other process's file must survive");
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(leftovers.len(), 1, "no temporary file may be left behind: {leftovers:?}");
+
+        // Without the race the create succeeds, the file has one link (it is not left hard-linked to the temp file),
+        // and a second create of the same name is refused.
+        let fresh = target(root, ".claude/rules/fresh.md").unwrap();
+        write_checked(root, ".claude/rules/fresh.md", &fresh, b"forge\n", None).unwrap();
+        assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "forge\n");
+        assert!(!vault::hardlinked(&fresh));
+        assert!(create_exclusive(&fresh, b"again\n").is_err());
+        assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "forge\n");
+    }
+
+    #[test]
+    fn many_concurrent_exclusive_creates_of_one_name_have_exactly_one_winner() {
+        let d = project();
+        let path = d.path().join("race.md");
+        let wins = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for i in 0..16 {
+                let (path, wins) = (&path, &wins);
+                s.spawn(move || {
+                    if create_exclusive(path, format!("writer {i}\n").as_bytes()).is_ok() {
+                        wins.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+        assert_eq!(wins.into_inner(), 1);
+        assert!(std::fs::read_to_string(&path).unwrap().starts_with("writer "));
     }
 
     #[test]
