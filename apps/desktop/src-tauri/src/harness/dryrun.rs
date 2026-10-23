@@ -121,6 +121,7 @@ pub fn run_with_input(root: &Path, event: &str, command: &str, timeout: Duration
         cmd.creation_flags(0x0800_0000);
     }
 
+    proc::isolate(&mut cmd);
     let started = Instant::now();
     let mut child = cmd.spawn().map_err(|e| ForgeError::Other(format!("could not start the hook command: {e}")))?;
     let pid = child.id();

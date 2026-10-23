@@ -141,6 +141,19 @@ pub fn canonical_dir(p: &Path) -> Result<PathBuf> {
     Ok(c)
 }
 
+/// Test helper: a directory link at `link` pointing to `target` — a junction on Windows (no privilege needed), a symlink on
+/// Unix. Both are what FORGE must refuse to follow.
+#[cfg(test)]
+pub(crate) fn test_dir_link(link: &Path, target: &Path) {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
+        assert!(out.status.success(), "junction creation failed: {out:?}");
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -35,6 +35,8 @@ export const FAKE_CAPABILITIES: CapabilityMatrix = {
 
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((res) => {
+    // A cancel that arrived before the sleep began must end it too ('abort' only fires once).
+    if (signal.aborted) return res();
     const t = setTimeout(res, ms);
     signal.addEventListener('abort', () => { clearTimeout(t); res(); }, { once: true });
   });

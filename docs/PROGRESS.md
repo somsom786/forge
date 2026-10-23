@@ -16,6 +16,14 @@ UI 100 (vitest); `npm run typecheck` clean. Live tests that spend provider quota
 | Experiments (Phase 6) | — | |
 | Enterprise (Phase 7) | — design only | no claims made |
 
+## Platforms
+
+Windows is the product platform; every level-A row above was verified on the owner's Windows 11 machine. The Rust suite also passes
+on Linux since `cloud/unix-containment` (before it, stopping an agent on Linux/macOS did not kill it: the Unix containment was an
+empty placeholder). CI (`.github/workflows/ci.yml`) runs engine, UI and Rust tests on `ubuntu-24.04` and on a GitHub-hosted
+`windows-2022` runner; a green Windows CI run is evidence on a clean Windows VM, not on the owner's machine (no WebView2 window, no
+providers, no installer). No macOS build or test exists.
+
 ## Honest list of what is not verified or not done
 
 * Installer: unsigned; no auto-update; upgrade-over-existing not tested.

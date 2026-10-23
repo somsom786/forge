@@ -474,6 +474,7 @@ impl Core {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
+        proc::isolate(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| fail_session(format!("could not start the engine: {e}")))?;
         let pid = child.id();
 
