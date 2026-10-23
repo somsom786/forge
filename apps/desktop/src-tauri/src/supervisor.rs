@@ -125,6 +125,8 @@ struct SessionHandle {
     mission_id: String,
     worktree: PathBuf,
     profile: PermissionProfile,
+    /// Where the agent and the tools it runs execute (part of every approval's binding).
+    executes_on: String,
     tx: Sender<String>,
     pid: u32,
     stopping: AtomicBool,
@@ -549,9 +551,20 @@ impl Core {
             ForgeError::Provider(reason)
         };
 
-        let mut cmd = Command::new(&node);
-        cmd.arg(&script)
-            .current_dir(worktree)
+        // Where the agent runs: the project's agent backend, required (never a silent fallback to the host).
+        let project = self.store.get_project(&m.project_id).map_err(|e| fail_session(e.to_string()))?;
+        let backend = crate::execution::Backend::parse(&project.agent_backend).map_err(|e| fail_session(e.to_string()))?;
+        let executes_on = if backend == crate::execution::Backend::TrustedLocal { AGENT_EXECUTES_ON.to_string() } else { backend.as_str().to_string() };
+        let script_arg = [script.clone().into_os_string()];
+        let spec = crate::execution::AgentSpec {
+            program: &node,
+            args: &script_arg,
+            workspace: worktree,
+            read_only: self.agent_read_only_paths(&node, &script, m, acp_agent.as_ref(), &mcp_servers),
+            read_write: self.agent_state_paths(&m.provider),
+        };
+        let mut cmd = crate::execution::agent_command(backend, &spec).map_err(|e| fail_session(e.to_string()))?;
+        cmd.current_dir(worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -585,6 +598,7 @@ impl Core {
             mission_id: m.id.clone(),
             worktree: worktree.to_path_buf(),
             profile,
+            executes_on: executes_on.clone(),
             tx,
             pid,
             stopping: AtomicBool::new(false),
@@ -609,7 +623,10 @@ impl Core {
                 core.expire_overdue(&h);
             });
         }
-        self.store.audit("system", "session.spawn", Some(&session.id), &json!({"mission": m.id, "provider": m.provider, "pid": pid}));
+        self.store.audit("system", "session.spawn", Some(&session.id), &json!({"mission": m.id, "provider": m.provider, "pid": pid, "agentBackend": backend.as_str()}));
+        if backend != crate::execution::Backend::TrustedLocal {
+            self.core_event(&handle, "status", json!({"message": format!("The agent runs isolated: {}", backend.label()), "agentBackend": backend.as_str()}));
+        }
 
         // Start the I/O threads; if any cannot start, unwind everything instead of leaving a half-session.
         let sid8 = session.id[..8].to_string();
@@ -852,13 +869,13 @@ impl Core {
                     Risk::High => "high",
                 };
                 let provider = self.store.get_mission(&h.mission_id).map(|m| m.provider).unwrap_or_default();
-                let binding = approval_binding(&h.mission_id, &h.session_id, &provider, &req.tool, &req.input, &h.worktree, h.profile.as_str(), AGENT_EXECUTES_ON);
+                let binding = approval_binding(&h.mission_id, &h.session_id, &provider, &req.tool, &req.input, &h.worktree, h.profile.as_str(), &h.executes_on);
                 let ttl = self.approval_ttl.load(Ordering::SeqCst);
                 let expires = (chrono::Utc::now() + chrono::Duration::seconds(ttl as i64)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
                 let created = self
                     .store
                     .create_approval(&h.mission_id, &h.session_id, &key, &req.tool, &redact::redact_str(&summary), &detail, risk_s, &warnings, "pending", None, None)
-                    .and_then(|a| self.store.bind_approval(&a.id, &binding, policy::REVISION, AGENT_EXECUTES_ON, &expires));
+                    .and_then(|a| self.store.bind_approval(&a.id, &binding, policy::REVISION, &h.executes_on, &expires));
                 match created {
                     Ok(a) => {
                         lock(&h.requests).insert(a.id.clone(), (req.tool.clone(), req.input.clone()));
@@ -873,6 +890,69 @@ impl Core {
                     }
                 }
             }
+        }
+    }
+
+    /// What an agent sandbox must be able to read: the engine (and its modules), Node, the provider binary, and the programs
+    /// an ACP agent or an authorized MCP server will start (by the directories of the absolute paths they name).
+    fn agent_read_only_paths(&self, node: &Path, script: &Path, m: &Mission, acp: Option<&Value>, mcp: &serde_json::Map<String, Value>) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = vec![];
+        let mut add_dir_of = |p: &Path| {
+            if p.is_absolute() {
+                if let Some(d) = p.parent() {
+                    let d = dunce::canonicalize(d).unwrap_or_else(|_| d.to_path_buf());
+                    if !out.iter().any(|o| d.starts_with(o)) {
+                        out.push(d);
+                    }
+                }
+            }
+        };
+        // The engine's own package, and every node_modules Node may resolve its imports from (it walks all ancestors; a
+        // workspace hoists dependencies to the repository root). Read-only: dependencies, not user data.
+        let engine_root = script.ancestors().find(|a| a.join("package.json").is_file()).unwrap_or_else(|| script.parent().unwrap_or(script));
+        add_dir_of(&engine_root.join("x"));
+        for a in script.ancestors().skip(1) {
+            if a.join("node_modules").is_dir() {
+                add_dir_of(&a.join("node_modules").join("x"));
+            }
+        }
+        add_dir_of(&node.parent().unwrap_or(node).join("x"));
+        for p in [self.cfg.claude.as_deref(), self.cfg.codex.as_deref()].into_iter().flatten() {
+            add_dir_of(p);
+        }
+        let mut named: Vec<String> = vec![];
+        if let Some(a) = acp {
+            named.extend(a["command"].as_str().map(String::from));
+            named.extend(a["args"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)));
+        }
+        for cfg in mcp.values() {
+            named.extend(cfg["command"].as_str().map(String::from));
+            named.extend(cfg["args"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)));
+        }
+        for n in named {
+            let p = Path::new(&n);
+            if p.is_absolute() && p.exists() {
+                add_dir_of(p);
+            }
+        }
+        let _ = m;
+        out
+    }
+
+    /// The provider's own state, writable inside an agent sandbox: Claude Code's config dir (login, sessions), Codex's home.
+    fn agent_state_paths(&self, provider: &str) -> Vec<PathBuf> {
+        let env = |k: &str| self.cfg.engine_env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).or_else(|| std::env::var(k).ok());
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        match provider {
+            "claude" | "claude-local" => match env("CLAUDE_CONFIG_DIR") {
+                Some(d) => vec![PathBuf::from(d)],
+                None => home.map(|h| vec![h.join(".claude"), h.join(".claude.json")]).unwrap_or_default(),
+            },
+            "codex" => match env("CODEX_HOME") {
+                Some(d) => vec![PathBuf::from(d)],
+                None => home.map(|h| vec![h.join(".codex")]).unwrap_or_default(),
+            },
+            _ => vec![],
         }
     }
 

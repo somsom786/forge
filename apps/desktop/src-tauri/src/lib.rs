@@ -215,6 +215,7 @@ pub fn run() {
             commands::mission_conflicts,
             commands::execution_backends,
             commands::project_set_execution_backend,
+            commands::project_set_agent_backend,
             commands::code_map,
             commands::code_symbols,
             commands::mcp_preview,

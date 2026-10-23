@@ -86,6 +86,7 @@ export function handleP4(cmd: string, args: any): Promise<any> | undefined {
       ]);
     }
     case 'project_set_execution_backend': return Promise.reject('"Isolated: Windows Sandbox" cannot be used on this machine: Not implemented in this build.');
+    case 'project_set_agent_backend': return Promise.reject('"Isolated: Linux namespaces (bubblewrap)" cannot be used for agents on this machine: Linux only.');
     case 'harness_inventory': { const inv = inventory(); inv.mcpServers = inv.mcpServers.map((s) => ({ ...s, runsInForgeMissions: mcpAuth !== null && s.name === mcpAuth.name })); return done(inv); }
     case 'mcp_preview': return done({ definition: mcpDef, definitionSha256: 'a3f1c0de'.repeat(8), summary: ['Starts the program `npx` on this computer, with your privileges, whenever a Claude mission in this project starts — before any tool call is approved. It is not sandboxed.', 'It is fetched by a package runner: unless the arguments pin an exact version, a different version can run next time.', 'FORGE passes it no extra environment variables.', 'Its tools can only be used with your approval, one call at a time; what they return is treated as untrusted data.'], authorized: mcpAuth });
     case 'mcp_authorize': mcpAuth = { id: 'ma1', projectId: args.projectId, name: args.name, definition: mcpDef, definitionSha256: args.definitionSha256, toolAllowlist: args.toolAllowlist, authorizedAt: new Date().toISOString(), revokedAt: null }; return done(mcpAuth);

@@ -90,7 +90,7 @@ certification, and no remote service. Treat everything below as the implemented 
 
 | Control | Where | Test |
 |---|---|---|
-| Every approval request is bound to a digest of mission, session, provider, tool, canonical input, worktree, permission profile, policy revision (`policy::REVISION`) and where it executes (`agent_host` today). The UI sends the digest back; a decision on a different request is refused. | `supervisor.rs` (`approval_binding`, `decide_approval_checked`), migration 9 | `approvals::an_approval_is_bound…` |
+| Every approval request is bound to a digest of mission, session, provider, tool, canonical input, worktree, permission profile, policy revision (`policy::REVISION`) and where it executes (`agent_host`, or `linux_namespaces` for a contained agent). The UI sends the digest back; a decision on a different request is refused. | `supervisor.rs` (`approval_binding`, `decide_approval_checked`), migration 9 | `approvals::an_approval_is_bound…` |
 | Requests expire (30 min). A sweeper expires overdue ones and tells the agent "denied", so nothing waits forever and nothing old can be approved. | `supervisor.rs` (`expire_overdue`) | `approvals::an_undecided_request_expires…` |
 | Approving re-runs FORGE policy on the exact original (unredacted, in-memory) request. A target that became protected or was redirected outside the worktree while the human read the prompt is denied by policy. Before this, such an approval went through (shown by a mutation test). | `decide_approval_checked` | `approvals::policy_is_rechecked_at_decision_time…` (Unix; a Windows junction variant is in the Windows handoff) |
 | Reuse is narrow: only an identical call (same provider tool-use id and input digest) in the same session reuses an answer. | `on_permission` | `regressions::a_reask_with_changed_input…` |
@@ -210,12 +210,17 @@ Policy revision bumped to `policy-2026-10-23.2` (approvals requested under the o
   read-only git directory. Windows Sandbox and isolated WSL are designed and reported **not implemented**.
 * A selected backend that is unavailable is an error; FORGE never falls back to a less isolated one. Changes are audited, and
   every verification run, experiment run and Proof Pack records the backend it ran on.
-* The **agents** and the commands they run after approval are not yet routed through a backend (limit 1 stands).
+* **Agents** can be contained too (per project, "Agents run: …"; Linux only): the engine, the provider and every command it
+  runs, approved or not, start inside `linux_namespaces` with the worktree read-write, the provider's own state directory
+  read-write in place, the runtime read-only, and nothing else of the user's files. The network and FORGE's environment are
+  **not** restricted for agents. Tested with the scripted agent and with the real Claude Code binary (approved `Bash cat` of a
+  host file fails; host control prints it). On Windows agents still run on the host (limit 1).
 
 ## Known limits (do not assume these are solved)
 
-1. **An approved agent shell command runs with the user's privileges and no sandbox.** (Checks and experiments can now be isolated on Linux; see Execution backends.) FORGE shows risk warnings but cannot
-   confine it: an approved command could read or modify `~/.forge/forge.db` or files outside the worktree, push to a
+1. **On the default agent backend (`trusted_local`, and always on Windows), an approved agent shell command runs with the
+   user's privileges and no sandbox.** (On Linux a project can contain its agents; see Execution backends. Contained agents
+   still have network access and see their own provider login.) On the host FORGE shows risk warnings but cannot confine it: an approved command could read or modify `~/.forge/forge.db` or files outside the worktree, push to a
    remote using the user's credentials, or run package scripts. Mitigation path: provider sandboxing (Claude `sandbox`
    option, Codex sandbox) and brokered git — not enabled yet.
 2. **Shell-pattern rules (push, destructive commands, protected files via shell) are heuristics**, not a security

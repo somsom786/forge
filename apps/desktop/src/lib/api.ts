@@ -131,6 +131,7 @@ export const api = {
   executionBackends: () => invoke<ExecutionBackendInfo[]>('execution_backends'),
   /** Refused for a backend that cannot run on this machine; never downgraded. */
   projectSetExecutionBackend: (projectId: string, backend: ExecutionBackendId) => invoke<Project>('project_set_execution_backend', { projectId, backend }),
+  projectSetAgentBackend: (projectId: string, backend: ExecutionBackendId) => invoke<Project>('project_set_agent_backend', { projectId, backend }),
 
   /** Built on demand from the main checkout (tree-sitter, parse only); cached per HEAD + working-tree state. */
   codeMap: (projectId: string) => invoke<CodeMap>('code_map', { projectId }),

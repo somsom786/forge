@@ -17,6 +17,8 @@ export interface Project {
   createdAt: string;
   /** Where this project's checks and experiments run. */
   executionBackend: ExecutionBackendId;
+  /** Where this project's agents (and every command they run) execute. */
+  agentBackend: ExecutionBackendId;
 }
 
 export interface Mission {

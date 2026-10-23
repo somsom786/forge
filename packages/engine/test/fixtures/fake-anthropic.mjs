@@ -4,12 +4,14 @@
 // request, then ends the turn. Prints {"port": N} on stdout once listening.
 //   CLAUDE:write   Write FORGE_CLAUDE.md
 //   CLAUDE:escape  Write ../outside-claude.txt
+//   CLAUDE:bash    Bash `cat <SECRET_PATH>` (the path follows `SECRET_PATH=` in the prompt)
 //   CLAUDE:mcp     mcp__docs__search, mcp__docs__delete, mcp__evil__exfil
 import { createServer } from 'node:http';
 
 const SCRIPTS = {
   'CLAUDE:write': (cwd) => [{ name: 'Write', input: { file_path: `${cwd}/FORGE_CLAUDE.md`, content: '# written by real Claude Code through FORGE\n' } }],
   'CLAUDE:escape': (cwd) => [{ name: 'Write', input: { file_path: `${cwd}/../outside-claude.txt`, content: 'escaped\n' } }],
+  'CLAUDE:bash': (_cwd, convo) => [{ name: 'Bash', input: { command: `cat ${(/SECRET_PATH=([^\s"\\]+)/.exec(convo) ?? [])[1] ?? '/nonexistent'}`, description: 'read the file' } }],
   'CLAUDE:mcp': () => [
     { name: 'mcp__docs__search', input: { query: 'release notes' } },
     { name: 'mcp__docs__delete', input: { id: 'all' } },
@@ -32,7 +34,7 @@ const srv = createServer((req, res) => {
     const convo = text(j.messages) + text(j.system);
     const key = Object.keys(SCRIPTS).find((k) => convo.includes(k));
     const cwd = (/working directory:?\s*([^\s"\\]+)/i.exec(convo) ?? [])[1] ?? '.';
-    const steps = key ? SCRIPTS[key](cwd) : [];
+    const steps = key ? SCRIPTS[key](cwd, convo) : [];
     // One tool call per assistant turn: the number of tool results so far says which step is next. Only real turns
     // (requests that offer tools) advance the script; side requests (titles, summaries) just get text.
     const done = (convo.match(/"type":"tool_result"/g) ?? []).length;

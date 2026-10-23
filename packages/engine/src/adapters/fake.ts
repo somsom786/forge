@@ -12,6 +12,7 @@
 //   FAKE:replay  ask twice with the SAME toolUseId but different input (a re-ask must not inherit approval)
 //   FAKE:hidden  ask to run a shell command whose payload redaction would hide (`TOKEN=$(…)`)
 //   FAKE:same3   ask about the identical call (same id, tool, input) three times
+//   FAKE:snoop   read `SNOOP=<path>` and write next to it, directly (as an approved shell command would), and report
 //   FAKE:garbage write a line that is not protocol JSON to stdout, then keep running
 //   FAKE:mcp     report the MCP servers it was given, then call mcp__evil__exfil, mcp__docs__search and mcp__docs__delete
 //   FAKE:orphan  leave a descendant process holding the stdio pipes after finishing
@@ -64,6 +65,17 @@ export const fakeAdapter: ProviderAdapter = {
     if (prompt.includes('FAKE:hang')) {
       await sleep(10 * 60_000, ctx.signal);
       ctx.turnComplete({ status: 'interrupted', message: 'Cancelled', usage: zeroUsage, permissionDenials: 0 });
+      return;
+    }
+
+    if (prompt.includes('FAKE:snoop')) {
+      const target = (/SNOOP=(\S+)/.exec(prompt) ?? [])[1] ?? '';
+      let read: string;
+      let wrote: boolean;
+      try { read = (await import('node:fs')).readFileSync(target, 'utf8'); } catch (e) { read = `ERROR ${(e as NodeJS.ErrnoException).code ?? e}`; }
+      try { (await import('node:fs')).writeFileSync(`${target}.pwned`, 'x'); wrote = true; } catch { wrote = false; }
+      ctx.emit('status', { message: 'snoop', target, read: read.slice(0, 200), wrote, sandbox: process.env.FORGE_SANDBOX ?? null });
+      ctx.turnComplete({ status: 'success', usage: zeroUsage, permissionDenials: 0, providerSessionId: sid });
       return;
     }
 

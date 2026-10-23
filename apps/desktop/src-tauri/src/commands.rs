@@ -680,6 +680,11 @@ pub async fn project_set_execution_backend(core: CoreState<'_>, project_id: Stri
     blocking(&core, move |c| c.project_set_execution_backend(&project_id, &backend)).await
 }
 
+#[tauri::command]
+pub async fn project_set_agent_backend(core: CoreState<'_>, project_id: String, backend: String) -> Result<Project> {
+    blocking(&core, move |c| c.project_set_agent_backend(&project_id, &backend)).await
+}
+
 // ---- Agents overview -------------------------------------------------------------------------------------------------
 
 use crate::supervisor::AgentsOverview;

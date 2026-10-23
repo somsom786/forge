@@ -23,4 +23,16 @@ impl Core {
         self.store.audit("user", "project.execution_backend", Some(project_id), &json!({"from": before, "to": b.as_str()}));
         self.store.get_project(project_id)
     }
+
+    /// Select where a project's *agents* run. Same rule: only a backend that can run here; never a silent fallback later.
+    pub fn project_set_agent_backend(&self, project_id: &str, backend: &str) -> Result<Project> {
+        let b = Backend::parse(backend)?;
+        if let Err(why) = execution::availability(b) {
+            return Err(ForgeError::InvalidState(format!("\"{}\" cannot be used for agents on this machine: {why}", b.label())));
+        }
+        let before = self.store.get_project(project_id)?.agent_backend;
+        self.store.set_project_agent_backend(project_id, b.as_str())?;
+        self.store.audit("user", "project.agent_backend", Some(project_id), &json!({"from": before, "to": b.as_str()}));
+        self.store.get_project(project_id)
+    }
 }

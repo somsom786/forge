@@ -330,6 +330,67 @@ pub fn command(b: Backend, spec: &RunSpec) -> Result<Command> {
     }
 }
 
+/// An agent session (the engine and the provider process it starts) to run inside a backend.
+pub struct AgentSpec<'a> {
+    pub program: &'a Path,
+    pub args: &'a [std::ffi::OsString],
+    /// The mission worktree: the only directory the agent may write besides `read_write`.
+    pub workspace: &'a Path,
+    /// Directories the agent needs to read (the engine and its modules, the provider binary).
+    pub read_only: Vec<PathBuf>,
+    /// The provider's own state (its login and session transcripts), writable because the provider updates it.
+    pub read_write: Vec<PathBuf>,
+}
+
+/// The process to spawn for an agent session on backend `b`. `trusted_local` is the plain process (today's behaviour).
+///
+/// `linux_namespaces` for agents differs from checks in two deliberate ways: the network is shared (the agent must reach its
+/// model), and the environment is inherited (the engine already removed billing credentials). Everything else is the same
+/// empty root: no home directory except the provider's own state, no other repositories, read-only system and toolchains,
+/// the git directory read-only, a private /tmp, no new privileges, and the whole tree dies with FORGE.
+pub fn agent_command(b: Backend, spec: &AgentSpec) -> Result<Command> {
+    require(b)?;
+    match b {
+        Backend::TrustedLocal => {
+            let mut c = Command::new(spec.program);
+            c.args(spec.args).current_dir(spec.workspace);
+            Ok(c)
+        }
+        Backend::LinuxNamespaces => {
+            let bwrap = bwrap_path().ok_or_else(|| ForgeError::Other("bwrap disappeared".into()))?;
+            let ws = dunce::canonicalize(spec.workspace).map_err(|e| ForgeError::PathRejected(format!("workspace not accessible: {e}")))?;
+            let path_var = std::env::var("PATH").unwrap_or_default();
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let roots = toolchain_roots(&path_var, home.as_deref());
+            let mut c = Command::new(bwrap);
+            c.args(["--unshare-all", "--share-net", "--die-with-parent", "--new-session", "--cap-drop", "ALL"]);
+            c.args(["--ro-bind", "/usr", "/usr"]).args(symlink_or_bind_args());
+            for f in ETC_FILES {
+                c.args(["--ro-bind-try", f, f]);
+            }
+            // Empty, private versions of the places users keep things; what the agent needs is bound on top, below.
+            c.args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/home", "--tmpfs", "/root", "--tmpfs", "/run"]);
+            // The home directory exists (programs expect it) but is empty, except for the provider's own state below.
+            if let Some(h) = &home {
+                c.arg("--dir").arg(h);
+            }
+            for r in roots.iter().chain(spec.read_only.iter()) {
+                c.arg("--ro-bind-try").arg(r).arg(r);
+            }
+            for rw in &spec.read_write {
+                c.arg("--bind-try").arg(rw).arg(rw);
+            }
+            if let Some(common) = git_common_dir(&ws) {
+                c.arg("--ro-bind").arg(&common).arg(&common);
+            }
+            c.arg("--bind").arg(&ws).arg(&ws).arg("--chdir").arg(&ws);
+            c.args(["--setenv", "FORGE_SANDBOX", "linux_namespaces", "--"]).arg(spec.program).args(spec.args);
+            Ok(c)
+        }
+        Backend::WindowsSandbox | Backend::IsolatedWsl => Err(ForgeError::Other("not implemented".into())),
+    }
+}
+
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }

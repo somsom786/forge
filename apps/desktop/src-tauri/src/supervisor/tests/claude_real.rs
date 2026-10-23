@@ -202,3 +202,38 @@ fn a_hostile_repository_configuration_runs_nothing_and_widens_nothing_in_real_cl
     let ran: Vec<_> = std::fs::read_dir(markers.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert!(ran.is_empty(), "repository-defined hooks or MCP servers executed: {ran:?}");
 }
+
+/// Real Claude Code in the Linux agent sandbox: a shell command the human *approves* still cannot read a file outside the
+/// worktree. Control: the same approved command on the host prints the secret.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_approved_command_from_real_claude_code_cannot_read_outside_the_worktree_when_contained() {
+    let Some(claude) = claude_binary() else { return };
+    if crate::execution::availability(crate::execution::Backend::LinuxNamespaces).is_err() {
+        assert!(std::env::var("FORGE_REQUIRE_SANDBOX_TESTS").as_deref() != Ok("1"), "sandbox required");
+        return;
+    }
+    let model = fake_model();
+    let outside = tempfile::tempdir().unwrap();
+    let secret = outside.path().join("secret.txt");
+    std::fs::write(&secret, "TOP-SECRET-7731").unwrap();
+    let run = |contained: bool| {
+        let f = claude_fixture(claude.clone(), &model);
+        if contained {
+            f.core.project_set_agent_backend(&f.project.id, "linux_namespaces").unwrap();
+        }
+        let m = claude_mission(&f, &format!("Read it. CLAUDE:bash SECRET_PATH={}", secret.display()), PermissionProfile::Default);
+        f.core.start_mission(&m.id, None).unwrap();
+        wait_long("approval", || !pending(&f, &m.id).is_empty());
+        let a = pending(&f, &m.id).remove(0);
+        assert_eq!(a.tool, "Bash");
+        f.core.decide_approval_checked(&a.id, true, None, a.binding_sha256.as_deref()).unwrap();
+        wait_long("turn ended", || f.core.live_session_count() == 0 && !tool_results(&f, &m).is_empty());
+        tool_results(&f, &m).into_iter().find(|(n, _, _)| n == "Bash").map(|(_, _, out)| out).unwrap_or_default()
+    };
+    let host = run(false);
+    assert!(host.contains("TOP-SECRET-7731"), "control: on the host the approved command reads the file: {host}");
+    let boxed = run(true);
+    assert!(!boxed.contains("TOP-SECRET-7731"), "a contained, approved command read a file outside the worktree: {boxed}");
+    assert!(boxed.contains("No such file"), "{boxed}");
+}

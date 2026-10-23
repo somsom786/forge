@@ -1,17 +1,42 @@
 # Execution backends
 
 Where FORGE runs commands it was asked to run. Implemented in `apps/desktop/src-tauri/src/execution.rs`; chosen per project
-(**Projects → project → "Checks run: …"**); recorded on every verification run, experiment run and Proof Pack.
+(**Projects → project → "Checks run: …"** and **"Agents run: …"**); recorded on every verification run, experiment run,
+Proof Pack, approval and agent session.
 
 ## What is covered today
 
 | Runs through a backend | Not yet |
 |---|---|
-| Verification checks (`start_check`), experiment runs (correctness, warm-up, measured) | The coding agents themselves (Claude Code, Codex) and the shell commands they run after approval; hook dry-runs (Harness Studio) |
+| Verification checks (`start_check`), experiment runs (correctness, warm-up, measured) | Hook dry-runs (Harness Studio) |
+| The agent process (engine + Claude Code / Codex / ACP agent / authorized MCP servers) and every command it runs, approved or not, when the project's **agent backend** is `linux_namespaces` | Agents on Windows (no Windows backend yet: they run on the host, labelled so) |
 
-The agents still run on the host: their tool calls are gated by FORGE policy and human approval, but an *approved* command runs
-with the user's privileges (SECURITY.md limit 1). Moving the agent into a backend needs provider credentials inside the sandbox,
-which conflicts with "never copy provider tokens"; it needs a design decision (see "Open questions").
+### Agents in `linux_namespaces` (`execution::agent_command`)
+
+The project's agent backend (migration 14, default `trusted_local`) decides where the engine starts; everything the agent runs is
+its descendant and inherits the sandbox. What the agent sees:
+
+| | Contained agent | Checks in the same backend |
+|---|---|---|
+| Worktree | read-write | read-write |
+| Git common dir | read-only | read-only |
+| Other host files | **none**: `/home`, `/root`, `/tmp`, `/run` are empty tmpfs; `/usr` and `/etc` basics read-only | same |
+| Toolchain / runtime | node, the engine package and every `node_modules` it resolves from, the provider binaries, absolute paths named by the ACP agent or authorized MCP servers — read-only | toolchain only |
+| Provider state | Claude Code's config dir (`CLAUDE_CONFIG_DIR`, else `~/.claude` + `~/.claude.json`) or `CODEX_HOME` (else `~/.codex`) bound **read-write in place**: the agent must use its own login. Nothing is copied | none |
+| Network | **shared** (the agent must reach its provider) | none |
+| Environment | inherited from FORGE (provider configuration), plus `FORGE_SANDBOX=linux_namespaces` | cleared |
+| FORGE's database, other worktrees, `~/.ssh`, cloud credentials | not visible (unless FORGE's home was configured under a bound path) | not visible |
+
+So an approved `cat ~/.ssh/id_rsa`, `rm -rf ~`, or a write to another project fails inside the sandbox, while the agent still
+works in its worktree. It does **not** stop exfiltration over the network of what the agent can see (the worktree, its own
+provider login), and the agent can still `git push` only if push credentials are reachable — they are not, unless they live in
+the environment. Tests (Linux, required in CI): `agent_sandbox::a_contained_agent_cannot_read_or_write_outside_its_worktree`
+(scripted agent, with a host control), `…still_works_in_its_worktree…`, `an_unavailable_agent_backend…never_falls_back`, and
+`claude_real::an_approved_command_from_real_claude_code_cannot_read_outside_the_worktree_when_contained` (the real Claude Code
+binary, an approved `Bash cat` of a host file; host control prints it). Mutation-checked: building the agent command with
+`trusted_local` regardless of the setting fails all three containment tests.
+
+ACP agents that keep their login somewhere other than the paths above will not find it when contained; they fail visibly.
 
 ## Backends
 

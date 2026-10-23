@@ -221,7 +221,7 @@ function ProjectView({ project }: { project: Project }) {
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-line px-5 py-2">
         <span className="text-muted">Default branch <span className="mono text-fg">{project.defaultBranch}</span></span>
         <StatusCells s={map[project.id]} />
-        <span className="ml-auto"><ExecutionBackendPanel project={project} /></span>
+        <span className="ml-auto flex gap-2"><ExecutionBackendPanel project={project} scope="agents" /><ExecutionBackendPanel project={project} /></span>
       </div>
       <div role="tablist" aria-label="Project views" className="flex gap-1 border-b border-line px-5">
         {([['missions', 'Missions'], ['code', 'Code map']] as const).map(([v, label]) => (

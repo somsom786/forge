@@ -352,6 +352,7 @@ mod evidence;
 mod scanners;
 mod integrity;
 mod claude_real;
+mod agent_sandbox;
 
 #[test]
 fn the_agents_overview_lists_running_and_recent_sessions_with_their_missions() {

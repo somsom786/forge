@@ -26,8 +26,8 @@ document.documentElement.style.setProperty('--banner-h', '24px');
 
 // ---- dataset --------------------------------------------------------------------------------------
 const projects: Project[] = [
-  { id: 'p1', name: 'atlas-api', rootPath: 'C:\\dev\\atlas-api', defaultBranch: 'main', createdAt: iso(60 * 24 * 12) , executionBackend: 'trusted_local' },
-  { id: 'p2', name: 'docs-site', rootPath: 'C:\\dev\\docs-site', defaultBranch: 'master', createdAt: iso(60 * 24 * 5) , executionBackend: 'trusted_local' },
+  { id: 'p1', name: 'atlas-api', rootPath: 'C:\\dev\\atlas-api', defaultBranch: 'main', createdAt: iso(60 * 24 * 12) , executionBackend: 'trusted_local', agentBackend: 'trusted_local' },
+  { id: 'p2', name: 'docs-site', rootPath: 'C:\\dev\\docs-site', defaultBranch: 'master', createdAt: iso(60 * 24 * 5) , executionBackend: 'trusted_local', agentBackend: 'trusted_local' },
 ];
 
 const mk = (o: Partial<Mission> & Pick<Mission, 'id' | 'projectId' | 'title' | 'state'>): Mission => ({
@@ -303,7 +303,7 @@ async function invoke(cmd: string, args: any = {}): Promise<any> {
       return projects;
     case 'project_add': {
       const name = String(args.path).split(/[\\/]/).pop() ?? 'repo';
-      const p: Project = { id: `p${projects.length + 1}`, name, rootPath: args.path, defaultBranch: 'main', createdAt: new Date().toISOString(), executionBackend: 'trusted_local' };
+      const p: Project = { id: `p${projects.length + 1}`, name, rootPath: args.path, defaultBranch: 'main', createdAt: new Date().toISOString(), executionBackend: 'trusted_local', agentBackend: 'trusted_local' };
       projects.push(p);
       return p;
     }

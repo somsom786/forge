@@ -418,6 +418,10 @@ const MIGRATIONS: &[&str] = &[
         finished_at TEXT
     );
     "#,
+    // v14 - where a project's agent sessions run (trusted_local = on the host, as before).
+    r#"
+    ALTER TABLE project ADD COLUMN agent_backend TEXT NOT NULL DEFAULT 'trusted_local';
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {
