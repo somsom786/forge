@@ -3,6 +3,7 @@
 
 import { createInterface } from 'node:readline';
 import { claudeAdapter } from './adapters/claude.js';
+import { codexAdapter } from './adapters/codex.js';
 import { fakeAdapter } from './adapters/fake.js';
 import type { TurnResult } from './adapters/claudeNormalize.js';
 import type { PermissionDecision, PermissionRequest, ProviderAdapter, RunContext } from './adapters/types.js';
@@ -21,6 +22,7 @@ function send(ev: EngineEvent): void {
 
 function adapterFor(start: StartCommand): ProviderAdapter {
   if (start.provider === 'claude' || start.provider === 'claude-local') return claudeAdapter;
+  if (start.provider === 'codex') return codexAdapter;
   if (start.provider === 'fake') {
     if (process.env.FORGE_ALLOW_FAKE_PROVIDER !== '1') throw new Error('the scripted test agent is disabled');
     return fakeAdapter;

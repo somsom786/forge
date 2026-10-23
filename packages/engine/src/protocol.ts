@@ -37,6 +37,8 @@ export interface StartCommand {
   resume?: string;
   /** Absolute path to the user's installed Claude Code executable. */
   claudePath?: string;
+  /** Absolute path to the user's installed Codex executable (a real binary, not an npm shim). */
+  codexPath?: string;
   /** Extra guidance appended to the provider's system prompt (mission contract, memory). */
   appendSystemPrompt?: string;
   maxTurns?: number;
