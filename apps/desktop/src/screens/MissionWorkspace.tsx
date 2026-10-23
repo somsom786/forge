@@ -180,7 +180,7 @@ export function MissionWorkspace({ id }: { id: string }) {
             {canFollowUp && <FollowUp missionId={id} />}
           </div>
           <Tabs.Root value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col bg-panel">
-            <Tabs.List className="flex shrink-0 overflow-x-auto border-b border-line" aria-label="Mission panels">
+            <Tabs.List className="flex shrink-0 overflow-x-auto border-b border-line [scrollbar-width:thin]" aria-label="Mission panels" onWheel={(e) => { if (e.deltaY !== 0) e.currentTarget.scrollLeft += e.deltaY; }}>
               {[
                 { v: 'approvals', label: 'Approvals', count: pendingCount },
                 { v: 'changes', label: 'Changes', count: 0 },
@@ -193,7 +193,7 @@ export function MissionWorkspace({ id }: { id: string }) {
                 <Tabs.Trigger
                   key={t.v}
                   value={t.v}
-                  className="relative flex h-9 shrink-0 items-center gap-1.5 px-3 text-muted transition-colors hover:text-fg data-[state=active]:text-fg data-[state=active]:after:absolute data-[state=active]:after:inset-x-2 data-[state=active]:after:bottom-0 data-[state=active]:after:h-0.5 data-[state=active]:after:bg-accent"
+                  className="relative flex h-9 shrink-0 items-center gap-1 px-2 text-[12px] text-muted transition-colors hover:text-fg data-[state=active]:text-fg data-[state=active]:after:absolute data-[state=active]:after:inset-x-2 data-[state=active]:after:bottom-0 data-[state=active]:after:h-0.5 data-[state=active]:after:bg-accent"
                 >
                   {t.label}
                   {t.count > 0 && <span className="rounded-full bg-warn px-1.5 text-[11px] font-semibold text-black">{t.count}</span>}

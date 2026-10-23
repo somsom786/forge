@@ -175,7 +175,8 @@ pub fn run(inv: &Inventory, root: &Path) -> Vec<Finding> {
     let mut seen_dir: HashMap<String, bool> = HashMap::new();
     let mut dirs_by_item: Vec<(&HarnessItem, Vec<(bool, String, String)>)> = vec![];
     for i in inv.items.iter().filter(|i| matches!(i.kind.as_str(), "instructions" | "rule") && i.scope != "user") {
-        let Ok(text) = std::fs::read_to_string(&i.path) else { continue };
+        let Ok(Some(bytes)) = super::edit::read_bytes(std::path::Path::new(&i.path)) else { continue };
+        let text = String::from_utf8_lossy(&bytes).into_owned();
         let mut missing = 0;
         for p in backticked_paths(&text).into_iter().take(60) {
             let exists = *seen_dir.entry(p.clone()).or_insert_with(|| root.join(p.trim_end_matches('/')).exists());
@@ -186,12 +187,39 @@ pub fn run(inv: &Inventory, root: &Path) -> Vec<Finding> {
         }
         dirs_by_item.push((i, directives(&text)));
     }
-    for a in 0..dirs_by_item.len() {
-        for b in (a + 1)..dirs_by_item.len() {
-            for (pa, oa, la) in &dirs_by_item[a].1 {
-                for (pb, ob, lb) in &dirs_by_item[b].1 {
-                    if oa == ob && pa != pb {
-                        out.push(f("warning", "possible_contradiction", Some(&dirs_by_item[a].0.id), format!("{} says \"{la}\" but {} says \"{lb}\"", dirs_by_item[a].0.name, dirs_by_item[b].0.name), Some("Decide which is right and remove the other. (Heuristic: it only pairs always/never statements about the same word.)")));
+    // Index each file's directives by subject and polarity (first line wins), so the work is linear in distinct subjects no
+    // matter how many times a file repeats itself, and report each contradicting subject once per pair of files.
+    type Index = HashMap<String, (Option<String>, Option<String>)>;
+    let indexed: Vec<(&HarnessItem, Index)> = dirs_by_item
+        .iter()
+        .map(|(item, ds)| {
+            let mut ix: Index = HashMap::new();
+            for (positive, subject, line) in ds {
+                let slot = ix.entry(subject.clone()).or_default();
+                let cell = if *positive { &mut slot.0 } else { &mut slot.1 };
+                if cell.is_none() {
+                    *cell = Some(line.clone());
+                }
+            }
+            (*item, ix)
+        })
+        .collect();
+    'pairs: for a in 0..indexed.len() {
+        for b in (a + 1)..indexed.len() {
+            let mut subjects: Vec<&String> = indexed[a].1.keys().filter(|k| indexed[b].1.contains_key(*k)).collect();
+            subjects.sort();
+            for subject in subjects {
+                let (pa, na) = &indexed[a].1[subject];
+                let (pb, nb) = &indexed[b].1[subject];
+                let pair = match (pa, nb, na, pb) {
+                    (Some(la), Some(lb), _, _) => Some((la, lb)),
+                    (_, _, Some(la), Some(lb)) => Some((la, lb)),
+                    _ => None,
+                };
+                if let Some((la, lb)) = pair {
+                    out.push(f("warning", "possible_contradiction", Some(&indexed[a].0.id), format!("{} says \"{la}\" but {} says \"{lb}\"", indexed[a].0.name, indexed[b].0.name), Some("Decide which is right and remove the other. (Heuristic: it only pairs always/never statements about the same word.)")));
+                    if out.iter().filter(|x| x.kind == "possible_contradiction").count() >= PER_KIND_CAP {
+                        break 'pairs;
                     }
                 }
             }
@@ -209,6 +237,30 @@ pub fn run(inv: &Inventory, root: &Path) -> Vec<Finding> {
         "warning" => 1,
         _ => 2,
     });
+    cap_per_kind(out)
+}
+
+/// No single kind of finding may flood the screen (or memory): keep the first `PER_KIND_CAP` and say how many were left out.
+const PER_KIND_CAP: usize = 50;
+
+fn cap_per_kind(findings: Vec<Finding>) -> Vec<Finding> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut dropped: HashMap<String, usize> = HashMap::new();
+    let mut out = Vec::with_capacity(findings.len().min(PER_KIND_CAP * 8));
+    for x in findings {
+        let n = seen.entry(x.kind.clone()).or_default();
+        *n += 1;
+        if *n <= PER_KIND_CAP {
+            out.push(x);
+        } else {
+            *dropped.entry(x.kind.clone()).or_default() += 1;
+        }
+    }
+    let mut kinds: Vec<_> = dropped.into_iter().collect();
+    kinds.sort();
+    for (kind, n) in kinds {
+        out.push(f("info", "findings_truncated", None, format!("{n} more \"{kind}\" finding(s) are not shown (showing the first {PER_KIND_CAP})."), None));
+    }
     out
 }
 
@@ -288,5 +340,31 @@ mod tests {
     fn a_clean_project_produces_no_findings() {
         let d = project(&[("CLAUDE.md", "# Rules\nKeep it small.\n"), (".claude/settings.json", r#"{"permissions":{"allow":["Bash(npm test)"]}}"#)]);
         assert!(run(&scan(d.path(), None), d.path()).is_empty());
+    }
+
+    #[test]
+    fn a_repetitive_hostile_pair_of_files_cannot_flood_or_stall_the_doctor() {
+        let always = "Always use npm\n".repeat(10_000);
+        let never = "Never use npm\n".repeat(10_000);
+        let d = project(&[("CLAUDE.md", &always), (".claude/rules/x.md", &never)]);
+        let t = std::time::Instant::now();
+        let fs = run(&scan(d.path(), None), d.path());
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "took {:?}", t.elapsed());
+        let n = fs.iter().filter(|x| x.kind == "possible_contradiction").count();
+        assert_eq!(n, 1, "one finding per contradicting subject, however often it is repeated");
+        assert!(fs.len() < 50, "{}", fs.len());
+    }
+
+    #[test]
+    fn no_kind_of_finding_can_exceed_the_cap() {
+        let mut many = vec![];
+        for n in 0..500 {
+            many.push((format!(".claude/skills/s{n}/SKILL.md"), format!("---\nname: dup\ndescription: d\nallowed-tools: Bash(*)\n---\nx{n}")));
+        }
+        let files: Vec<(&str, &str)> = many.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let d = project(&files);
+        let fs = run(&scan(d.path(), None), d.path());
+        assert!(fs.iter().filter(|x| x.kind == "skill_broad_tools").count() <= PER_KIND_CAP);
+        assert!(fs.iter().any(|x| x.kind == "findings_truncated"), "{:?}", kinds(&fs));
     }
 }

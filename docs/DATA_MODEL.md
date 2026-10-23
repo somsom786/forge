@@ -58,11 +58,19 @@ Authority for *trust* lives in SQLite; the page files hold *content*.
 | `context_package` | The exact bytes injected into a mission's first prompt, with items, reasons, sources, omitted-with-reasons and budget — history, not a rebuildable index. |
 | `knowledge_fts` (FTS5, `unicode61`) | Derived search index (title, body + identifier word-parts, files, tags); rebuildable from the page rows. |
 
+## Implemented (migrations 4–5 — evidence revisions, Harness Studio)
+
+| Change | Notes |
+|---|---|
+| Migration 4: `verification_run.spec_rev`, `manual_verdict.criterion_rev` | Evidence is bound to the *definition* it was gathered for (check command/timeout/kind revision; criterion text revision). Editing a check or criterion makes earlier evidence stale instead of silently reusing it. |
+| `harness_change` (migration 5) | Journal of every edit FORGE made to an agent configuration file: `kind` (edit/create/rollback), `before_sha256` / `after_sha256` (NULL = file absent), `backup_path` (relative to the FORGE home; content *before* the change), `rolls_back_id`, `state` (started → applied/failed). A row is written `started` before the file is touched, so a crash is resolved by comparing the file on disk to `after_sha256`. |
+| `harness_review` (migration 5) | The content hash of each configuration file the user last reviewed (set by saving through FORGE or by "Mark reviewed"). Doctor reports files that differ from it ("changed outside FORGE since you last reviewed it"). |
+| Files outside SQLite | `<home>/harness-backups/<project>/<change>.bak` (exact previous bytes, hash-verified before any restore) and `<home>/harness-locks/<project>/.forge-lock` (OS file lock serialising writers across FORGE processes). Backups are kept indefinitely (each is at most 256 KiB); there is no retention policy yet. |
+
 ## Designed, not yet implemented
 
 | Entity | Purpose | Phase |
 |---|---|---|
-| `harness_configuration`, `hook_definition` | detected CLAUDE.md/skills/hooks, versioned backups | 4 |
 | `experiment`, `experiment_result` | baseline, command, env, repetitions, outcome | 6 |
 | `organization`, `workspace`, `user`, `role`, `policy` | multi-tenant extension; every row gains `workspace_id` | 7 |
 

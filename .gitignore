@@ -6,3 +6,5 @@ target/
 .env.*
 research/schema-codex/
 .forge-tmp/
+apps/desktop/src-tauri/resources-staged/
+packages/engine/bundle/

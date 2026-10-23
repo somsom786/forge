@@ -2,13 +2,19 @@
   "name": "forge",
   "private": true,
   "version": "0.1.0",
-  "description": "FORGE — agentic engineering operating system",
-  "workspaces": ["apps/*", "packages/*"],
+  "description": "FORGE \u00e2\u20ac\u201d agentic engineering operating system",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "npm run build -w @forge/engine && npm run tauri -w forge-desktop -- dev",
     "build:engine": "npm run build -w @forge/engine",
     "test": "npm run test -w @forge/engine && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
-    "typecheck": "npm run typecheck -w @forge/engine && npm run typecheck -w forge-desktop"
+    "typecheck": "npm run typecheck -w @forge/engine && npm run typecheck -w forge-desktop",
+    "package": "npm run tauri -w forge-desktop -- build --config src-tauri/tauri.bundle.conf.json"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  }
 }

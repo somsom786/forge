@@ -86,6 +86,23 @@ from what was approved.
 * `knowledge/retrieve.rs` ranking (BM25 + file overlap + recency − staleness), one page per topic, budget, injection text.
 * `knowledge/lint.rs` advisory quality checks. `supervisor/memory.rs` ties it to missions; failures never block a mission.
 
+## Harness Studio (Phase 4)
+
+Modules (`src-tauri/src/harness/`): `inventory` (what configures an agent in this project: instruction files, settings, rules, skills,
+subagents, commands, MCP; each item says whether a FORGE mission loads it), `doctor` (findings: stale paths, contradictions, context bloat,
+risky or broken hooks, broad permissions), `hooks` (command/settings validation, add/remove, templates, event interpretation),
+`edit` (allowlist, link-free path resolution, diff preview, line-ending preservation), `dryrun` (run one hook against a synthetic event),
+`store` (journal). `supervisor/harness.rs` composes them under a per-project OS file lock.
+
+Write path: `harness_preview` (never writes) → `harness_apply(expectedSha256, expectedAfterSha256, acknowledgeRisks)` → under the lock:
+re-read, compare hash, re-validate the exact bytes, back up the previous content (verified), journal `started`, atomic write, read back
+and verify, journal `applied`, record the new content as reviewed, audit, push `harness` event. `harness_rollback` restores the backup only
+if the file still has the hash the edit produced; otherwise it refuses and explains. Startup recovery resolves any `started` row from the
+file on disk.
+
+What this does *not* do: FORGE missions still never run project hooks or `.mcp.json` (see SECURITY.md). Hooks edited here take effect in the
+user's own Claude Code sessions.
+
 ## Planned domains (not yet built)
 
 Harness configuration service (Phase 4), experiment runner (Phase 6), second provider adapter — Codex (Phase 5): each a

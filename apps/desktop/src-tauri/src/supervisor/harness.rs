@@ -43,7 +43,7 @@ impl Core {
         Ok(PathBuf::from(self.store.get_project(project_id)?.root_path))
     }
 
-    fn harness_lock(&self, project_id: &str) -> Result<vault::WriterLock> {
+    pub(super) fn harness_lock(&self, project_id: &str) -> Result<vault::WriterLock> {
         vault::writer_lock(&self.cfg.home.join("harness-locks").join(project_id))
     }
 
@@ -147,7 +147,7 @@ impl Core {
             }
             None => None,
         };
-        let change = self.store.h_change_begin(NewChange {
+        let change = match self.store.h_change_begin(NewChange {
             project_id,
             rel,
             kind,
@@ -156,21 +156,27 @@ impl Core {
             backup: backup_rel.as_deref(),
             rolls_back,
             note,
-        })?;
+        }) {
+            Ok(c) => c,
+            Err(e) => {
+                // Nothing was journaled and nothing was written: do not leave an unreachable backup behind.
+                if let Some(b) = &backup_rel {
+                    let _ = std::fs::remove_file(self.cfg.home.join(b));
+                }
+                return Err(e);
+            }
+        };
+        let root = self.harness_root(project_id)?;
         let result = (|| -> Result<()> {
             match after {
                 Some(text) => {
-                    page::atomic_write(path, text.as_bytes())?;
+                    edit::write_checked(&root, rel, path, text.as_bytes(), before_sha.as_deref())?;
                     let back = std::fs::read(path)?;
                     if Some(edit::sha256_hex(&back)) != after_sha {
                         return Err(ForgeError::Other("the file on disk does not match what was written".into()));
                     }
                 }
-                None => match std::fs::remove_file(path) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
-                },
+                None => edit::remove_checked(&root, rel, path, before_sha.as_deref())?,
             }
             Ok(())
         })();
@@ -201,11 +207,7 @@ impl Core {
         let _lock = self.harness_lock(project_id)?;
         let path = edit::target(&root, &rel)?;
         // Re-read and re-preview under the lock: validation applies to the bytes that will actually be written.
-        let cur_bytes = match std::fs::read(&path) {
-            Ok(b) => Some(b),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(e.into()),
-        };
+        let cur_bytes = edit::read_bytes(&path)?;
         let cur_sha = cur_bytes.as_deref().map(edit::sha256_hex);
         if cur_sha.as_deref() != expected_sha256 {
             return Err(ForgeError::InvalidState(format!("{rel} changed on disk after you opened it. Reload it and redo the edit so nothing is overwritten.")));
@@ -259,11 +261,7 @@ impl Core {
         }
         let root = self.harness_root(&c.project_id)?;
         let path = edit::target(&root, &c.rel)?;
-        let cur = match std::fs::read(&path) {
-            Ok(b) => Some(b),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(e.into()),
-        };
+        let cur = edit::read_bytes(&path)?;
         let cur_sha = cur.as_deref().map(edit::sha256_hex);
         let conflict = (cur_sha != c.after_sha256).then(|| {
             "The file has changed since this edit (by you, a merge or another tool). Restoring the backup would discard those later changes, so FORGE will not do it automatically. Open the file and edit it by hand, or use the diff to see what differs.".to_string()
@@ -291,8 +289,11 @@ impl Core {
     }
 
     pub fn harness_rollback(&self, change_id: &str) -> Result<HarnessChange> {
+        let first = self.store.h_change_get(change_id)?;
+        let _lock = self.harness_lock(&first.project_id)?;
+        // Everything below is decided from state read *under the lock*: an earlier read can be stale (another rollback, or an
+        // edit that restored the same bytes, may have run in between).
         let c = self.store.h_change_get(change_id)?;
-        let _lock = self.harness_lock(&c.project_id)?;
         let (path, cur, restore, conflict) = self.rollback_plan(&c)?;
         if let Some(msg) = conflict {
             return Err(ForgeError::InvalidState(msg));
@@ -319,15 +320,25 @@ impl Core {
     pub(super) fn recover_harness(&self) {
         let Ok(open) = self.store.h_changes_unfinished() else { return };
         for c in open {
-            let finished = (|| -> Result<bool> {
+            // Resolve only what can be inspected while holding the project's lock. If the lock is busy (another FORGE process
+            // may be mid-write) or the file cannot be read, leave the row `started`: guessing would mislabel a live write.
+            let resolved = (|| -> Result<bool> {
                 let root = self.harness_root(&c.project_id)?;
                 let _lock = self.harness_lock(&c.project_id)?;
-                let cur = edit::read(&root, &c.rel).ok().and_then(|f| f.sha256);
-                Ok(cur == c.after_sha256)
-            })()
-            .unwrap_or(false);
-            let _ = self.store.h_change_finish(&c.id, finished);
-            self.store.audit("system", "harness.recovery", Some(&c.project_id), &json!({"rel": c.rel, "change": c.id, "completed": finished}));
+                let still_open = self.store.h_change_get(&c.id)?;
+                if still_open.state != "started" {
+                    return Ok(false);
+                }
+                let path = edit::target(&root, &c.rel)?;
+                let cur = edit::read_bytes(&path)?.map(|b| edit::sha256_hex(&b));
+                let finished = cur == c.after_sha256;
+                self.store.h_change_finish(&c.id, finished)?;
+                self.store.audit("system", "harness.recovery", Some(&c.project_id), &json!({"rel": c.rel, "change": c.id, "completed": finished}));
+                Ok(true)
+            })();
+            if let Err(e) = resolved {
+                eprintln!("[forge] harness change {} left unresolved: {e}", c.id);
+            }
         }
     }
 
@@ -383,7 +394,9 @@ impl Core {
     pub fn harness_hook_dry_run(&self, project_id: &str, event: &str, command: &str) -> Result<hooks::DryRun> {
         let root = self.harness_root(project_id)?;
         let r = dryrun::run(&root, event, command, Duration::from_secs(20))?;
-        self.store.audit("user", "harness.hook_dry_run", Some(project_id), &json!({"event": event, "command": hooks::display_command(command), "exit": r.exit_code, "timedOut": r.timed_out}));
+        // The command text can contain a token; the audit log keeps it redacted plus a hash for exact identity.
+        let shown = crate::redact::redact_str(&hooks::display_command(command));
+        self.store.audit("user", "harness.hook_dry_run", Some(project_id), &json!({"event": event, "command": shown, "commandSha256": edit::sha256_hex(command.as_bytes()), "exit": r.exit_code, "timedOut": r.timed_out}));
         Ok(r)
     }
 }

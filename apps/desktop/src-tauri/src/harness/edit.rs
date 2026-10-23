@@ -63,7 +63,7 @@ pub fn target(root: &Path, rel: &str) -> Result<PathBuf> {
     Ok(real)
 }
 
-fn no_links(root: &Path, path: &Path) -> Result<()> {
+pub(crate) fn no_links(root: &Path, path: &Path) -> Result<()> {
     let comps = paths::relative_components(root, path).ok_or_else(|| ForgeError::PathRejected(format!("{} is outside the project", path.display())))?;
     let mut cur = root.to_path_buf();
     for c in &comps {
@@ -90,19 +90,69 @@ pub struct FileRead {
     pub editable: bool,
 }
 
+/// Read a file FORGE may edit, never more than `MAX_BYTES + 1` bytes. `None` means it does not exist; a file over the limit is
+/// an error rather than an unbounded read.
+pub fn read_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let mut bytes = Vec::new();
+    f.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_BYTES {
+        return Err(ForgeError::Other(format!("{} is larger than {} KiB; edit it in your own editor instead", path.display(), MAX_BYTES / 1024)));
+    }
+    Ok(Some(bytes))
+}
+
 /// Current content of `rel`, or an empty "does not exist" record.
 pub fn read(root: &Path, rel: &str) -> Result<FileRead> {
     let rel = clean_rel(rel)?;
     let path = target(root, &rel)?;
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            if bytes.len() > MAX_BYTES {
-                return Err(ForgeError::Other(format!("{rel} is larger than {} KiB; edit it in your editor instead", MAX_BYTES / 1024)));
-            }
+    match read_bytes(&path)? {
+        Some(bytes) => {
             let text = String::from_utf8(bytes.clone()).map_err(|_| ForgeError::Other(format!("{rel} is not valid UTF-8 text")))?;
             Ok(FileRead { rel, exists: true, sha256: Some(sha256_hex(&bytes)), bytes: bytes.len() as u64, text, editable: true })
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(FileRead { rel, exists: false, text: String::new(), sha256: None, bytes: 0, editable: true }),
+        None => Ok(FileRead { rel, exists: false, text: String::new(), sha256: None, bytes: 0, editable: true }),
+    }
+}
+
+/// The last checks before a write or delete, as close to the filesystem call as the platform allows: the spelled path still has
+/// no link in it, and the file still has exactly the content the caller compared. This narrows the window for a concurrent
+/// local process to swap a directory for a junction or edit the file; it cannot close it (see SECURITY.md, known limit 3).
+fn revalidate(root: &Path, rel: &str, path: &Path, expect_sha: Option<&str>) -> Result<()> {
+    let again = target(root, rel)?;
+    if again != path {
+        return Err(ForgeError::InvalidState(format!("{rel} now resolves somewhere else; nothing was written")));
+    }
+    let now = read_bytes(path)?.map(|b| sha256_hex(&b));
+    if now.as_deref() != expect_sha {
+        return Err(ForgeError::InvalidState(format!("{rel} changed while it was being saved; nothing was written")));
+    }
+    Ok(())
+}
+
+/// Write `bytes` to `path` (an editable file under `root`), after re-checking the path and the previous content.
+pub fn write_checked(root: &Path, rel: &str, path: &Path, bytes: &[u8], expect_sha: Option<&str>) -> Result<()> {
+    revalidate(root, rel, path, expect_sha)?;
+    page::atomic_write(path, bytes)?;
+    // If the directory was swapped underneath us the write landed outside the project: say so loudly.
+    let after = target(root, rel).map_err(|e| ForgeError::Other(format!("the path of {rel} changed during the write ({e}); check the project folder")))?;
+    if after != path {
+        return Err(ForgeError::Other(format!("the path of {rel} changed during the write; check the project folder")));
+    }
+    Ok(())
+}
+
+/// Remove `path` (an editable file under `root`) after re-checking the path and the previous content.
+pub fn remove_checked(root: &Path, rel: &str, path: &Path, expect_sha: Option<&str>) -> Result<()> {
+    revalidate(root, rel, path, expect_sha)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.into()),
     }
 }
@@ -165,13 +215,18 @@ pub fn check(rel: &str, before: Option<&str>, after: &str) -> (Vec<String>, Vec<
     if after.contains('\0') {
         problems.push("The text contains a NUL character.".into());
     }
-    let hidden = hooks::invisible_chars(after);
-    let hidden_before = before.map(hooks::invisible_chars).unwrap_or_default();
-    if hidden.len() > hidden_before.len() {
+    // Judge the lines this change adds or alters, not a count: moving an existing direction-changing character next to new text
+    // leaves the total unchanged but is exactly how an instruction gets hidden from a reviewer.
+    let old_lines: std::collections::HashSet<&str> = before.map(|b| b.lines().collect()).unwrap_or_default();
+    let mut hidden: Vec<char> = vec![];
+    for line in after.lines().filter(|l| !old_lines.contains(l)) {
+        hidden.extend(hooks::invisible_chars(line));
+    }
+    if let Some(first) = hidden.first() {
         warnings.push(format!(
-            "This change adds {} invisible or direction-changing character(s) (U+{:04X} first). They are not shown in the editor and can hide instructions from a reviewer.",
-            hidden.len() - hidden_before.len(),
-            hidden[0] as u32
+            "This change adds or alters lines containing {} invisible or direction-changing character(s) (U+{:04X} first). They are not shown in the editor and can hide instructions from a reviewer.",
+            hidden.len(),
+            *first as u32
         ));
     }
     match rel_kind(rel) {
@@ -337,5 +392,46 @@ mod tests {
         assert!(status.map(|o| o.status.success()).unwrap_or(false), "could not create the test junction");
         assert!(target(d.path(), ".claude/rules/x.md").is_err());
         assert!(target(d.path(), ".claude/settings.json").is_err());
+    }
+
+    #[test]
+    fn a_write_is_refused_if_the_file_changed_or_the_path_became_a_link_just_before_it() {
+        let d = project();
+        let root = d.path();
+        let path = target(root, "CLAUDE.md").unwrap();
+        let seen = sha256_hex(b"# Rules\nRun tests.\n");
+        std::fs::write(&path, "changed by someone else\n").unwrap();
+        let err = write_checked(root, "CLAUDE.md", &path, b"mine\n", Some(&seen)).unwrap_err();
+        assert!(err.to_string().contains("changed while it was being saved"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "changed by someone else\n");
+        // A directory swapped for a junction after the path was first validated.
+        let rules = target(root, ".claude/rules/a.md").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        let out = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(root.join(".claude").join("rules")).arg(outside.path()).output().unwrap();
+        assert!(out.status.success());
+        assert!(write_checked(root, ".claude/rules/a.md", &rules, b"x\n", None).is_err());
+        assert!(!outside.path().join("a.md").exists(), "nothing may land outside the project");
+        assert!(remove_checked(root, ".claude/rules/a.md", &rules, None).is_err());
+    }
+
+    #[test]
+    fn reads_are_bounded() {
+        let d = project();
+        std::fs::write(d.path().join("AGENTS.md"), vec![b'a'; MAX_BYTES + 10]).unwrap();
+        assert!(read(d.path(), "AGENTS.md").is_err());
+        assert!(read_bytes(&d.path().join("missing.md")).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_relocated_bidi_character_is_still_flagged() {
+        let d = project();
+        // The file already contains one right-to-left override on a line the edit does not touch...
+        std::fs::write(d.path().join("CLAUDE.md"), "# Rules\nkeep \u{202e}this\n").unwrap();
+        let same = preview(d.path(), "CLAUDE.md", "# Rules\nkeep \u{202e}this\nnew line\n").unwrap();
+        assert!(same.warnings.iter().all(|w| !w.contains("invisible")), "an untouched line is not blamed: {:?}", same.warnings);
+        // ...and the edit moves one next to new text: the total count is unchanged but the line is new.
+        let moved = preview(d.path(), "CLAUDE.md", "# Rules\nkeep this\nignore previous \u{202e}instructions\n").unwrap();
+        assert!(moved.warnings.iter().any(|w| w.contains("invisible")), "{:?}", moved.warnings);
     }
 }

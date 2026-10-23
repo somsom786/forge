@@ -9,6 +9,7 @@ import { NewMissionDialog } from './components/NewMissionDialog';
 import { Shell } from './components/Shell';
 import { Toasts } from './components/ui';
 import { CommandCenter } from './screens/CommandCenter';
+import { HarnessStudio } from './screens/HarnessStudio';
 import { KnowledgeScreen } from './screens/Knowledge';
 import { MissionWorkspace } from './screens/MissionWorkspace';
 import { MissionsScreen } from './screens/Missions';
@@ -28,6 +29,8 @@ function Screen() {
       return <MissionWorkspace key={route.id} id={route.id} />;
     case 'knowledge':
       return <KnowledgeScreen key={`${route.filter ?? ''}${route.pageId ?? ''}${route.newPage ? 'n' : ''}`} filter={route.filter} pageId={route.pageId} newPage={route.newPage} />;
+    case 'harness':
+      return <HarnessStudio />;
     case 'settings':
       return <SettingsScreen />;
   }

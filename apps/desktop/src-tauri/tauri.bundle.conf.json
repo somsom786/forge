@@ -1,0 +1,16 @@
+{
+  "build": {
+    "beforeBuildCommand": "node ../../../tools/package/prepare.mjs && npm run build"
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": {
+      "resources-staged/engine/": "engine/",
+      "resources-staged/node/": "node/"
+    },
+    "windows": {
+      "nsis": { "installMode": "currentUser" }
+    }
+  }
+}

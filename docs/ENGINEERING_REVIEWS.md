@@ -74,6 +74,37 @@ execution; bind knowledge text and trust atomically.
 
 Validation: Rust 239 tests (3 live ignored), engine 36, all pass.
 
+## Review 4 — Harness Studio write layer  (2026-10-23)
+
+Scope: preview/save/rollback of agent configuration files, hook validation and dry-run, Doctor/inventory, the journal and
+migration 5, and the new push events. Astra (GPT-6 Astra, high effort, read-only, ephemeral) found 3 HIGH, 6 MEDIUM and 3 LOW
+issues and named the three most valuable missing tests. It reviewed the code only; it did not build or run it.
+
+Two problems were found by *running* the feature in the real app before this review landed, and are recorded here because they
+are the same class as finding 1: the shipped "Block edits to protected files" template failed with a JavaScript syntax error
+when run through Git Bash (backslash handling between Windows argv, MSYS and the shell), and my first template tests only
+checked that the command *validated*, never that it *ran*. Fixed by removing backslashes from the command and by a test that
+executes every template in the real shell and checks its decisions.
+
+| # | Finding (Astra) | My assessment | Resolution / evidence |
+|---|---|---|---|
+| 1 HIGH | The formatter template passes the agent-chosen file name through `cmd.exe` (`shell: true` on Windows), so a name like `a & calc & b.ts` executes. | Confirmed by reading Node's Windows implementation. | **Fixed.** No shell and no `npx`: the template runs Prettier's own entry point with this Node and an argument array, an absolute path, only for files inside the project. Test `the_formatter_passes_hostile_file_names_as_one_argument_and_runs_nothing_else` (a file really named `evil & echo pwned > pwned.txt & x.ts`, a fake Prettier that records argv, and a file outside the project). |
+| 2 HIGH | The write boundary is path-based: a concurrent local process can swap `.claude` for a junction after the last check, or edit the file between compare and rename. | True, and it is the documented limit 3 now applied to a new write path. A handle-based commit primitive would be the real fix and is not done. | **Mitigated, not closed.** The path (spelled and real) and the previous content hash are re-verified immediately before every write and delete; the path is re-verified after the write and a swap is reported loudly; the whole sequence runs under the project lock. This narrows the window to microseconds; it does not remove it. Not done: exclusive-create for an absent target, pinned directory handles. SECURITY.md limit 3 and 13 say so. Tests: `a_write_is_refused_if_the_file_changed_or_the_path_became_a_link_just_before_it`. |
+| 3 HIGH | Hook validation covers only `type`/`command`/`timeout`: `args`/`shell` hooks, HTTP hooks and settings such as `statusLine.command`/`apiKeyHelper` pass unseen; acknowledgement only when heuristics fire; dry-run omits `args`/`shell`; silent `cmd.exe` fallback. | Confirmed against the SDK's own settings type. | **Fixed.** New or changed hooks may only be plain command hooks (`type`, `command`, `timeout`, `if`, `onFailure`, `statusMessage`); other forms are refused when new and preserved (with a warning and `dryRunSupported:false`) when unchanged. Every new/changed command hook always requires acknowledgement. Command-running settings (`apiKeyHelper`, `awsAuthRefresh`, `awsCredentialExport`, `gcpAuthRefresh`, `otelHeadersHelper`, `proxyAuthHelper`, `statusLine`, `fileSuggestion`), `enableAllProjectMcpServers: true` and traffic-redirecting `env` entries are listed as risks and need acknowledgement. The dry-run has no fallback shell: no bash, no run. Tests in `hooks::tests` (forms table, command keys, env). |
+| 4 MED | Grandfathering keys on event+hook only: widening a matcher, copying a hook, flipping `disableAllHooks`, or editing an unknown event all slip through. | Confirmed. | **Fixed.** Multiset of (event, matcher, hook); `disableAllHooks` true→off makes every hook new; an unknown event is preserved only if byte-identical. Tests `changing_when_a_hook_fires…`, `switching_hooks_back_on…`, `an_edited_unknown_event…`. |
+| 5 MED | Doctor is quadratic (100 M findings from two 10,000-line files); reads and directory scans are unbounded. | Confirmed. | **Fixed.** Directives are indexed per file by subject and polarity (one finding per subject per file pair), every kind of finding is capped at 50 with a "n more not shown" note, reads are bounded to the file limit, the directory scan has a 20,000-entry budget, skips `node_modules`/`.git`/`target`/… and never follows links. Tests `a_repetitive_hostile_pair…`, `no_kind_of_finding…`, `scanning_is_bounded…`, `reads_are_bounded`. |
+| 6 MED | Recovery can mark a live writer's transaction failed (lock failure → "not finished") and treats any read error as "file absent". | Confirmed. | **Fixed.** Recovery resolves a row only while holding the lock and after re-reading its state; a busy lock or unreadable file leaves it `started`; finishing a row must change exactly one row. Test `recovery_leaves_a_change_unresolved_while_another_writer_holds_the_lock`. |
+| 7 MED | Double-rollback check reads state before taking the lock (ABA). | Confirmed. | **Fixed.** The change is re-read under the lock; migration 6 adds a unique index so a change has at most one live rollback. Test `a_change_can_be_rolled_back_only_once_even_if_the_application_check_is_bypassed`. |
+| 8 MED | Dry-run proceeds if containment fails, can exceed its timeout (unbounded `wait`), and output is collected with a fixed sleep. | Mostly confirmed. | **Fixed except one point.** Containment failure stops the run; on timeout the job is closed and the process killed before waiting; leftovers die with the job; readers are joined with a bound. Test `a_descendant_left_running_does_not_hang…`. **Not done:** spawning the process suspended, so a descendant created in the instant before job assignment could escape. |
+| 9 MED | The dry-run audit row stores the command line unredacted. | Confirmed. | **Fixed.** Redacted display plus a SHA-256 for exact identity. Test `the_dry_run_audit_never_stores_a_secret…`. |
+| 10 MED | Inventory follows a linked `.claude` and labels outside content as the project's. | Confirmed. | **Fixed.** Every spelled ancestor is checked and reparse points are skipped; such files are not inventoried at all. Test `a_linked_dot_claude_directory_is_not_reported…` (real junction). |
+| 11 LOW | The invisible-character warning compares counts, so relocating one is silent; display escaping is inconsistent. | Confirmed. | **Fixed in the core:** the warning judges added/changed lines. The UI renders such characters visibly in diffs and hook commands (follow-up to the UI). Test `a_relocated_bidi_character_is_still_flagged`. |
+| 12 LOW | Backups accumulate; a failed journal insert leaves an orphan. | Confirmed. | **Partly fixed:** the orphan is removed. **No retention policy yet** (SECURITY.md limit 15). |
+
+Missing tests Astra asked for: (1) formatter injection — added; (2) deterministic write/rollback races — covered at the
+`write_checked` level (changed content, swapped junction) but not with an injected pause between check and write; (3) hook
+execution-definition table — added.
+
 ## Live validation of the whole path (not a review finding, recorded for honesty)
 
 * Real Claude Code via the Agent SDK through FORGE, `haiku`, one Write approved by hand: file created in the
@@ -83,5 +114,5 @@ Validation: Rust 239 tests (3 live ignored), engine 36, all pass.
   `credentialSource:"local-endpoint"`, no provider cost reported.
 
 ## Consultation budget
-1 of the planned 4–6 consultations used. Candidates next: Memory provenance/consistency design (Phase 3), hook
-execution security for Harness Studio (Phase 4), merge/verification review (Phase 2 — in progress).
+4 of the planned 4–6 consultations used (reviews 1–4). Candidates remaining: the Codex adapter's approval/sandbox mapping
+(Phase 5), and a final pre-release review of packaging and the update path.

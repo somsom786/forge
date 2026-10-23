@@ -67,6 +67,9 @@ pub struct HookDef {
     pub known_event: bool,
     /// FORGE missions do not run project hooks.
     pub runs_in_forge_missions: bool,
+    /// A plain command hook FORGE can show completely and dry-run faithfully. False for other hook types and for command
+    /// hooks with extra execution fields (`args`, `shell`, ...): a dry run of just `command` would not match what really runs.
+    pub dry_run_supported: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -112,7 +115,15 @@ pub fn editable_rel(rel: &str) -> bool {
     }
 }
 
-fn read_capped(path: &Path) -> Option<(String, u64)> {
+/// Read a file for the inventory: never a link, never more than `MAX_FILE_BYTES`, and — for project files — only when no
+/// directory on the spelled path is a link/junction either (otherwise `.claude` could point outside the project and its
+/// contents would be shown as the project's own configuration).
+fn read_capped_in(root: Option<&Path>, path: &Path) -> Option<(String, u64)> {
+    use std::io::Read;
+    if let Some(root) = root {
+        let canon = dunce::canonicalize(root).ok()?;
+        crate::harness::edit::no_links(&canon, &paths::lexical_normalize(&canon.join(path.strip_prefix(root).unwrap_or(path)))).ok()?;
+    }
     let meta = std::fs::symlink_metadata(path).ok()?;
     if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
         return None;
@@ -125,7 +136,11 @@ fn read_capped(path: &Path) -> Option<(String, u64)> {
             return None;
         }
     }
-    let bytes = std::fs::read(path).ok()?;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return None;
+    }
     Some((String::from_utf8_lossy(&bytes).into_owned(), meta.len()))
 }
 
@@ -152,20 +167,43 @@ fn rel_of(root: &Path, p: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/")
 }
 
+/// Directory entries examined per scan, whatever the shape of the tree (a hostile repository can be wide and deep).
+const SCAN_BUDGET: usize = 20_000;
+/// Trees that are never searched for configuration.
+const SKIP_DIRS: &[&str] = &["node_modules", ".git", "target", "dist", "build", ".venv", "venv", "__pycache__", ".next", ".cache"];
+
 fn list_dir(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > 4 || out.len() > MAX_ITEMS {
+    let mut budget = SCAN_BUDGET;
+    list_dir_budgeted(dir, depth, out, &mut budget);
+}
+
+fn list_dir_budgeted(dir: &Path, depth: usize, out: &mut Vec<PathBuf>, budget: &mut usize) {
+    if depth > 4 || out.len() > MAX_ITEMS || *budget == 0 {
         return;
     }
     let Ok(rd) = std::fs::read_dir(dir) else { return };
-    let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
-    entries.sort_by_key(|e| e.file_name());
-    for e in entries {
+    let mut subdirs = vec![];
+    // Examine at most `budget` entries even if the directory holds millions; files are taken in directory order.
+    for e in rd.filter_map(|e| e.ok()) {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
         let Ok(m) = std::fs::symlink_metadata(e.path()) else { continue };
+        if crate::knowledge::vault::is_reparse_meta(&m) {
+            continue; // links and junctions are never followed
+        }
         if m.is_dir() {
-            list_dir(&e.path(), depth + 1, out);
+            if !SKIP_DIRS.iter().any(|d| e.file_name().eq_ignore_ascii_case(d)) {
+                subdirs.push(e.path());
+            }
         } else if m.is_file() {
             out.push(e.path());
         }
+    }
+    subdirs.sort();
+    for d in subdirs {
+        list_dir_budgeted(&d, depth + 1, out, budget);
     }
 }
 
@@ -194,6 +232,7 @@ fn parse_hooks(settings: &Value, source: &str, scope: &str) -> (Vec<HookDef>, Ve
             };
             for (hi, h) in list.iter().enumerate() {
                 let kind = h.get("type").and_then(Value::as_str).unwrap_or("command").to_string();
+                let dry_run_supported = kind == "command" && h.as_object().is_some_and(|o| o.keys().all(|k| super::hooks::PLAIN_HOOK_FIELDS.contains(&k.as_str())));
                 out.push(HookDef {
                     id: format!("{source}#{event}#{gi}#{hi}"),
                     event: event.clone(),
@@ -205,6 +244,7 @@ fn parse_hooks(settings: &Value, source: &str, scope: &str) -> (Vec<HookDef>, Ve
                     scope: scope.to_string(),
                     known_event: known,
                     runs_in_forge_missions: false,
+                    dry_run_supported,
                 });
             }
         }
@@ -241,7 +281,7 @@ fn scan_project(root: &Path, inv: &mut Inventory) {
 
     for rel in ["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".claude/CLAUDE.md", ".cursorrules", ".github/copilot-instructions.md"] {
         let p = root.join(rel);
-        if let Some((text, size)) = read_capped(&p) {
+        if let Some((text, size)) = read_capped_in(Some(root), &p) {
             let provider = match rel {
                 "AGENTS.md" => "Codex and other agents",
                 "GEMINI.md" => "Gemini CLI",
@@ -258,7 +298,7 @@ fn scan_project(root: &Path, inv: &mut Inventory) {
     for p in all.iter().filter(|p| p.file_name().is_some_and(|n| n == "CLAUDE.md" || n == "AGENTS.md")) {
         let rel = rel_of(root, p);
         if rel.contains('/') && !rel.starts_with(".claude/") && !rel.starts_with("node_modules/") && !rel.contains("/node_modules/") && !rel.starts_with(".git/") {
-            if let Some((text, size)) = read_capped(p) {
+            if let Some((text, size)) = read_capped_in(Some(root), p) {
                 push(item("instructions", "project", p, Some(rel.clone()), rel.clone(), Some("Nested instructions (loaded when the agent works in that folder)".into()), &text, size, rel.ends_with("CLAUDE.md"), vec![], serde_json::json!({"nested": true, "lines": text.lines().count()})), inv);
             }
         }
@@ -266,7 +306,7 @@ fn scan_project(root: &Path, inv: &mut Inventory) {
 
     for (rel, scope) in [(".claude/settings.json", "project"), (".claude/settings.local.json", "local")] {
         let p = root.join(rel);
-        if let Some((text, size)) = read_capped(&p) {
+        if let Some((text, size)) = read_capped_in(Some(root), &p) {
             let mut warnings = vec![];
             let v: Value = match serde_json::from_str(&text) {
                 Ok(v) => v,
@@ -288,7 +328,7 @@ fn scan_project(root: &Path, inv: &mut Inventory) {
     }
 
     let mcp = root.join(".mcp.json");
-    if let Some((text, size)) = read_capped(&mcp) {
+    if let Some((text, size)) = read_capped_in(Some(root), &mcp) {
         let mut warnings = vec![];
         let v: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
             warnings.push(format!("invalid JSON: {e}"));
@@ -303,7 +343,7 @@ fn scan_project(root: &Path, inv: &mut Inventory) {
         let mut files = vec![];
         list_dir(&dir, 0, &mut files);
         for p in files.into_iter().filter(|p| p.extension().is_some_and(|e| e == "md")) {
-            if let Some((text, size)) = read_capped(&p) {
+            if let Some((text, size)) = read_capped_in(Some(root), &p) {
                 let parsed = page::parse(&text);
                 let rel = rel_of(root, &p);
                 let name = parsed.meta.title.clone().or_else(|| parsed.meta.extra.get("name").cloned()).unwrap_or_else(|| p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
@@ -316,7 +356,7 @@ fn scan_project(root: &Path, inv: &mut Inventory) {
     let mut sk = vec![];
     list_dir(&skills, 0, &mut sk);
     for p in sk.into_iter().filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("SKILL.md"))) {
-        if let Some((text, size)) = read_capped(&p) {
+        if let Some((text, size)) = read_capped_in(Some(root), &p) {
             let parsed = page::parse(&text);
             let rel = rel_of(root, &p);
             let dir_name = p.parent().and_then(|d| d.file_name()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -334,7 +374,7 @@ fn scan_user(home: &Path, inv: &mut Inventory) {
     let base = home.join(".claude");
     for (rel, kind, what) in [("CLAUDE.md", "instructions", "Your global Claude Code instructions"), ("settings.json", "settings", "Your global Claude Code settings")] {
         let p = base.join(rel);
-        if let Some((text, size)) = read_capped(&p) {
+        if let Some((text, size)) = read_capped_in(None, &p) {
             let mut warnings = vec![];
             if kind == "settings" {
                 let v: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
@@ -354,7 +394,7 @@ fn scan_user(home: &Path, inv: &mut Inventory) {
         let mut files = vec![];
         list_dir(&base.join(sub), 0, &mut files);
         for p in files.into_iter().filter(|p| p.extension().is_some_and(|e| e == "md")).take(100) {
-            if let Some((text, size)) = read_capped(&p) {
+            if let Some((text, size)) = read_capped_in(None, &p) {
                 let parsed = page::parse(&text);
                 let name = parsed.meta.extra.get("name").cloned().unwrap_or_else(|| p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
                 inv.items.push(item(kind, "user", &p, None, name, parsed.meta.extra.get("description").cloned(), &text, size, false, parsed.warnings, serde_json::json!({})));
@@ -486,5 +526,59 @@ mod tests {
         assert!(scan(d.path(), None).items.is_empty());
         let empty = tempfile::tempdir().unwrap();
         assert!(scan(empty.path(), None).items.is_empty());
+    }
+
+    #[test]
+    fn a_linked_dot_claude_directory_is_not_reported_as_the_projects_own_configuration() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("settings.json"), r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo from-outside","timeout":5}]}]}}"#).unwrap();
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("CLAUDE.md"), "# ok\n").unwrap();
+        let out = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(d.path().join(".claude")).arg(outside.path()).output().unwrap();
+        assert!(out.status.success());
+        let inv = scan(d.path(), None);
+        assert!(inv.items.iter().all(|i| i.kind != "settings"), "{:?}", inv.items.iter().map(|i| &i.id).collect::<Vec<_>>());
+        assert!(inv.hooks.is_empty(), "hooks from outside the project must not be listed as its own");
+        assert!(inv.items.iter().any(|i| i.rel.as_deref() == Some("CLAUDE.md")));
+    }
+
+    #[test]
+    fn scanning_is_bounded_and_skips_dependency_trees() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("node_modules/pkg")).unwrap();
+        std::fs::write(d.path().join("node_modules/pkg/CLAUDE.md"), "# vendored\n").unwrap();
+        std::fs::create_dir_all(d.path().join("packages/web")).unwrap();
+        std::fs::write(d.path().join("packages/web/CLAUDE.md"), "# web\n").unwrap();
+        // A wide directory: far more entries than the budget would allow us to read in full.
+        std::fs::create_dir_all(d.path().join("wide")).unwrap();
+        for n in 0..300 {
+            std::fs::write(d.path().join("wide").join(format!("f{n}.txt")), "x").unwrap();
+        }
+        let inv = scan(d.path(), None);
+        let rels: Vec<_> = inv.items.iter().filter_map(|i| i.rel.clone()).collect();
+        assert!(rels.contains(&"packages/web/CLAUDE.md".to_string()), "{rels:?}");
+        assert!(!rels.iter().any(|r| r.contains("node_modules")), "{rels:?}");
+        let mut out = vec![];
+        let mut budget = 50usize;
+        list_dir_budgeted(&d.path().join("wide"), 0, &mut out, &mut budget);
+        assert_eq!(out.len(), 50, "no more entries than the budget are examined");
+    }
+
+    #[test]
+    fn hooks_say_whether_a_dry_run_would_be_faithful() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".claude")).unwrap();
+        std::fs::write(
+            d.path().join(".claude/settings.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[
+                {"type":"command","command":"echo plain","timeout":5},
+                {"type":"command","command":"node","args":["-e","1"],"timeout":5},
+                {"type":"http","url":"http://x.example/h"},
+                {"type":"prompt","prompt":"done?"}]}]}}"#,
+        )
+        .unwrap();
+        let inv = scan(d.path(), None);
+        let flags: Vec<bool> = inv.hooks.iter().map(|h| h.dry_run_supported).collect();
+        assert_eq!(flags, vec![true, false, false, false]);
     }
 }

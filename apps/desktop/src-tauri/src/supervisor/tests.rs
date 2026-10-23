@@ -12,6 +12,10 @@ struct Fixture {
 }
 
 fn engine_script() -> PathBuf {
+    // Lets the whole suite run against the packaged single-file bundle (copied somewhere with no node_modules).
+    if let Some(p) = std::env::var_os("FORGE_TEST_ENGINE") {
+        return dunce::canonicalize(&p).expect("FORGE_TEST_ENGINE does not exist");
+    }
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../packages/engine/dist/main.js");
     dunce::canonicalize(&p).unwrap_or_else(|_| panic!("engine not built at {}; run `npm run build:engine` first", p.display()))
 }

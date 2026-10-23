@@ -81,7 +81,10 @@ impl Store {
     }
 
     pub fn h_change_finish(&self, id: &str, ok: bool) -> Result<HarnessChange> {
-        self.c().execute("UPDATE harness_change SET state=?2, finished_at=?3 WHERE id=?1 AND state='started'", params![id, if ok { "applied" } else { "failed" }, now()])?;
+        let n = self.c().execute("UPDATE harness_change SET state=?2, finished_at=?3 WHERE id=?1 AND state='started'", params![id, if ok { "applied" } else { "failed" }, now()])?;
+        if n != 1 {
+            return Err(ForgeError::InvalidState(format!("harness change {id} was already resolved by recovery; check the file and the change history")));
+        }
         self.h_change_get(id)
     }
 

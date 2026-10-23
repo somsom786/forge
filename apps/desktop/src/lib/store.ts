@@ -12,6 +12,7 @@ export type Route =
   | { name: 'missions' }
   | { name: 'mission'; id: string }
   | { name: 'knowledge'; filter?: 'proposed'; pageId?: string; newPage?: boolean }
+  | { name: 'harness' }
   | { name: 'settings' };
 
 export interface DiscardState {

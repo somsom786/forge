@@ -276,6 +276,52 @@ fn of_many_simultaneous_saves_from_the_same_base_exactly_one_wins() {
     assert_eq!(f.core.harness_history(&f.project.id, None).unwrap().len(), 1);
 }
 
+#[test]
+fn recovery_leaves_a_change_unresolved_while_another_writer_holds_the_lock() {
+    let f = fixture();
+    std::fs::write(root(&f).join("CLAUDE.md"), "v1\n").unwrap();
+    let open = f
+        .core
+        .store
+        .h_change_begin(crate::harness::store::NewChange { project_id: &f.project.id, rel: "CLAUDE.md", kind: "edit", before: Some(&sha256_hex(b"v0\n")), after: Some(&sha256_hex(b"v1\n")), backup: None, rolls_back: None, note: None })
+        .unwrap();
+    {
+        // Another process is mid-write: it holds the project's lock.
+        let held = f.core.harness_lock(&f.project.id).unwrap();
+        let core = f.core.clone();
+        let h = std::thread::spawn(move || core.recover_harness());
+        // Recovery waits for the lock and must not decide anything without it.
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(f.core.store.h_change_get(&open.id).unwrap().state, "started");
+        drop(held);
+        h.join().unwrap();
+    }
+    // Once the lock was free, recovery inspected the file under it and resolved the row.
+    assert_eq!(f.core.store.h_change_get(&open.id).unwrap().state, "applied");
+    // A row that recovery already resolved cannot be re-finished by a late writer.
+    assert!(f.core.store.h_change_finish(&open.id, false).is_err());
+}
+
+#[test]
+fn a_change_can_be_rolled_back_only_once_even_if_the_application_check_is_bypassed() {
+    let f = fixture();
+    std::fs::write(root(&f).join("CLAUDE.md"), "v1\n").unwrap();
+    let ch = save(&f, "CLAUDE.md", "v2\n").unwrap();
+    f.core.harness_rollback(&ch.id).unwrap();
+    // Straight at the store: a second successful rollback row for the same change is rejected by the database.
+    let dup = f.core.store.h_change_begin(crate::harness::store::NewChange { project_id: &f.project.id, rel: "CLAUDE.md", kind: "rollback", before: None, after: None, backup: None, rolls_back: Some(&ch.id), note: None });
+    assert!(dup.is_err(), "the unique index must reject it");
+}
+
+#[test]
+fn the_dry_run_audit_never_stores_a_secret_from_the_command_line() {
+    let f = fixture();
+    f.core.harness_hook_dry_run(&f.project.id, "Stop", "echo API_KEY=hunter2hunter2hunter2").unwrap();
+    let detail: String = f.core.store.c().query_row("SELECT detail_json FROM audit_event WHERE action='harness.hook_dry_run'", [], |r| r.get(0)).unwrap();
+    assert!(!detail.contains("hunter2"), "{detail}");
+    assert!(detail.contains("commandSha256"));
+}
+
 /// Phase 4 gate against the real Claude Code: a hook and an instruction written through FORGE's edit path are accepted and
 /// acted on by an actual `claude` session. Uses the local Ollama model, so no provider quota is spent.
 ///   cargo test --lib live_harness -- --ignored --nocapture

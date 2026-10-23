@@ -300,6 +300,11 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (project_id, rel)
     );
     "#,
+    // v6 - a change can be rolled back at most once (defence in depth behind the lock and the content check)
+    r#"
+    CREATE UNIQUE INDEX harness_rollback_once ON harness_change(rolls_back_id)
+        WHERE rolls_back_id IS NOT NULL AND state IN ('started', 'applied');
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

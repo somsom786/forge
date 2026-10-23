@@ -61,6 +61,26 @@ fn locate_engine(app: &tauri::App) -> Option<PathBuf> {
     norm(dev)
 }
 
+/// Node runtime for the engine: an explicit override, then (installed app) the copy shipped next to the engine, then PATH.
+/// A development build prefers PATH so `npm run dev` uses whatever Node the developer has.
+fn locate_node(app: &tauri::App) -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("FORGE_NODE_PATH") {
+        return dunce::canonicalize(PathBuf::from(p)).ok();
+    }
+    if cfg!(debug_assertions) {
+        if let Ok(p) = which::which("node") {
+            return Some(p);
+        }
+    }
+    let exe = if cfg!(windows) { "node.exe" } else { "node" };
+    if let Ok(res) = app.path().resource_dir() {
+        if let Ok(p) = dunce::canonicalize(res.join("node").join(exe)) {
+            return Some(p);
+        }
+    }
+    which::which("node").ok()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -72,7 +92,7 @@ pub fn run() {
             let handle = app.handle().clone();
             let cfg = Config {
                 home,
-                node: which::which("node").ok(),
+                node: locate_node(app),
                 engine_script: locate_engine(app),
                 claude: which::which("claude").ok(),
                 allow_fake: cfg!(debug_assertions) || std::env::var("FORGE_ALLOW_FAKE_PROVIDER").as_deref() == Ok("1"),

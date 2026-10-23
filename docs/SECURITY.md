@@ -47,6 +47,20 @@ certification, and no remote service. Treat everything below as the implemented 
 | Memory trust: authority is a review record bound to the content hash; only human-verified pages are injected (into the *user* turn); injected bytes are the same bytes whose hash was compared; the stored/indexed copy and check logs are redacted. | `knowledge/*`, `verify.rs` | `knowledge::store_tests`, `service_tests`, `hardening_tests`, `supervisor::tests::memory` |
 | Filesystem boundary for the wiki: the *spelled* path is checked for links before canonicalisation, hardlinks and `.obsidian`/`.git` refused, writer lock per root, crash recovery touches only writable roots under the lock. | `knowledge/vault.rs`, `knowledge/service.rs` | `vault::tests`, `hardening_tests` |
 
+## Harness Studio controls (Phase 4; independently reviewed — review 4 in ENGINEERING_REVIEWS.md)
+
+| Control | Where | Test |
+|---|---|---|
+| Editable set is an allowlist of project files (instruction files, `.claude/settings.json`, rules/commands/agents/skills). User-level files, `.mcp.json`, `.git`, `.forge`, hooks scripts and `settings.local.json` are refused at preview *and* apply. | `harness/edit.rs`, `inventory::editable_rel` | `only_allowlisted_project_files_are_editable`, `nothing_outside_the_allowlist_can_be_written` |
+| Path resolution is link-free: the spelled path and the real path are both walked; junctions/symlinks/reparse points and hard-linked files are refused. | `harness/edit.rs` | `links_in_the_path_are_refused` (real junction) |
+| A save is a compare-and-swap under a per-project OS file lock: the file must still have the hash the user opened, and the text must hash to the preview they approved. | `supervisor/harness.rs` | `a_file_that_changed_after_it_was_opened…`, `what_is_written_is_exactly…`, `of_many_simultaneous_saves…` |
+| Every write backs up the previous bytes first (verified), is journaled before it happens, is atomic, is read back, and is reversible. Rollback refuses if the file changed after the edit, and never restores a backup whose hash does not match the journal. | `supervisor/harness.rs`, `harness/store.rs` | `an_edit_is_previewed_journaled…`, `rollback_refuses_when…`, `a_tampered_backup…`, `a_crash_between_journal_and_write…` |
+| Hooks: exact event names, single-line visible commands (hidden/bidi characters flagged and shown escaped), mandatory timeout. A new or changed hook may only be a plain command hook (no `args`/`shell`/HTTP/prompt forms), and **every** new or changed hook needs an explicit acknowledgement, whatever the heuristics say. Unchanged hooks are grandfathered by (event, matcher, definition, multiplicity); widening a matcher, copying a hook or re-enabling hooks makes them new. | `harness/hooks.rs`, `harness/edit.rs` | `hooks::tests`, `risky_hooks_need_an_explicit_acknowledgement…` |
+| Other settings that run commands or redirect traffic (`apiKeyHelper`, `awsAuthRefresh`, `statusLine`, `fileSuggestion`, …, `enableAllProjectMcpServers`, `env` entries such as `*_BASE_URL`/`*_PROXY`) are listed as risks and need the same acknowledgement. | `harness/hooks.rs` | `other_command_running_settings_need_acknowledgement` |
+| Hook dry-run runs only on an explicit command from the app's webview, in bash only (no fallback shell), refuses to run uncontained, scrubs secret-looking env, has a timeout, caps output, kills the whole job and joins its readers; every run is audited with a redacted command and its hash. Hooks FORGE cannot reproduce faithfully (`dryRunSupported:false`) are not run. | `harness/dryrun.rs`, `supervisor/harness.rs` | `dryrun::tests`, `the_dry_run_audit_never_stores_a_secret…` |
+| Shipped hook templates are executed in the real shell by tests; the formatter never uses a shell. | `harness/hooks.rs`, `harness/dryrun.rs` | `every_shipped_template_runs…`, `the_formatter_passes_hostile_file_names…` |
+| Inventory and Doctor are bounded (entry budget, skipped dependency trees, bounded reads, per-kind finding cap) and never follow links or junctions, including a linked `.claude`. | `harness/inventory.rs`, `harness/doctor.rs` | `scanning_is_bounded…`, `a_linked_dot_claude_directory…`, `a_repetitive_hostile_pair…` |
+
 ## Known limits (do not assume these are solved)
 
 1. **An approved shell command runs with the user's privileges and no sandbox.** FORGE shows risk warnings but cannot
@@ -57,7 +71,9 @@ certification, and no remote service. Treat everything below as the implemented 
    boundary; `git p""ush` style obfuscation defeats them. The human reading each shell prompt is the real control, which
    is why every shell call asks. Path rules for the *file tools* are firm (enforced on the resolved real path).
 3. **Check-then-use races on the filesystem** (e.g. a junction swapped between policy check and tool execution) cannot be
-   closed without a brokered file layer or OS sandbox.
+   closed without a brokered file layer or OS sandbox. This now also applies to Harness Studio's write path: FORGE re-verifies the
+   path and the previous content immediately before each write/delete and reports a swap afterwards, but a concurrent local
+   process that wins that microsecond window could still redirect a write; closing it needs handle-pinned directory identities.
 4. **Running a verification check executes code from the mission worktree** (including agent-written code, or a
    modified `npm test` script) with the user's privileges. Checks only run on an explicit user action and their commands
    come from the user, but the code they invoke is not sandboxed. A check that dirties the worktree is flagged and its
@@ -78,7 +94,14 @@ certification, and no remote service. Treat everything below as the implemented 
     delimiter can stop a model from being persuaded by reviewed text that itself contains instructions. FORGE's approval
     policy, not the model's compliance, remains the control over what an agent can do.
 12. Reviewed independently: Phase 1 supervisor, the memory design, and the Phase 2/3 implementation (three reviews, all
-    findings dispositioned in ENGINEERING_REVIEWS.md). Not yet reviewed: Harness Studio and anything built after it.
+    findings dispositioned in ENGINEERING_REVIEWS.md). Harness Studio is covered by review 4 (all findings dispositioned in
+    ENGINEERING_REVIEWS.md; two items deliberately not done). Anything built after it (packaging, the Codex adapter) is not reviewed.
+13. **Harness edits change the user's real checkout**, not a worktree: a saved CLAUDE.md or settings.json is immediately what the
+    user's own Claude Code sessions read. Hooks written here run with the user's privileges in those sessions. FORGE shows the diff and
+    risks, but it cannot judge whether a command is *wise*.
+14. **A hook dry-run executes real code** (the hook command) with the user's privileges in the project folder. Env scrubbing is by name
+    pattern and is best-effort; the run is not sandboxed.
+15. Harness backups are not pruned and are stored unencrypted under the FORGE home.
 
 ## Provider authentication
 

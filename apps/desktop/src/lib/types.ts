@@ -559,6 +559,8 @@ export interface HookDef {
   scope: string;
   knownEvent: boolean;
   runsInForgeMissions: boolean;
+  /** A plain command hook FORGE can show completely and dry-run faithfully (false: other hook types, or extra fields like `args`/`shell`). */
+  dryRunSupported: boolean;
 }
 
 export interface McpServerDef {
