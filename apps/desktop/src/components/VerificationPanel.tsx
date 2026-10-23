@@ -284,7 +284,7 @@ function EvidenceView({ e }: { e: Evidence }) {
   return (
     <div className="mt-1.5 rounded border border-line p-2 text-[12px]">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="mono text-muted">{e.adapter}</span>
+        <span className="mono text-muted">{e.adapter}{e.toolVersion ? ` ${e.toolVersion}` : ''}</span>
         <Badge tone={OUTCOME_TONE[e.outcome]}>{OUTCOME_LABEL[e.outcome]}</Badge>
         {severityLine(e) && <span className="text-muted">{severityLine(e)}</span>}
       </div>

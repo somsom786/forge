@@ -205,12 +205,18 @@ impl Core {
         let stdout = self.cfg.home.join("runs").join(format!("{run_id}.stdout"));
         std::thread::spawn(move || {
             let capture = spec.adapter.as_ref().map(|_| stdout.as_path());
+            // Which version produced the report is part of the evidence; probed on the same backend, briefly.
+            let tool_version = spec.adapter.as_deref().and_then(crate::evidence::adapter).and_then(|a| {
+                let v = verify::run_check_in(backend, a.version_command, &wt, Duration::from_secs(30), None, Arc::new(AtomicBool::new(false)));
+                (v.state == RunState::Passed).then(|| v.output_tail.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(120).collect::<String>()).filter(|s| !s.is_empty())
+            });
             let mut outcome = verify::run_check_capture(backend, &spec.command, &wt, Duration::from_secs(spec.timeout_secs), Some(&log), capture, cancel);
             // An adapter turns the tool's report into findings, and its verdict replaces the exit-code verdict.
             let evidence = spec.adapter.as_deref().map(|a| {
                 let text = std::fs::read_to_string(&stdout).unwrap_or_default();
-                let (ev, state) = crate::evidence::evaluate(a, outcome.state, outcome.exit_code, &text, &outcome.output_tail);
+                let (mut ev, state) = crate::evidence::evaluate(a, outcome.state, outcome.exit_code, &text, &outcome.output_tail);
                 outcome.state = state;
+                ev.tool_version = tool_version.clone();
                 ev
             });
             let post = git::fingerprint(&wt, &base).unwrap_or_else(|_| "unknown".into());

@@ -349,6 +349,7 @@ mod approvals;
 mod mcp;
 mod acp;
 mod evidence;
+mod scanners;
 
 #[test]
 fn the_agents_overview_lists_running_and_recent_sessions_with_their_missions() {

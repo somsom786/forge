@@ -56,6 +56,27 @@ jobs:
           # restriction on this disposable runner so the isolation tests actually run. See docs/EXECUTION.md.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      - name: Real scanners for the evidence-adapter tests (pinned, SHA-256 verified; Linux)
+        if: runner.os == 'Linux'
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          OSV_SCANNER_VERSION: 2.7.0
+          OSV_SCANNER_SHA256: 160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
+        run: |
+          dir="$RUNNER_TEMP/scanners"; mkdir -p "$dir"
+          curl -sSfL -o "$dir/gitleaks.tar.gz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $dir/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf "$dir/gitleaks.tar.gz" -C "$dir" gitleaks
+          curl -sSfL -o "$dir/osv-scanner" "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  $dir/osv-scanner" | sha256sum -c -
+          chmod +x "$dir/osv-scanner"
+          echo "$dir" >> "$GITHUB_PATH"
+          # The osv test runs offline; fetch the npm advisory database once (a scan of a one-package lockfile does it).
+          mkdir -p "$dir/seed" && printf '%s' '{"name":"s","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"s","version":"1.0.0"},"node_modules/lodash":{"version":"4.17.20"}}}' > "$dir/seed/package-lock.json"
+          "$dir/osv-scanner" scan source --offline-vulnerabilities --download-offline-databases --format json -r "$dir/seed" > /dev/null || true
+          "$dir/gitleaks" version; "$dir/osv-scanner" --version
+
       - name: Install
         run: npm ci
 
@@ -80,6 +101,8 @@ jobs:
         # On Linux the sandbox tests must run, not skip: a sandbox that silently is not there must not look green.
         env:
           FORGE_REQUIRE_SANDBOX_TESTS: ${{ runner.os == 'Linux' && '1' || '0' }}
+          # Real gitleaks / osv-scanner runs through the FORGE check path must not silently skip on Linux.
+          FORGE_REQUIRE_SCANNER_TESTS: ${{ runner.os == 'Linux' && '1' || '0' }}
         run: cargo test --lib
 
   windows-scripts:

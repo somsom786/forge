@@ -255,6 +255,8 @@ export interface Evidence {
   bySeverity: Record<string, number>;
   findings: Finding[];
   findingsTruncated: boolean;
+  /** First line of the tool's version output, probed on the same backend just before the run. */
+  toolVersion?: string | null;
 }
 
 export interface VerificationAdapterInfo {

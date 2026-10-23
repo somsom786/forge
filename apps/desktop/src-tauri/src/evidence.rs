@@ -82,6 +82,9 @@ pub struct Evidence {
     pub by_severity: std::collections::BTreeMap<String, usize>,
     pub findings: Vec<Finding>,
     pub findings_truncated: bool,
+    /// First line of the tool's version output, probed on the same backend just before the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_version: Option<String>,
 }
 
 pub struct AdapterInfo {
@@ -91,24 +94,54 @@ pub struct AdapterInfo {
     pub command: &'static str,
     pub threshold: Severity,
     pub kind: crate::contract::CheckKind,
+    /// Prints the tool's version (first line kept). Run on the same backend as the check.
+    pub version_command: &'static str,
 }
 
 pub const ADAPTERS: &[AdapterInfo] = &[
-    AdapterInfo { id: "gitleaks", label: "Secret scan (gitleaks)", command: "gitleaks dir . --redact --no-banner --report-format json --report-path -", threshold: Severity::Info, kind: crate::contract::CheckKind::Security },
-    AdapterInfo { id: "osv-scanner", label: "Dependency vulnerabilities (OSV-Scanner)", command: "osv-scanner scan source --format json -r .", threshold: Severity::Info, kind: crate::contract::CheckKind::Security },
-    AdapterInfo { id: "trivy", label: "Vulnerabilities, secrets, misconfiguration (Trivy)", command: "trivy fs --quiet --format json --scanners vuln,secret,misconfig .", threshold: Severity::High, kind: crate::contract::CheckKind::Security },
-    AdapterInfo { id: "playwright", label: "End-to-end tests (Playwright)", command: "npx playwright test --reporter=json", threshold: Severity::Info, kind: crate::contract::CheckKind::Test },
+    AdapterInfo { id: "gitleaks", label: "Secret scan (gitleaks)", command: "gitleaks dir . --redact --no-banner --report-format json --report-path -", threshold: Severity::Info, kind: crate::contract::CheckKind::Security, version_command: "gitleaks version" },
+    AdapterInfo { id: "osv-scanner", label: "Dependency vulnerabilities (OSV-Scanner)", command: "osv-scanner scan source --format json -r .", threshold: Severity::Info, kind: crate::contract::CheckKind::Security, version_command: "osv-scanner --version" },
+    AdapterInfo { id: "trivy", label: "Vulnerabilities, secrets, misconfiguration (Trivy)", command: "trivy fs --quiet --format json --scanners vuln,secret,misconfig .", threshold: Severity::High, kind: crate::contract::CheckKind::Security, version_command: "trivy --version" },
+    AdapterInfo { id: "playwright", label: "End-to-end tests (Playwright)", command: "npx playwright test --reporter=json", threshold: Severity::Info, kind: crate::contract::CheckKind::Test, version_command: "npx --no-install playwright --version" },
 ];
 
 pub fn adapter(id: &str) -> Option<&'static AdapterInfo> {
     ADAPTERS.iter().find(|a| a.id == id)
 }
 
-/// Exit codes shells use for "command not found" (sh: 127; cmd.exe: 9009), or the matching messages.
-fn tool_missing(exit: Option<i32>, stderr_tail: &str) -> bool {
-    matches!(exit, Some(127) | Some(9009))
-        || stderr_tail.contains("is not recognized as an internal or external command")
-        || (stderr_tail.contains("not found") && (stderr_tail.contains("command not found") || stderr_tail.contains(": not found")))
+/// The shell could not find the program: sh/bash say so on stderr (exit 127), cmd.exe exits 9009. Exit 127 alone is not
+/// enough: OSV-Scanner uses 127 for its own errors (for example when api.osv.dev is unreachable), after running.
+fn tool_missing(exit: Option<i32>, stdout: &str, tail: &str) -> bool {
+    if !stdout.trim().is_empty() {
+        return false;
+    }
+    exit == Some(9009)
+        || tail.contains("is not recognized as an internal or external command")
+        || tail.lines().any(|l| l.ends_with(": not found") || l.contains(": command not found"))
+}
+
+/// The tool's own last error line from the combined output (ANSI stripped, bounded), to say *why* a run is unusable.
+fn last_error_line(tail: &str) -> Option<String> {
+    let clean = |l: &str| {
+        let mut out = String::new();
+        let mut it = l.chars().peekable();
+        while let Some(c) = it.next() {
+            if c == '\u{1b}' {
+                while let Some(&n) = it.peek() {
+                    it.next();
+                    if n.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out.trim().to_string()
+    };
+    let lines: Vec<String> = tail.lines().map(clean).filter(|l| !l.is_empty()).collect();
+    let pick = lines.iter().rev().find(|l| l.to_ascii_lowercase().contains("error") || l.contains("failed")).or(lines.last())?;
+    Some(pick.chars().take(240).collect())
 }
 
 /// The first JSON value in `text` (tools sometimes print a line before it).
@@ -210,6 +243,24 @@ fn trivy(v: &Value) -> Option<Vec<Finding>> {
     Some(out)
 }
 
+/// Playwright reports a browser that cannot start as failing tests; that is the environment, not the code under test.
+fn playwright_launch_failure(v: &Value) -> Option<String> {
+    fn walk(suite: &Value) -> Option<String> {
+        for spec in suite.get("specs").and_then(Value::as_array).into_iter().flatten() {
+            for t in spec.get("tests").and_then(Value::as_array).into_iter().flatten() {
+                for r in t.get("results").and_then(Value::as_array).into_iter().flatten() {
+                    let msg = r.get("error").map(|e| s(e, "message")).unwrap_or_default();
+                    if msg.contains("browserType.launch") || msg.contains("Executable doesn't exist") {
+                        return Some(msg.lines().next().unwrap_or("").chars().take(240).collect());
+                    }
+                }
+            }
+        }
+        suite.get("suites").and_then(Value::as_array).into_iter().flatten().find_map(walk)
+    }
+    v.get("suites").and_then(Value::as_array).into_iter().flatten().find_map(walk)
+}
+
 fn playwright(v: &Value) -> Option<Vec<Finding>> {
     let stats = v.get("stats")?;
     let mut out = vec![];
@@ -249,6 +300,11 @@ fn playwright(v: &Value) -> Option<Vec<Finding>> {
 /// Turn a finished run into evidence and the run state FORGE records. `stdout` is the captured standard output; `tail` is the
 /// combined output tail (used only to recognise a missing tool).
 pub fn evaluate(adapter_id: &str, state: RunState, exit: Option<i32>, stdout: &str, tail: &str) -> (Evidence, RunState) {
+    let code = exit.map_or("none".into(), |c| c.to_string());
+    let why = |base: String| match last_error_line(tail) {
+        Some(l) => format!("{base}: {}", crate::redact::redact_str(&l)),
+        None => base,
+    };
     let info = adapter(adapter_id);
     let mk = |outcome: Outcome, summary: String, findings: Vec<Finding>| {
         let mut by = std::collections::BTreeMap::new();
@@ -261,7 +317,7 @@ pub fn evaluate(adapter_id: &str, state: RunState, exit: Option<i32>, stdout: &s
         let mut kept = findings;
         kept.sort_by(|a, b| b.blocking.cmp(&a.blocking).then(b.severity.cmp(&a.severity)));
         kept.truncate(MAX_FINDINGS);
-        Evidence { adapter: adapter_id.into(), outcome, summary, total_findings: total, blocking_findings: blocking, by_severity: by, findings: kept, findings_truncated: truncated }
+        Evidence { adapter: adapter_id.into(), outcome, summary, total_findings: total, blocking_findings: blocking, by_severity: by, findings: kept, findings_truncated: truncated, tool_version: None }
     };
     let Some(info) = info else {
         return (mk(Outcome::ToolError, format!("unknown adapter \"{adapter_id}\""), vec![]), RunState::Error);
@@ -269,10 +325,20 @@ pub fn evaluate(adapter_id: &str, state: RunState, exit: Option<i32>, stdout: &s
     if !matches!(state, RunState::Passed | RunState::Failed) {
         return (mk(Outcome::Incomplete, "the run did not complete, so there is no evidence".into(), vec![]), state);
     }
-    if exit != Some(0) && tool_missing(exit, tail) {
+    if exit != Some(0) && tool_missing(exit, stdout, tail) {
         return (mk(Outcome::ToolMissing, format!("{} is not installed or not on PATH for this backend", info.id), vec![]), RunState::Error);
     }
-    let parsed = json_in(stdout).and_then(|v| match info.id {
+    // OSV-Scanner: 128 = it found no lockfile or manifest to scan. Nothing was checked, so this is not a pass.
+    if info.id == "osv-scanner" && exit == Some(128) {
+        return (mk(Outcome::ToolError, why("osv-scanner found no dependency manifests or lockfiles to scan (exit 128)".into()), vec![]), RunState::Error);
+    }
+    let report = json_in(stdout);
+    if info.id == "playwright" {
+        if let Some(msg) = report.as_ref().and_then(playwright_launch_failure) {
+            return (mk(Outcome::ToolError, format!("Playwright could not start a browser, so no test result is meaningful: {msg}"), vec![]), RunState::Error);
+        }
+    }
+    let parsed = report.and_then(|v| match info.id {
         "gitleaks" => gitleaks(&v),
         "osv-scanner" => osv(&v),
         "trivy" => trivy(&v),
@@ -285,7 +351,7 @@ pub fn evaluate(adapter_id: &str, state: RunState, exit: Option<i32>, stdout: &s
         p => p,
     };
     let Some(mut findings) = parsed else {
-        return (mk(Outcome::ToolError, format!("{} ran (exit code {}) but its JSON report could not be read from standard output", info.id, exit.map_or("none".into(), |c| c.to_string())), vec![]), RunState::Error);
+        return (mk(Outcome::ToolError, why(format!("{} ran (exit code {code}) but its JSON report could not be read from standard output", info.id)), vec![]), RunState::Error);
     };
     for f in &mut findings {
         f.blocking = f.blocking || f.severity.blocks_at(info.threshold);
@@ -296,13 +362,13 @@ pub fn evaluate(adapter_id: &str, state: RunState, exit: Option<i32>, stdout: &s
             let n = findings.len();
             (mk(Outcome::Passed, if n == 0 { "no findings".into() } else { format!("{n} finding(s) below the blocking threshold") }, findings), RunState::Passed)
         }
-        (0, _) => (mk(Outcome::ToolError, format!("{} exited with code {} but reported no blocking findings; treating the result as untrustworthy", info.id, exit.map_or("none".into(), |c| c.to_string())), findings), RunState::Error),
+        (0, _) => (mk(Outcome::ToolError, why(format!("{} exited with code {code} but reported no blocking findings; treating the result as untrustworthy", info.id)), findings), RunState::Error),
         (n, _) => (mk(Outcome::Findings, format!("{n} blocking finding(s)"), findings), RunState::Failed),
     }
 }
 
 pub fn adapters_json() -> Value {
-    Value::Array(ADAPTERS.iter().map(|a| json!({"id": a.id, "label": a.label, "command": a.command, "kind": a.kind})).collect())
+    Value::Array(ADAPTERS.iter().map(|a| json!({"id": a.id, "label": a.label, "command": a.command, "kind": a.kind, "versionCommand": a.version_command})).collect())
 }
 
 #[cfg(test)]
