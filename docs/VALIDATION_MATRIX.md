@@ -17,8 +17,8 @@ app-server (`packages/engine/test/codex.test.ts`), or hand-written scanner repor
 
 CI evidence: CI run 32 (head `14f289f`) was green on `ubuntu-24.04` and `windows-2022`, including the Windows script job
 (parse under 5.1/7, PSScriptAnalyzer, smoke) and the NSIS installer build; the security workflow was green at `08aadaf` and
-`14f289f`. Code intelligence was merged afterwards (`cd75d4c`): its Windows CI result is on the PR
-(https://github.com/somsom786/forge/pull/8), not claimed here.
+`14f289f`. After the code-intelligence merge, CI run 36 (head `7a1c2a4`, https://github.com/somsom786/forge/pull/8) was green on both
+runners, and so was the security workflow.
 Physical Windows validation of this branch: **NOT RUN** (planned; `docs/CODEX_WINDOWS_HANDOFF.md`).
 
 ## Features
@@ -38,7 +38,7 @@ Physical Windows validation of this branch: **NOT RUN** (planned; `docs/CODEX_WI
 | NSIS installer build | n/a | CI job builds and uploads it (artifact, 7 days) | PASS — Physical Windows (earlier: silent install, launch, scripted mission, uninstall) | Upgrade over an older install never tested; unsigned |
 | Security workflow (npm audit, cargo-audit, cargo-deny, gitleaks full history, OSV-Scanner, SBOMs) | PASS — Linux (first run) | n/a | n/a | OSV-Scanner informational; FORGE's own crate is unlicensed (accepted exception until the owner chooses a licence) |
 | Experiments, conflicts, Agents screen | PASS — Linux | PASS — Windows CI | NOT RUN | UI seen only in the browser preview with mock data |
-| Code intelligence (tree-sitter index, Code Map, relevant code in context) | PASS — Linux | see PR checks for `cd75d4c` | NOT RUN | Measured only on a synthetic 36-file fixture (top-3 F1 0.48 grep → 0.59 index); Code Map seen in the browser preview only |
+| Code intelligence (tree-sitter index, Code Map, relevant code in context) | PASS — Linux | PASS — Windows CI (`7a1c2a4`, MSVC build incl. the tree-sitter C grammars) | NOT RUN | Measured only on a synthetic 36-file fixture (top-3 F1 0.48 grep → 0.59 index); Code Map seen in the browser preview only |
 | Live provider missions (Claude, Codex) | BLOCKED (would spend the owner's quota; never run by the cloud agent) | BLOCKED (no logins) | PASS — Physical Windows (earlier, before this branch) | Re-run on this branch is a handoff item |
 
 ## Adversarial regression tests (security acceptance list, items 1–18)
