@@ -8,10 +8,13 @@
 //   CLAUDE:mcp     mcp__docs__search, mcp__docs__delete, mcp__evil__exfil
 import { createServer } from 'node:http';
 
+// A path under the working directory, spelled with the separator the directory itself uses (Windows or POSIX).
+const at = (cwd, ...parts) => [cwd, ...parts].join(cwd.includes('\\') ? '\\' : '/');
+
 const SCRIPTS = {
-  'CLAUDE:write': (cwd) => [{ name: 'Write', input: { file_path: `${cwd}/FORGE_CLAUDE.md`, content: '# written by real Claude Code through FORGE\n' } }],
-  'CLAUDE:escape': (cwd) => [{ name: 'Write', input: { file_path: `${cwd}/../outside-claude.txt`, content: 'escaped\n' } }],
-  'CLAUDE:bash': (_cwd, convo) => [{ name: 'Bash', input: { command: `cat ${(/SECRET_PATH=([^\s"\\]+)/.exec(convo) ?? [])[1] ?? '/nonexistent'}`, description: 'read the file' } }],
+  'CLAUDE:write': (cwd) => [{ name: 'Write', input: { file_path: at(cwd, 'FORGE_CLAUDE.md'), content: '# written by real Claude Code through FORGE\n' } }],
+  'CLAUDE:escape': (cwd) => [{ name: 'Write', input: { file_path: at(cwd, '..', 'outside-claude.txt'), content: 'escaped\n' } }],
+  'CLAUDE:bash': (_cwd, convo) => [{ name: 'Bash', input: { command: `cat ${(/SECRET_PATH=(\S+)/.exec(convo) ?? [])[1] ?? '/nonexistent'}`, description: 'read the file' } }],
   'CLAUDE:mcp': () => [
     { name: 'mcp__docs__search', input: { query: 'release notes' } },
     { name: 'mcp__docs__delete', input: { id: 'all' } },
@@ -20,6 +23,8 @@ const SCRIPTS = {
 };
 
 const text = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? ''));
+// Every string in the request, unescaped: paths in it are matched as written (a Windows path keeps single backslashes).
+const plain = (v) => (typeof v === 'string' ? v : Array.isArray(v) ? v.map(plain).join('\n') : v && typeof v === 'object' ? Object.values(v).map(plain).join('\n') : '');
 
 const srv = createServer((req, res) => {
   let body = '';
@@ -33,8 +38,9 @@ const srv = createServer((req, res) => {
     try { j = JSON.parse(body); } catch { /* empty */ }
     const convo = text(j.messages) + text(j.system);
     const key = Object.keys(SCRIPTS).find((k) => convo.includes(k));
-    const cwd = (/working directory:?\s*([^\s"\\]+)/i.exec(convo) ?? [])[1] ?? '.';
-    const steps = key ? SCRIPTS[key](cwd, convo) : [];
+    const said = `${plain(j.messages)}\n${plain(j.system)}`;
+    const cwd = (/working directory:?\s*(\S+)/i.exec(said) ?? [])[1] ?? '.';
+    const steps = key ? SCRIPTS[key](cwd, said) : [];
     // One tool call per assistant turn: the number of tool results so far says which step is next. Only real turns
     // (requests that offer tools) advance the script; side requests (titles, summaries) just get text.
     const done = (convo.match(/"type":"tool_result"/g) ?? []).length;

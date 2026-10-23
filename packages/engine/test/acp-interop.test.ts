@@ -6,7 +6,7 @@
 // Needs the agent installed in FORGE_ACP_INTEROP_DIR (CI does this with a pinned version). Skipped otherwise, unless
 // FORGE_REQUIRE_ACP_INTEROP=1.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, realpathSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -30,10 +30,15 @@ beforeAll(async () => {
   process.env.ACP_INTEROP_AGENT_DIR = dir;
   process.env.FAKE_CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'acp-interop-cfg-'));
 });
-afterAll(() => model?.kill());
+const made: string[] = [];
+afterAll(() => {
+  model?.kill();
+  for (const d of [...made, process.env.FAKE_CLAUDE_CONFIG_DIR ?? '']) if (d) rmSync(d, { recursive: true, force: true, maxRetries: 3 });
+});
 
 async function run(prompt: string, decide: (r: PermissionRequest) => PermissionDecision) {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'forge-acp-interop-')));
+  made.push(cwd);
   const asked: PermissionRequest[] = [];
   const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
   let turn: TurnResult | undefined;
