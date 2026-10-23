@@ -501,7 +501,8 @@ describe('codex adapter', () => {
     expect(String(kill.options.cwd)).not.toContain(wt);
     expect(existsSync(marker)).toBe(false);
     // A relative or odd SystemRoot never makes the lookup relative.
-    for (const bad of ['.', 'Windows', '..\\x', '\\\\server\\share', `${wt}`, '']) expect(windowsTreeKill(1, { SystemRoot: bad }).command).toBe('C:\\Windows\\System32\\taskkill.exe');
+    // (SystemRoot comes from FORGE's own environment, not the repository, so an absolute drive path is taken as given.)
+    for (const bad of ['.', 'Windows', '..\\x', '\\\\server\\share', 'relative\\System', '']) expect(windowsTreeKill(1, { SystemRoot: bad }).command).toBe('C:\\Windows\\System32\\taskkill.exe');
     expect(windowsTreeKill(1, { SystemRoot: 'D:\\Win\\' }).command).toBe('D:\\Win\\System32\\taskkill.exe');
   });
 
