@@ -12,6 +12,7 @@ UI 100 (vitest); `npm run typecheck` clean. Live tests that spend provider quota
 | Harness Studio: inventory, Doctor, previewed/CAS/journaled/backed-up/reversible edits, hook templates, dry-run, history/rollback | A | `tools/e2e/harness-flow.mjs`; live: a hook and an instruction written through FORGE fired/obeyed in real Claude Code; review 4 fixed (2 items open, see below) |
 | Codex adapter (`codex app-server`) | A for the happy path and the refusal, B otherwise | real mission: FORGE approved a write, file created in the worktree, turn succeeded; hostile `.codex/config.toml` refused before anything starts; 8+1 engine tests. review 5 fixed (open: verified sandbox settings; allow-rules refuse the session unless `FORGE_CODEX_ALLOW_USER_RULES=1`) |
 | Parallel missions + concurrency limit | B | tests with the scripted agent |
+| Conflict detection between missions (`cloud/mission-conflicts`; backend only) | B | 5 tests against real temporary git repos and worktrees: overlap, predicted textual conflict vs clean overlap, missions on different bases, base drift with a conflict against the new base, a git error reported as unknown (not a conflict), project report with skipped/merged missions; read-only (status, refs and checkout unchanged). Linux only; **no UI** |
 | Windows installer (`npm run package`, NSIS, per-user, bundled Node + engine bundle) | A | silent install to a scratch folder, launched, a full scripted mission through the real window incl. merge and Proof Pack; the engine ran on the bundled Node with Node removed from PATH (a user's own *check* commands still need their tools on PATH). Uninstalled afterwards. Not tested: upgrade over an older install, code signing (unsigned: SmartScreen will warn) |
 | Experiments (Phase 6) | — | |
 | Enterprise (Phase 7) | — design only | no claims made |
@@ -23,7 +24,7 @@ UI 100 (vitest); `npm run typecheck` clean. Live tests that spend provider quota
 * Codex: resume of a thread, command approvals through FORGE (verified with a probe against the real app-server, and by unit tests, but not in a FORGE mission), Windows sandbox behaviour (`workspace-write` is requested; whether the user's `elevated` sandbox actually confines a command was not tested), usage numbers.
 * Harness: handle-pinned write path (a concurrent local process could win a microsecond race), dry-run processes are not created suspended, backups are never pruned.
 * The mission workspace tab strip scrolls horizontally with 7 tabs; it was not re-screenshotted after the last change.
-* Multi-agent review missions, conflict detection between concurrent missions, experiments.
+* Multi-agent review missions, experiments. Conflict detection has no screen and is computed on request only (a running agent can change the answer a second later).
 
 ## History of findings by running things (not by reading code)
 

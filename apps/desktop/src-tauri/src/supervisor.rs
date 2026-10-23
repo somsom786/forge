@@ -908,9 +908,11 @@ fn derive_title(objective: &str) -> String {
     if first.chars().count() > 72 { format!("{t}…") } else { t }
 }
 
+mod conflicts;
 mod harness;
 mod memory;
 mod review;
+pub use conflicts::{ConflictReport, MissionChangeSet, SkippedMission};
 pub use harness::{HookSpec, RollbackPreview};
 pub use memory::{KnowledgeStatus, NewKnowledgeArgs, PageDetail};
 pub use review::{MergeOutcome, ReviewDecision, Seen};

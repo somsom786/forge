@@ -103,6 +103,15 @@ file on disk.
 What this does *not* do: FORGE missions still never run project hooks or `.mcp.json` (see SECURITY.md). Hooks edited here take effect in the
 user's own Claude Code sessions.
 
+## Conflicts between missions (Phase 5, backend only)
+
+`conflicts.rs` + `supervisor/conflicts.rs`, command `mission_conflicts(projectId)`. For every mission that still has work to land
+(not merged, rejected or cancelled) and a verified worktree: its changed files and the tree of its current state (temporary index,
+as for review fingerprints). Pairs report shared paths and a `git merge-tree --write-tree` prediction of landing both; drift reports
+how far the base branch moved, which moved files the mission also changed, and whether the mission would conflict with the new base.
+Trees are wrapped in unreferenced `commit-tree` objects (older git cannot merge bare trees); no ref, index or file is changed. A git
+error is reported as `unknown`, never as a conflict.
+
 ## Planned domains (not yet built)
 
 Harness configuration service (Phase 4), experiment runner (Phase 6), second provider adapter — Codex (Phase 5): each a

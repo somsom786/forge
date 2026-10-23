@@ -609,3 +609,13 @@ pub async fn harness_hook_preview_remove(core: CoreState<'_>, project_id: String
 pub async fn harness_hook_dry_run(core: CoreState<'_>, project_id: String, event: String, command: String) -> Result<DryRun> {
     blocking(&core, move |c| c.harness_hook_dry_run(&project_id, &event, &command)).await
 }
+
+// ---- Phase 5: conflicts between missions ---------------------------------------------------------------------------
+
+use crate::supervisor::ConflictReport;
+
+/// File overlap, predicted textual conflicts and base drift across the project's active missions. Read-only.
+#[tauri::command]
+pub async fn mission_conflicts(core: CoreState<'_>, project_id: String) -> Result<ConflictReport> {
+    blocking(&core, move |c| c.mission_conflicts(&project_id)).await
+}
