@@ -30,6 +30,14 @@ empty placeholder). CI (`.github/workflows/ci.yml`) runs engine, UI and Rust tes
 `windows-2022` runner; a green Windows CI run is evidence on a clean Windows VM, not on the owner's machine (no WebView2 window, no
 providers, no installer). No macOS build or test exists.
 
+Validating on a physical Windows PC: `scripts/windows/verify-windows.ps1` is the entry point (prerequisites, `npm ci`, engine, UI
+and Rust tests; `-All` adds the provider-adapter, execution-backend, Obsidian and installer scripts). Each check is labelled
+`PASS — Physical Windows`, `PASS — Windows CI`, `FAIL`, `BLOCKED` or `NOT RUN` and written to `validation-results\*.json`; the
+scripts never run `#[ignore]`d live tests or a provider mission. See `scripts/windows/README.md`. CI also parses, lints and
+smoke-runs those scripts (`windows-scripts` job), builds the unsigned NSIS installer as a 7-day workflow artifact
+(`tauri-windows-build`), and `.github/workflows/security.yml` runs npm audit, cargo-audit, cargo-deny, gitleaks, osv-scanner
+(informational) and produces CycloneDX SBOMs. None of this has run on a physical Windows PC or on GitHub Actions yet.
+
 ## Honest list of what is not verified or not done
 
 * Installer: unsigned; no auto-update; upgrade-over-existing not tested.
