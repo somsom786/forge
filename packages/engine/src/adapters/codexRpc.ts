@@ -1,7 +1,7 @@
 // JSON-RPC 2.0 over a child process's stdio (newline-delimited), as spoken by `codex app-server`.
 // Transport only: no Codex semantics here, so the adapter can be tested against an in-memory peer.
 
-import { spawn } from 'node:child_process';
+import { type ChildProcessWithoutNullStreams, spawn as nodeSpawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 export class RpcError extends Error {
@@ -42,7 +42,25 @@ export function sanitizedCodexEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return out;
 }
 
-export function spawnCodexServer(exe: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number = REQUEST_TIMEOUT_MS): CodexServer {
+/** Process plumbing, injectable so tests can check what cleanup would run without running it. */
+export interface SpawnDeps {
+  spawn?: (command: string, args: string[], options: Record<string, unknown>) => ChildProcessWithoutNullStreams;
+  platform?: NodeJS.Platform;
+  /** Where `%SystemRoot%` is read from for the tree kill (defaults to the engine's own environment, never the worktree). */
+  hostEnv?: NodeJS.ProcessEnv;
+}
+
+/** The tree-kill command for Windows: an absolute System32 path and a neutral cwd, so nothing in the worktree can stand in for it. */
+export function windowsTreeKill(pid: number, hostEnv: NodeJS.ProcessEnv): { command: string; args: string[]; cwd: string } {
+  const fromEnv = hostEnv.SystemRoot || hostEnv.windir || '';
+  // Only an absolute drive path is acceptable; anything relative would be resolved against a directory we do not control.
+  const root = /^[A-Za-z]:\\[^"]*$/.test(fromEnv) && !fromEnv.includes('..') ? fromEnv.replace(/\\+$/, '') : 'C:\\Windows';
+  return { command: `${root}\\System32\\taskkill.exe`, args: ['/PID', String(pid), '/T', '/F'], cwd: root };
+}
+
+export function spawnCodexServer(exe: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number = REQUEST_TIMEOUT_MS, deps: SpawnDeps = {}): CodexServer {
+  const spawn = deps.spawn ?? (nodeSpawn as unknown as NonNullable<SpawnDeps['spawn']>);
+  const platform = deps.platform ?? process.platform;
   // No shell: the executable is a real binary and nothing here may be re-parsed by cmd.exe.
   const child = spawn(exe, args, { cwd, env: sanitizedCodexEnv(env), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   let stderrTail = '';
@@ -114,11 +132,11 @@ export function spawnCodexServer(exe: string, args: string[], cwd: string, env: 
       } catch {
         /* already closed */
       }
-      if (child.pid && process.platform === 'win32') {
+      if (child.pid && platform === 'win32') {
         // Whole tree: a shell command the agent started must not outlive the session.
         // Absolute path and a neutral cwd: the working directory is the (hostile) worktree and Windows looks there first.
-        const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
-        spawn(`${root}\\System32\\taskkill.exe`, ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, cwd: root }).on('error', () => {});
+        const k = windowsTreeKill(child.pid, deps.hostEnv ?? process.env);
+        spawn(k.command, k.args, { stdio: 'ignore', windowsHide: true, cwd: k.cwd }).on('error', () => {});
       } else {
         child.kill('SIGKILL');
       }

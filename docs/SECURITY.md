@@ -63,11 +63,15 @@ certification, and no remote service. Treat everything below as the implemented 
 
 ## Codex missions (Phase 5; review 5 in ENGINEERING_REVIEWS.md)
 
-* Every command and file change is an approval request decided by FORGE (policy, then a human); Codex's `workspace-write` sandbox stays on as defence in depth (requested, not verified).
+* Every command and file change is an approval request decided by FORGE (policy, then a human); Codex's `workspace-write` sandbox stays on as defence in depth.
+* **Effective settings are checked, not assumed.** `thread/start`/`thread/resume` answer with the sandbox, approval policy, approval reviewer, cwd and provider Codex actually applied after merging the user's config. FORGE records those values in `session.started` (`effective`, next to `requested`) and refuses the session before any turn starts if they are broader than requested: full access or an external sandbox, network access, writable roots outside the worktree, any approval policy other than `untrusted`, a reviewer other than `user`, another cwd or provider, or a missing field. (Engine tests against a scripted app-server; the response shape is from the Codex 0.163.0 protocol schema. Not yet observed against a real Codex whose user config widens the sandbox.)
+* **Approvals are scoped.** A command or file-change approval must name this session's thread and the current turn, and refer to an item announced in that turn with the matching type; otherwise it is declined without asking. An item re-announced with different content cannot be approved (an approval given while it changed is withdrawn); if it changes *after* approval, or a completed file change touches a path FORGE did not approve, the session is aborted.
+* **Items with no approval gate abort the session.** `mcpToolCall`, `dynamicToolCall`, `webSearch`, `imageGeneration`, `collabAgentToolCall`, `subAgentActivity` and `hookPrompt` items are shown to the user and the session is interrupted and killed. Their prerequisites are disabled, so this is a tripwire, not the primary control; it acts after the item has started.
 * **Codex starts MCP servers from a repository's `.codex/config.toml` even though it calls project config untrusted** (reproduced). FORGE refuses to run Codex in a worktree with project Codex config, disables every other server by name, disables hooks/plugins/apps/computer-use/browser/multi-agent, sets `notify=[]` and `web_search="disabled"`, and aborts on any MCP/hook startup.
 * **User exec allow-rules bypass approvals** (reproduced: an allowed command ran with no request). A Codex mission refuses to start while the Codex home contains allow rules unless `FORGE_CODEX_ALLOW_USER_RULES=1`.
 * Only a ChatGPT login is accepted (`account/read`); API-key/custom-provider logins and API-key environment variables are refused/scrubbed (case-insensitive). FORGE never reads `~/.codex/auth.json`.
-* Not verified: the effective sandbox settings Codex applies when the user's config widens them.
+* Cleanup on Windows runs `%SystemRoot%\System32\taskkill.exe` (absolute; a non-absolute `SystemRoot` falls back to `C:\Windows`) with `SystemRoot` as cwd; tested with an injected spawn and a hostile worktree full of `taskkill` sentinels, and on Linux with real processes. The Windows branch has **not been run on Windows** by this change.
+* Not verified on a real Codex: that a widened user config is reported in the `thread/start` response the way the schema says (the refusal logic is unit-tested only).
 
 ## Known limits (do not assume these are solved)
 

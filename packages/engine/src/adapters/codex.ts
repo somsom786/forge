@@ -100,6 +100,57 @@ export function projectCodexConfig(cwd: string): string[] {
   return found;
 }
 
+const samePath = (a: string, b: string): boolean => {
+  const norm = (p: string) => resolvePath(p).replace(/[\\/]+$/, '');
+  return process.platform === 'win32' ? norm(a).toLowerCase() === norm(b).toLowerCase() : norm(a) === norm(b);
+};
+
+const insideOrSame = (root: string, p: string): boolean => {
+  if (samePath(root, p)) return true;
+  const rel = relative(resolvePath(root), resolvePath(p));
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+};
+
+/** What `thread/start` / `thread/resume` reported as actually in effect for the thread. */
+export interface EffectiveThreadSettings {
+  sandbox: unknown;
+  approvalPolicy: unknown;
+  approvalsReviewer: unknown;
+  cwd: unknown;
+  modelProvider: unknown;
+}
+
+/** Codex answers `thread/start` with the settings it actually applied, after merging the user's config, profiles and
+ *  requirements. The request asked for workspace-write / untrusted / user; anything broader (full access, an external
+ *  sandbox, network, writable roots outside the worktree, a weaker approval policy, an automatic reviewer, another cwd or
+ *  provider) is refused before a turn starts. Missing fields fail closed. Returns the reasons; empty means acceptable. */
+export function effectiveSettingsProblems(eff: EffectiveThreadSettings, expected: { cwd: string; modelProvider: string }): string[] {
+  const problems: string[] = [];
+  const sb = isJson(eff.sandbox) ? eff.sandbox : null;
+  if (!sb) problems.push('Codex did not report the sandbox it applied');
+  else if (sb.type === 'workspaceWrite') {
+    if (sb.networkAccess !== false && sb.networkAccess !== undefined) problems.push(`the sandbox allows network access (${JSON.stringify(sb.networkAccess)})`);
+    const roots = Array.isArray(sb.writableRoots) ? sb.writableRoots : sb.writableRoots === undefined ? [] : null;
+    if (roots === null) problems.push('the sandbox reported unreadable writable roots');
+    else {
+      const outside = roots.filter((r: unknown) => typeof r !== 'string' || !insideOrSame(expected.cwd, r));
+      if (outside.length > 0) problems.push(`the sandbox can write outside the worktree (${outside.map((r: unknown) => String(r)).join(', ')})`);
+    }
+  } else if (sb.type === 'readOnly') {
+    if (sb.networkAccess !== false && sb.networkAccess !== undefined) problems.push(`the read-only sandbox allows network access (${JSON.stringify(sb.networkAccess)})`);
+  } else problems.push(`the sandbox is "${String(sb.type)}", broader than workspace-write`);
+  if (eff.approvalPolicy !== 'untrusted') problems.push(`the approval policy is ${JSON.stringify(eff.approvalPolicy)}, not "untrusted"`);
+  if (eff.approvalsReviewer !== 'user') problems.push(`approvals are reviewed by ${JSON.stringify(eff.approvalsReviewer)}, not routed to FORGE ("user")`);
+  if (typeof eff.cwd !== 'string' || !samePath(eff.cwd, expected.cwd)) problems.push(`the thread runs in ${JSON.stringify(eff.cwd)}, not the mission worktree`);
+  if (eff.modelProvider !== expected.modelProvider) problems.push(`the model provider is ${JSON.stringify(eff.modelProvider)}, not "${expected.modelProvider}"`);
+  return problems;
+}
+
+/** Item types that do something without passing through an approval request FORGE answers. Their prerequisites (MCP,
+ *  plugins, apps, web search, multi-agent, hooks) are disabled for the session; if one appears anyway it is shown to the
+ *  user and the session is aborted. */
+export const UNGATED_ITEM_TYPES = ['mcpToolCall', 'dynamicToolCall', 'webSearch', 'imageGeneration', 'collabAgentToolCall', 'subAgentActivity', 'hookPrompt'];
+
 export interface CodexDeps {
   /** Tests inject a scripted peer; production spawns the real `codex app-server`. */
   spawnServer?: (ctx: RunContext) => CodexServer;
@@ -154,8 +205,19 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
   const rpc: CodexRpc = server.rpc;
   const { start } = ctx;
   const items = new Map<string, Record<string, any>>(); // eslint-disable-line @typescript-eslint/no-explicit-any
+  // Items whose content changed after they were first announced: approvals for them are declined.
+  const conflicted = new Set<string>();
+  // File-change items FORGE approved, with the exact paths that were approved.
+  const approvedPaths = new Map<string, Set<string>>();
   let threadId = '';
   let turnId = '';
+  let resolveTurnKnown!: () => void;
+  const turnKnown = new Promise<void>((r) => (resolveTurnKnown = r));
+  const setTurnId = (id: string) => {
+    if (!id || turnId) return;
+    turnId = id;
+    resolveTurnKnown();
+  };
   let denials = 0;
   let callbackSeq = 0;
   let usage: UsageReport = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
@@ -181,14 +243,33 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
   };
   ctx.signal.addEventListener('abort', interrupt, { once: true });
 
+  const trip = (why: string) => {
+    if (tripwire) return;
+    tripwire = why;
+    ctx.emit('status', { message: `Codex session aborted: ${why}`, provider: 'codex', tripwire: true });
+    interrupt();
+    server.kill();
+    finishTurn({ status: 'failed', error: why });
+  };
+
+  /** Notifications and approvals must belong to this session's thread and current turn. */
+  const outOfScope = (p: Record<string, any>): string | null => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (p.threadId !== threadId) return `thread ${JSON.stringify(p.threadId)} is not this session's thread`;
+    if (p.turnId !== turnId) return `turn ${JSON.stringify(p.turnId)} is not the current turn`;
+    return null;
+  };
+
   // ---- notifications --------------------------------------------------------------------------------------------------
   rpc.onNotification((method, p) => {
     switch (method) {
       case 'item/agentMessage/delta':
         if (typeof p.delta === 'string') ctx.delta(typeof p.itemId === 'string' ? p.itemId : null, p.delta);
         break;
+      case 'turn/started':
+        if (p.threadId === threadId && isJson(p.turn) && typeof p.turn.id === 'string') setTurnId(p.turn.id);
+        break;
       case 'item/started':
-        if (isJson(p.item)) onItemStarted(p.item);
+        if (isJson(p.item)) onItemStarted(p.item, p);
         break;
       case 'item/completed':
         if (isJson(p.item)) onItemCompleted(p.item);
@@ -215,18 +296,10 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
         break;
       case 'mcpServer/startupStatus/updated':
         // Everything was disabled by name. Anything that still starts is a hole in that: stop before it can be used.
-        if (p.status === 'starting' || p.status === 'ready') {
-          tripwire = `the MCP server "${String(p.name)}" started although all MCP servers were disabled for this mission`;
-          interrupt();
-          server.kill();
-          finishTurn({ status: 'failed', error: tripwire });
-        }
+        if (p.status === 'starting' || p.status === 'ready') trip(`the MCP server "${String(p.name)}" started although all MCP servers were disabled for this mission`);
         break;
       case 'hook/started':
-        tripwire = 'a Codex hook started although hooks were disabled for this mission';
-        interrupt();
-        server.kill();
-        finishTurn({ status: 'failed', error: tripwire });
+        trip('a Codex hook started although hooks were disabled for this mission');
         break;
       case 'turn/completed': {
         const t = p.turn ?? {};
@@ -251,9 +324,37 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
     }
   };
 
-  const onItemStarted = (item: Record<string, any>) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+  /** The parts of an item an approval is about. A second announcement of the same id with different content is a conflict. */
+  const itemIdentity = (item: Record<string, any>) => // eslint-disable-line @typescript-eslint/no-explicit-any
+    JSON.stringify([item.type, item.command ?? null, item.cwd ?? null, Array.isArray(item.changes) ? item.changes.map((c: any) => [c?.path, c?.kind?.type, c?.kind?.move_path ?? null, c?.diff ?? null]) : null]); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const itemTurn = new Map<string, string>();
+
+  const onItemStarted = (item: Record<string, any>, scope: Record<string, any>) => { // eslint-disable-line @typescript-eslint/no-explicit-any
     if (typeof item.id !== 'string') return;
+    if (!turnId && scope.threadId === threadId && typeof scope.turnId === 'string') setTurnId(scope.turnId);
+    const bad = outOfScope(scope);
+    if (bad) {
+      // Not recorded, so no approval can refer to it; an ungated action is still a reason to stop.
+      ctx.emit('status', { message: `Codex announced item ${item.id} outside this session (${bad}); ignored`, provider: 'codex', warning: true });
+      if (UNGATED_ITEM_TYPES.includes(String(item.type))) trip(`Codex started a ${String(item.type)} item, which FORGE cannot gate, outside this session's turn`);
+      return;
+    }
+    const prev = items.get(item.id);
+    if (prev) {
+      if (itemIdentity(prev) !== itemIdentity(item)) {
+        conflicted.add(item.id);
+        if (approvedPaths.has(item.id)) trip(`Codex replaced the content of item ${item.id} after FORGE approved it`);
+        else ctx.emit('status', { message: `Codex re-announced item ${item.id} with different content; any approval for it will be declined`, provider: 'codex', warning: true });
+      }
+      return; // the first announcement stays authoritative
+    }
     items.set(item.id, item);
+    itemTurn.set(item.id, String(scope.turnId));
+    if (UNGATED_ITEM_TYPES.includes(String(item.type))) {
+      ctx.emit('tool.call', { toolUseId: item.id, name: toolName(item), summary: truncate(JSON.stringify(item.arguments ?? item.query ?? item.tool ?? item.type), 160).text, input: truncateDeep(item.arguments ?? {}, MAX_FIELD_BYTES), ungated: true });
+      trip(`Codex started a ${String(item.type)} item, which does not pass through FORGE approval (its prerequisites were disabled for this mission)`);
+      return;
+    }
     if (item.type === 'commandExecution') {
       const command = String(item.command ?? '');
       ctx.emit('tool.call', { toolUseId: item.id, name: toolName(item), summary: truncate(innerCommand(command), 300).text, input: truncateDeep({ command, cwd: item.cwd }, MAX_FIELD_BYTES) });
@@ -265,8 +366,6 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
         summary: changes.map((c: any) => String(c?.path ?? '')).join(', '), // eslint-disable-line @typescript-eslint/no-explicit-any
         input: truncateDeep({ changes: changes.map((c: any) => ({ path: c?.path, kind: c?.kind?.type, diff: c?.diff })) }, MAX_FIELD_BYTES), // eslint-disable-line @typescript-eslint/no-explicit-any
       });
-    } else if (item.type === 'mcpToolCall' || item.type === 'dynamicToolCall' || item.type === 'webSearch') {
-      ctx.emit('tool.call', { toolUseId: item.id, name: toolName(item), summary: truncate(JSON.stringify(item.arguments ?? item.query ?? {}), 160).text, input: truncateDeep(item.arguments ?? {}, MAX_FIELD_BYTES) });
     }
   };
 
@@ -291,22 +390,50 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
         const ok = item.status === 'completed';
         ctx.emit('tool.result', { toolUseId: id, name: toolName(item), ok, output: ok ? 'applied' : String(item.status ?? 'failed'), status: item.status });
         if (ok) {
+          // An applied file change must be one FORGE approved, touching only the approved paths.
+          const approved = approvedPaths.get(id);
+          const touched = (Array.isArray(item.changes) ? item.changes : []).flatMap((c: any) => [c?.path, c?.kind?.move_path]).filter((x: unknown): x is string => typeof x === 'string'); // eslint-disable-line @typescript-eslint/no-explicit-any
+          const unapproved = approved ? touched.filter((t: string) => !approved.has(t)) : touched;
+          if (!approved || unapproved.length > 0) trip(`Codex applied a file change FORGE did not approve (${unapproved.join(', ') || id})`);
           for (const c of Array.isArray(item.changes) ? item.changes : []) {
             if (typeof c?.path === 'string') ctx.emit('file.changed', { path: c.path, tool: toolName(item), toolUseId: id });
           }
         }
         break;
       }
-      case 'mcpToolCall':
-      case 'dynamicToolCall':
-      case 'webSearch':
-        ctx.emit('tool.result', { toolUseId: id, name: toolName(item), ok: item.status !== 'failed', output: truncate(JSON.stringify(item.result ?? item.error ?? ''), MAX_FIELD_BYTES).text });
+      default:
+        if (UNGATED_ITEM_TYPES.includes(String(item.type))) {
+          ctx.emit('tool.result', { toolUseId: id, name: toolName(item), ok: item.status !== 'failed', output: truncate(JSON.stringify(item.result ?? item.error ?? ''), MAX_FIELD_BYTES).text, ungated: true });
+          trip(`Codex ran a ${String(item.type)} item, which does not pass through FORGE approval`);
+        }
         break;
     }
   };
 
   // ---- approvals: FORGE decides ---------------------------------------------------------------------------------------
+  const declineOutOfScope = async (p: Record<string, any>): Promise<string | null> => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    // Approvals only arrive during a turn; wait until its id is known (or the turn is over) before comparing.
+    if (!turnId) await Promise.race([turnKnown, turnDone]);
+    const bad = outOfScope(p);
+    const itemId = String(p.itemId);
+    const why = bad ?? (conflicted.has(itemId) ? `item ${itemId} was re-announced with different content` : itemTurn.has(itemId) && itemTurn.get(itemId) !== p.turnId ? `item ${itemId} belongs to another turn` : null);
+    if (!why) return null;
+    denials++;
+    ctx.emit('status', { message: `Codex asked for an approval FORGE cannot attribute (${why}); declined`, provider: 'codex', warning: true });
+    return why;
+  };
+
   rpc.onRequest(async (method, p) => {
+    if (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval') {
+      if (await declineOutOfScope(p)) return { decision: 'decline' };
+      const known = items.get(String(p.itemId));
+      const expectType = method === 'item/fileChange/requestApproval' ? 'fileChange' : 'commandExecution';
+      if (known && known.type !== expectType) {
+        denials++;
+        ctx.emit('status', { message: `Codex asked to approve item ${String(p.itemId)} as ${expectType}, but it was announced as ${String(known.type)}; declined`, provider: 'codex', warning: true });
+        return { decision: 'decline' };
+      }
+    }
     if (method === 'item/commandExecution/requestApproval') {
       const item = items.get(String(p.itemId)) ?? {};
       const command = String(p.command ?? item.command ?? '');
@@ -315,7 +442,7 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
       const input = net ? { url: String(net.host ?? net.url ?? command) } : { command, cwd: p.cwd ?? item.cwd };
       const cb = String(p.approvalId ?? `${p.itemId}:${++callbackSeq}`);
       const d = await ctx.requestPermission({ tool, input, toolUseId: `${String(p.itemId)}:${cb}`, source: 'can_use_tool', reason: typeof p.reason === 'string' ? p.reason : undefined, signal: ctx.signal });
-      if (d.behavior === 'allow') return { decision: 'accept' };
+      if (d.behavior === 'allow' && !conflicted.has(String(p.itemId))) return { decision: 'accept' };
       denials++;
       return { decision: 'decline' };
     }
@@ -330,6 +457,7 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
         return { decision: 'decline' };
       }
       let n = 0;
+      const approved = new Set<string>();
       for (const c of changes) {
         const paths = [c?.path, c?.kind?.move_path].filter((x): x is string => typeof x === 'string');
         if (paths.length === 0) {
@@ -343,8 +471,15 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
             denials++;
             return { decision: 'decline' };
           }
+          approved.add(path);
         }
       }
+      // The item may have been replaced while a human was deciding: the approval covers only what they saw.
+      if (conflicted.has(String(p.itemId))) {
+        denials++;
+        return { decision: 'decline' };
+      }
+      approvedPaths.set(String(p.itemId), approved);
       return { decision: 'accept' };
     }
     // Permission grants, user-input prompts, MCP elicitations, dynamic tools, token refresh, attestation, legacy approvals:
@@ -388,24 +523,34 @@ async function runSession(ctx: RunContext, server: CodexServer): Promise<void> {
     threadId = String(th?.thread?.id ?? th?.threadId ?? start.resume ?? '');
     if (!threadId) throw new Error('Codex did not return a thread id');
     ctx.providerSession(threadId);
+    // Record what Codex says it applied, not what was asked for, and refuse anything broader before a turn can start.
+    const effective: EffectiveThreadSettings = { sandbox: th?.sandbox, approvalPolicy: th?.approvalPolicy, approvalsReviewer: th?.approvalsReviewer, cwd: th?.cwd, modelProvider: th?.modelProvider };
+    const problems = effectiveSettingsProblems(effective, { cwd: start.cwd, modelProvider: threadParams.modelProvider as string });
     ctx.emit('session.started', {
       providerSessionId: threadId,
       model: th?.model ?? start.model,
       cwd: start.cwd,
       credentialSource: 'chatgpt-login',
-      sandbox: 'workspace-write',
-      approvalPolicy: 'untrusted',
+      requested: { sandbox: 'workspace-write', approvalPolicy: 'untrusted', approvalsReviewer: 'user' },
+      effective: truncateDeep(effective, MAX_FIELD_BYTES),
+      effectiveAccepted: problems.length === 0,
       disabledMcpServers: mcpNames,
       disabledFeatures: CODEX_DISABLED_FEATURES,
     });
     if (tripwire) throw new Error(tripwire);
+    if (problems.length > 0) {
+      const message = `Codex applied settings broader than FORGE allows for a mission: ${problems.join('; ')}. Check your Codex config (sandbox_mode, sandbox_workspace_write, approval_policy, profiles, requirements) and run the mission again.`;
+      ctx.emit('status', { message, provider: 'codex', refused: true });
+      server.kill();
+      return finish('error', message);
+    }
 
     if (ctx.signal.aborted) {
       finish('interrupted', 'Cancelled');
       return;
     }
     const turn = await rpc.request('turn/start', { threadId, input: [{ type: 'text', text: start.prompt, text_elements: [] }] });
-    turnId = String(turn?.turn?.id ?? '');
+    setTurnId(String(turn?.turn?.id ?? ''));
     if (ctx.signal.aborted) interrupt();
 
     // A cancelled turn still has to report; give Codex a moment to wind down, then stop waiting.
