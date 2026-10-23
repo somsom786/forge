@@ -389,7 +389,7 @@ function Get-CargoTestSummary {
     param([Parameter(Mandatory = $true)][string]$LogPath)
     $passed = 0; $failed = 0; $ignored = 0; $filtered = 0; $found = $false
     if (Test-Path -LiteralPath $LogPath) {
-        foreach ($line in (Get-Content -LiteralPath $LogPath)) {
+        foreach ($line in (Get-Content -LiteralPath $LogPath -Encoding UTF8)) {
             $m = [regex]::Match($line, 'test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
             if ($m.Success) {
                 $found = $true

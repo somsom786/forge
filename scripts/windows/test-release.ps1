@@ -112,7 +112,7 @@ $appExe = $null
 try {
     Add-ValidationNote -Context $ctx -Text 'The installer is unsigned. Nothing is signed, published or uploaded by this script.'
     $tools = Get-ForgeTools
-    $conf = Get-Content -LiteralPath (Join-Path $ctx.TauriDir 'tauri.conf.json') -Raw | ConvertFrom-Json
+    $conf = Get-Content -LiteralPath (Join-Path $ctx.TauriDir 'tauri.conf.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $productName = [string]$conf.productName
     $version = [string]$conf.version
 

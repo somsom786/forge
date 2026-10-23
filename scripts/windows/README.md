@@ -86,7 +86,8 @@ proves nothing).
 ## Reading the JSON report
 
 Each run writes `validation-results\<script>-<yyyyMMdd-HHmmss>.json` and a folder of the same name with one `.log` per command
-(the folder `validation-results\` ignores itself in git). Shape:
+(the folder `validation-results\` ignores itself in git).The files are UTF-8 without a BOM: in Windows PowerShell 5.1 read them with
+`Get-Content -Raw -Encoding UTF8 | ConvertFrom-Json`, otherwise the em dash in the labels turns into `â€”`. Shape:
 
 ```json
 {

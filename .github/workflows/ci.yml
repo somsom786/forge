@@ -173,7 +173,7 @@ jobs:
             if ($AcceptedExitCodes -notcontains $code) { throw "$Script exited with $code" }
             $report = Get-ChildItem -Path validation-results -Filter "$Script-*.json" -File | Where-Object { $_.LastWriteTime -ge $started } | Sort-Object LastWriteTime | Select-Object -Last 1
             if ($null -eq $report) { throw "$Script wrote no JSON report" }
-            $json = Get-Content -LiteralPath $report.FullName -Raw | ConvertFrom-Json
+            $json = Get-Content -LiteralPath $report.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
             if ($json.exitCode -ne $code) { throw "$Script report says exit code $($json.exitCode), process said $code" }
             if ($json.environment.githubActions -ne $true) { throw "$Script report does not record GitHub Actions" }
             if (@($json.checks).Count -lt 1) { throw "$Script report has no checks" }
