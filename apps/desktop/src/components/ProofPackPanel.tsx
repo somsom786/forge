@@ -18,7 +18,7 @@ export function SafeMarkdown({ text }: { text: string }) {
       i++;
       while (i < lines.length && !lines[i].startsWith('```')) buf.push(lines[i++]);
       i++;
-      out.push(<pre key={out.length} className="overflow-x-auto rounded border border-line bg-bg p-2 text-[12px]">{buf.join('\n')}</pre>);
+      out.push(<pre key={out.length} className="overflow-x-auto rounded border border-line bg-bg p-2 text-[12px]" tabIndex={0}>{buf.join('\n')}</pre>);
     } else if (/^#{1,4}\s/.test(l)) {
       const lvl = l.match(/^#+/)![0].length;
       out.push(<div key={out.length} className={`mt-3 font-semibold ${lvl <= 1 ? 'text-[15px]' : lvl === 2 ? 'text-[13.5px] border-b border-line pb-0.5' : 'text-[13px] text-muted'}`}>{l.replace(/^#+\s*/, '')}</div>);
@@ -31,7 +31,7 @@ export function SafeMarkdown({ text }: { text: string }) {
         i++;
       }
       out.push(
-        <div key={out.length} className="overflow-x-auto">
+        <div key={out.length} className="overflow-x-auto" tabIndex={0} role="region" aria-label="Table">
           <table className="tbl text-[12px]">
             <tbody>
               {rows.map((r, ri) => (

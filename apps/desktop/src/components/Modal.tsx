@@ -1,10 +1,25 @@
-import type { ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 
 /** The app's styled modal (role=dialog). Used instead of native confirm/alert/prompt. */
 export function Modal({
   open, onClose, title, children, footer, tone, wide,
 }: { open: boolean; onClose: () => void; title: string; children: ReactNode; footer?: ReactNode; tone?: 'bad'; wide?: boolean }) {
+  // A body that scrolls but holds nothing focusable (for example only disabled buttons) must itself be focusable, or
+  // keyboard users cannot scroll it. Otherwise it stays out of the tab order so the first control gets focus as usual.
+  const [scrollFocus, setScrollFocus] = useState(false);
+  const observer = useRef<ResizeObserver | null>(null);
+  const body = useCallback((el: HTMLDivElement | null) => {
+    observer.current?.disconnect();
+    observer.current = null;
+    if (!el) return;
+    const check = () => setScrollFocus(el.scrollHeight > el.clientHeight && !el.querySelector('a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'));
+    check();
+    if (typeof ResizeObserver !== 'undefined') {
+      observer.current = new ResizeObserver(check);
+      observer.current.observe(el);
+    }
+  }, []);
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>
@@ -16,7 +31,7 @@ export function Modal({
           <div className="border-b border-line px-4 py-3">
             <Dialog.Title className="m-0 text-[14px] font-semibold">{title}</Dialog.Title>
           </div>
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">{children}</div>
+          <div ref={body} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" {...(scrollFocus ? { tabIndex: 0, role: 'region', 'aria-label': title } : {})}>{children}</div>
           {footer && <div className="flex justify-end gap-2 border-t border-line px-4 py-3">{footer}</div>}
         </Dialog.Content>
       </Dialog.Portal>

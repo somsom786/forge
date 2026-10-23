@@ -100,7 +100,7 @@ const FileSection = memo(function FileSection({ f, mode, collapsed, onToggle }: 
         </span>
       </button>
       {!collapsed && (
-        <div className="overflow-x-auto bg-bg">
+        <div className="overflow-x-auto bg-bg" tabIndex={0} role="region" aria-label={`Diff of ${f.path}`}>
           {f.binary && <div className="px-3 py-2 text-muted">Binary file: no textual diff available.</div>}
           {f.status === 'renamed' && (
             <div className="px-3 py-1.5 text-muted">

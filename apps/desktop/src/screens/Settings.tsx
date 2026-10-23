@@ -43,7 +43,7 @@ export function SettingsScreen() {
           </button>
         }
       />
-      <div className="min-h-0 flex-1 space-y-8 overflow-auto p-5">
+      <div className="min-h-0 flex-1 space-y-8 overflow-auto p-5" tabIndex={0} role="region" aria-label="Settings">
         <section aria-label="Application">
           <h2 className="m-0 mb-2 text-[12px] font-medium uppercase tracking-wide text-muted">Application</h2>
           {!info ? (

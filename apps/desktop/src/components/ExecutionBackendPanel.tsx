@@ -63,7 +63,7 @@ export function ExecutionBackendPanel({ project, scope = 'checks' }: { project: 
         <p className="m-0 text-muted">{copy.intro}</p>
         {list === null && <div className="text-muted">Checking what this machine supports…</div>}
         {list?.map((b) => (
-          <div key={b.id} className={`space-y-2 rounded-md border p-3 ${b.id === selected ? 'border-accent' : 'border-line-strong'} ${b.available ? '' : 'opacity-70'}`}>
+          <div key={b.id} className={`space-y-2 rounded-md border p-3 ${b.id === selected ? 'border-accent' : 'border-line-strong'}`}>
             <div className="flex items-center gap-2">
               <span className="font-medium">{b.label}</span>
               {b.id === selected && <Badge tone="run">current</Badge>}

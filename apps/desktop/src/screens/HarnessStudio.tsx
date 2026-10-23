@@ -126,7 +126,7 @@ export function HarnessStudio() {
             )}
             {groups.map((g) => (
               <section key={g.kind} aria-label={g.label}>
-                <h3 className="sticky top-0 z-[1] m-0 border-b border-line bg-panel px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted">{g.label} ({g.items.length})</h3>
+                <h2 className="sticky top-0 z-[1] m-0 border-b border-line bg-panel px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted">{g.label} ({g.items.length})</h2>
                 {g.items.map((it) => (
                   <button key={it.id} onClick={() => select(it.id)} aria-current={selected === it.id} className={`block w-full border-b border-line px-3 py-1.5 text-left ${selected === it.id ? 'bg-accent-dim' : 'hover:bg-hover'}`}>
                     <div className="flex items-center gap-1.5">

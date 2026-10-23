@@ -108,7 +108,7 @@ export function ApprovalCard({ approval: a, compact }: { approval: Approval; com
           {a.decisionNote}
         </div>
       )}
-      {!pending && a.decidedBy && !blocked && <div className="mt-1 text-[11px] text-faint">Decided by {a.decidedBy}</div>}
+      {!pending && a.decidedBy && !blocked && <div className="mt-1 text-[11px] text-muted">Decided by {a.decidedBy}</div>}
 
       {pending && (
         <div className="mt-3 space-y-2">

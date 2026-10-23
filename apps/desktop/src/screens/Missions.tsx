@@ -132,7 +132,7 @@ export function MissionsScreen() {
           {desc ? <ArrowDown className="size-3.5" aria-hidden /> : <ArrowUp className="size-3.5" aria-hidden />} Updated
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto" tabIndex={0} role="region" aria-label="Mission list">
         <MissionsTable missions={rows} emptyHint={Object.keys(missions).length === 0 ? 'Create your first mission to get started.' : 'No missions match the current filters.'} />
       </div>
     </div>

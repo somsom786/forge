@@ -97,6 +97,18 @@ jobs:
           npm run typecheck -w forge-desktop
           npm run test -w forge-desktop
 
+      # SIMULATED: the React UI in Chromium against the in-browser mock backend (not Tauri, not WebView2). Layout at the
+      # minimum window size, keyboard use and WCAG A/AA checks (axe). The browser comes from Playwright's own installer,
+      # pinned by the exact @playwright/test version in the lockfile.
+      - name: UI end-to-end tests in the browser preview (simulated; Linux)
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop
+        env:
+          CI: '1'
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+
       - name: Git identity for test repositories
         run: |
           git config --global user.name "FORGE CI"

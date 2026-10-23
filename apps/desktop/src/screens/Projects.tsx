@@ -115,7 +115,7 @@ function ProjectList() {
                 <th>Default branch</th>
                 <th>Git status</th>
                 <th className="w-[80px]">Missions</th>
-                <th className="w-[210px]" />
+                <th className="w-[210px]"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
