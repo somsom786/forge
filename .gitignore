@@ -8,3 +8,6 @@ research/schema-codex/
 .forge-tmp/
 apps/desktop/src-tauri/resources-staged/
 packages/engine/bundle/
+
+# local agent worktrees (per-machine state, not project code)
+.claude/
