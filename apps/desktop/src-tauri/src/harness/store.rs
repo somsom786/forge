@@ -108,6 +108,22 @@ impl Store {
         Ok(s.query_map([], row)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Every change of a project that still has a backup, newest first (all states).
+    pub fn h_changes_with_backups(&self, project_id: &str) -> Result<Vec<HarnessChange>> {
+        let c = self.c();
+        let mut s = c.prepare(&format!("SELECT {COLS} FROM harness_change c WHERE c.project_id=?1 AND c.backup_path IS NOT NULL ORDER BY c.created_at DESC, c.id DESC"))?;
+        Ok(s.query_map([project_id], row)?.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Forget a pruned backup. Only finished changes lose their backup; an unresolved one keeps it for recovery.
+    pub fn h_change_drop_backup(&self, id: &str) -> Result<()> {
+        let n = self.c().execute("UPDATE harness_change SET backup_path=NULL WHERE id=?1 AND state<>'started'", [id])?;
+        if n != 1 {
+            return Err(ForgeError::InvalidState(format!("harness change {id} is unresolved or unknown; its backup is kept")));
+        }
+        Ok(())
+    }
+
     /// Record that the user has seen (or just wrote) this exact content of `rel`.
     pub fn h_review_set(&self, project_id: &str, rel: &str, sha256: &str) -> Result<()> {
         self.c().execute(

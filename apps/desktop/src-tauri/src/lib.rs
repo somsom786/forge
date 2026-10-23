@@ -172,6 +172,8 @@ pub fn run() {
             commands::harness_rollback_preview,
             commands::harness_rollback,
             commands::harness_mark_reviewed,
+            commands::harness_backup_usage,
+            commands::harness_prune_backups,
             commands::harness_hook_templates,
             commands::harness_hook_preview_add,
             commands::harness_hook_preview_remove,

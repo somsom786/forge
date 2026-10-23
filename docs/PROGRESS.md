@@ -21,7 +21,7 @@ UI 100 (vitest); `npm run typecheck` clean. Live tests that spend provider quota
 * Installer: unsigned; no auto-update; upgrade-over-existing not tested.
 * Obsidian live opening, Obsidian write-back with a real vault in use.
 * Codex: resume of a thread, command approvals through FORGE (verified with a probe against the real app-server, and by unit tests, but not in a FORGE mission), Windows sandbox behaviour (`workspace-write` is requested; whether the user's `elevated` sandbox actually confines a command was not tested), usage numbers.
-* Harness: handle-pinned write path (a concurrent local process could win a microsecond race), dry-run processes are not created suspended, backups are never pruned.
+* Harness: handle-pinned write path (a concurrent local process could win a microsecond race when *replacing* a file; creating one is now exclusive). `cloud/harness-hardening` adds backup usage/pruning (Core + Tauri commands + TS contract, no UI yet; Linux unit tests) and suspended-start for dry-run hooks on Windows (**compiled for Windows only, not run on Windows**).
 * The mission workspace tab strip scrolls horizontally with 7 tabs; it was not re-screenshotted after the last change.
 * Multi-agent review missions, conflict detection between concurrent missions, experiments.
 

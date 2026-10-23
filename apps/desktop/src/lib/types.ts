@@ -638,6 +638,26 @@ export interface HarnessChange {
   rolledBackBy: string | null;
 }
 
+/** Disk used by a project's Harness Studio backups. Protected backups (unresolved changes, the newest `keepPerFile` undo steps
+ *  per file, and any change that can be rolled back right now) are never pruned. */
+export interface HarnessBackupUsage {
+  keepPerFile: number;
+  files: number;
+  bytes: number;
+  protectedFiles: number;
+  protectedBytes: number;
+  prunableFiles: number;
+  prunableBytes: number;
+  /** Backup files no journal entry refers to (an interrupted save). */
+  orphanFiles: number;
+}
+
+export interface HarnessPruneReport {
+  removedFiles: number;
+  removedBytes: number;
+  after: HarnessBackupUsage;
+}
+
 export interface HarnessApplyArgs {
   projectId: string;
   rel: string;
