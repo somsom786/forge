@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   ActivityEvent, AppInfo, Approval, Mission, MissionChanges, MissionDetail, MissionDiff, NewMissionArgs,
   Project, ProviderInfo, RecoveryReport, RepoStatus, UiEvent,
+  ContextPackage, ContextPackageRow, KnowledgePage, KnowledgePageDetail, KnowledgeRevision, KnowledgeStatus, LintIssue, NewKnowledgeArgs, ScanResult,
   CheckSpec, Contract, MergeOutcome, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
 } from './types';
 
@@ -46,6 +47,32 @@ export const api = {
   missionCleanup: (missionId: string, confirmLoss: boolean) => invoke<WorktreeSafety>('mission_cleanup', { missionId, confirmLoss }),
   proofpackGenerate: (missionId: string) => invoke<ProofPack>('proofpack_generate', { missionId }),
   proofpackList: (missionId: string) => invoke<ProofPack[]>('proofpack_list', { missionId }),
+
+  knowledgeStatus: (projectId: string) => invoke<KnowledgeStatus>('knowledge_status', { projectId }),
+  knowledgeScan: (projectId: string) => invoke<ScanResult>('knowledge_scan', { projectId }),
+  knowledgeRebuildIndex: (projectId: string) => invoke<number>('knowledge_rebuild_index', { projectId }),
+  knowledgeLint: (projectId: string) => invoke<LintIssue[]>('knowledge_lint', { projectId }),
+  /** Connect (path) or disconnect (null) an Obsidian vault folder. Existing vaults are read-only until `write` is granted. */
+  knowledgeVaultSet: (projectId: string, path: string | null, write: boolean) => invoke<KnowledgeStatus>('knowledge_vault_set', { projectId, path, write }),
+  knowledgeList: (projectId: string, query?: string) => invoke<KnowledgePage[]>('knowledge_list', { projectId, query: query ?? null }),
+  knowledgeGet: (pageId: string) => invoke<KnowledgePageDetail>('knowledge_get', { pageId }),
+  knowledgeCreate: (projectId: string, args: NewKnowledgeArgs) => invoke<KnowledgePage>('knowledge_create', { projectId, args }),
+  /** Save an agent message (activity event id) as a PROPOSAL sourced to that exact event. */
+  knowledgeSaveFromEvent: (missionId: string, eventId: number, title: string, kind: string) =>
+    invoke<KnowledgePage>('knowledge_save_from_event', { missionId, eventId, title, kind }),
+  knowledgeProposeRevision: (pageId: string, text: string, note?: string) => invoke<KnowledgeRevision>('knowledge_propose_revision', { pageId, text, note: note ?? null }),
+  knowledgeApplyRevision: (revisionId: string) => invoke<KnowledgePage>('knowledge_apply_revision', { revisionId }),
+  knowledgeRejectRevision: (revisionId: string) => invoke<void>('knowledge_reject_revision', { revisionId }),
+  /** The only way a page becomes verified. `expectedSha256` must be the page's `currentSha256` the reviewer was looking at. */
+  knowledgeVerify: (pageId: string, expectedSha256: string, note?: string) => invoke<KnowledgePage>('knowledge_verify', { pageId, expectedSha256, note: note ?? null }),
+  knowledgeSetStatus: (pageId: string, action: 'dispute' | 'archive' | 'restore', note?: string) => invoke<KnowledgePage>('knowledge_set_status', { pageId, action, note: note ?? null }),
+  knowledgeSupersede: (oldId: string, newId: string, note?: string) => invoke<KnowledgePage>('knowledge_supersede', { oldId, newId, note: note ?? null }),
+  /** Deletes the page file (when writable), its index rows and the text it left in past context snapshots. */
+  knowledgeForget: (pageId: string) => invoke<void>('knowledge_forget', { pageId }),
+  knowledgeOpenInObsidian: (pageId: string) => invoke<void>('knowledge_open_in_obsidian', { pageId }),
+  contextPreview: (projectId: string, objective: string, hints: string[], pins: string[]) => invoke<ContextPackage>('context_preview', { projectId, objective, hints, pins }),
+  contextForMission: (missionId: string) => invoke<ContextPackageRow[]>('context_for_mission', { missionId }),
+  missionMemorySet: (missionId: string, useMemory: boolean, pins: string[]) => invoke<Mission>('mission_memory_set', { missionId, useMemory, pins }),
 
   approvalsPending: (missionId?: string) => invoke<Approval[]>('approvals_pending', { missionId: missionId ?? null }),
   approvalDecide: (approvalId: string, approved: boolean, note?: string) =>

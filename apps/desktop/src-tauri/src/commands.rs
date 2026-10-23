@@ -377,3 +377,131 @@ pub async fn proofpack_generate(core: CoreState<'_>, mission_id: String) -> Resu
 pub async fn proofpack_list(core: CoreState<'_>, mission_id: String) -> Result<Vec<ProofPackRow>> {
     blocking(&core, move |c| c.store.proof_packs(&mission_id)).await
 }
+
+// ---- Phase 3: knowledge (memory) --------------------------------------------------------------
+
+use crate::knowledge::lint::Issue;
+use crate::knowledge::retrieve::ContextPackage;
+use crate::knowledge::service::{FreshnessReport, ScanReport};
+use crate::knowledge::store::{ContextPackageRow, KPage, KRevision};
+use crate::supervisor::{KnowledgeStatus, NewKnowledgeArgs, PageDetail};
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanResult {
+    pub scan: ScanReport,
+    pub freshness: FreshnessReport,
+}
+
+#[tauri::command]
+pub async fn knowledge_status(core: CoreState<'_>, project_id: String) -> Result<KnowledgeStatus> {
+    blocking(&core, move |c| c.knowledge_status(&project_id)).await
+}
+
+#[tauri::command]
+pub async fn knowledge_scan(core: CoreState<'_>, project_id: String) -> Result<ScanResult> {
+    blocking(&core, move |c| c.knowledge_scan(&project_id).map(|(scan, freshness)| ScanResult { scan, freshness })).await
+}
+
+#[tauri::command]
+pub async fn knowledge_rebuild_index(core: CoreState<'_>, project_id: String) -> Result<usize> {
+    blocking(&core, move |c| c.knowledge_rebuild_index(&project_id)).await
+}
+
+#[tauri::command]
+pub async fn knowledge_lint(core: CoreState<'_>, project_id: String) -> Result<Vec<Issue>> {
+    blocking(&core, move |c| c.knowledge_lint(&project_id)).await
+}
+
+#[tauri::command]
+pub async fn knowledge_vault_set(core: CoreState<'_>, project_id: String, path: Option<String>, write: bool) -> Result<KnowledgeStatus> {
+    blocking(&core, move |c| c.knowledge_set_vault(&project_id, path.as_deref().map(Path::new), write)).await
+}
+
+#[tauri::command]
+pub async fn knowledge_list(core: CoreState<'_>, project_id: String, query: Option<String>) -> Result<Vec<KPage>> {
+    blocking(&core, move |c| c.knowledge_pages(&project_id, query.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn knowledge_get(core: CoreState<'_>, page_id: String) -> Result<PageDetail> {
+    blocking(&core, move |c| c.knowledge_page_detail(&page_id)).await
+}
+
+#[tauri::command]
+pub async fn knowledge_create(core: CoreState<'_>, project_id: String, args: NewKnowledgeArgs) -> Result<KPage> {
+    blocking(&core, move |c| c.knowledge_create(&project_id, args)).await
+}
+
+#[tauri::command]
+pub async fn knowledge_save_from_event(core: CoreState<'_>, mission_id: String, event_id: i64, title: String, kind: String) -> Result<KPage> {
+    blocking(&core, move |c| c.knowledge_save_from_event(&mission_id, event_id, &title, &kind)).await
+}
+
+#[tauri::command]
+pub async fn knowledge_propose_revision(core: CoreState<'_>, page_id: String, text: String, note: Option<String>) -> Result<KRevision> {
+    blocking(&core, move |c| c.knowledge_propose_revision(&page_id, &text, note.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn knowledge_apply_revision(core: CoreState<'_>, revision_id: String) -> Result<KPage> {
+    blocking(&core, move |c| c.knowledge_apply_revision(&revision_id)).await
+}
+
+#[tauri::command]
+pub async fn knowledge_reject_revision(core: CoreState<'_>, revision_id: String) -> Result<()> {
+    blocking(&core, move |c| c.knowledge_reject_revision(&revision_id)).await
+}
+
+#[tauri::command]
+pub async fn knowledge_verify(core: CoreState<'_>, page_id: String, expected_sha256: String, note: Option<String>) -> Result<KPage> {
+    blocking(&core, move |c| c.knowledge_verify(&page_id, &expected_sha256, note.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn knowledge_set_status(core: CoreState<'_>, page_id: String, action: String, note: Option<String>) -> Result<KPage> {
+    blocking(&core, move |c| c.knowledge_set_status(&page_id, &action, note.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn knowledge_supersede(core: CoreState<'_>, old_id: String, new_id: String, note: Option<String>) -> Result<KPage> {
+    blocking(&core, move |c| c.knowledge_supersede(&old_id, &new_id, note.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn knowledge_forget(core: CoreState<'_>, page_id: String) -> Result<()> {
+    blocking(&core, move |c| c.knowledge_forget(&page_id)).await
+}
+
+#[tauri::command]
+pub async fn knowledge_open_in_obsidian(core: CoreState<'_>, page_id: String) -> Result<()> {
+    blocking(&core, move |c| {
+        let uri = c.knowledge_open_in_obsidian(&page_id)?;
+        // rundll32 hands the URI to the registered handler without any shell parsing of `%` or `&`.
+        let mut cmd = std::process::Command::new("rundll32");
+        cmd.args(["url.dll,FileProtocolHandler", &uri]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
+        cmd.spawn()?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn context_preview(core: CoreState<'_>, project_id: String, objective: String, hints: Vec<String>, pins: Vec<String>) -> Result<ContextPackage> {
+    blocking(&core, move |c| c.context_preview(&project_id, &objective, &hints, &pins)).await
+}
+
+#[tauri::command]
+pub async fn context_for_mission(core: CoreState<'_>, mission_id: String) -> Result<Vec<ContextPackageRow>> {
+    blocking(&core, move |c| c.store.k_contexts_for(&mission_id)).await
+}
+
+#[tauri::command]
+pub async fn mission_memory_set(core: CoreState<'_>, mission_id: String, use_memory: bool, pins: Vec<String>) -> Result<Mission> {
+    blocking(&core, move |c| c.set_mission_memory(&mission_id, use_memory, &pins)).await
+}

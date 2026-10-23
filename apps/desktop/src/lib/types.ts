@@ -34,6 +34,10 @@ export interface Mission {
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Attach verified project knowledge to the first prompt (default true). */
+  useMemory: boolean;
+  /** Page ids the user explicitly pinned, even if unverified. */
+  memoryPins: string[];
 }
 
 export interface AgentSession {
@@ -338,4 +342,169 @@ export interface ProofPack {
   /** Local path of the exact diff the pack describes. */
   diffPath: string | null;
   content: Record<string, any>;
+}
+
+// ---- Phase 3: knowledge (memory) -----------------------------------------------------------------
+//
+// TRUST MODEL (enforced in Rust, tested): authority lives in FORGE's review records, never in page files.
+//  * `status` is what a person last decided; `effectiveState` is what is true NOW: a page edited after verification is
+//    `proposed` again (`modifiedSinceVerified`). Only `effectiveState === 'verified'` pages are injected automatically.
+//  * Nothing written inside a page (frontmatter `state:`, `author:`) can grant trust.
+//  * Verification is bound to the exact content hash (`currentSha256`) the reviewer saw.
+
+export type PageStatus = 'proposed' | 'verified' | 'disputed' | 'superseded' | 'archived';
+export type PageKind = 'architecture' | 'component' | 'decision' | 'convention' | 'incident' | 'failure_mode' | 'solution' | 'debt' | 'experiment' | 'mission_record' | 'note';
+
+export interface KnowledgePage {
+  id: string;
+  projectId: string;
+  /** `managed` = FORGE-owned folder; `vault` = a connected Obsidian vault folder. */
+  rootKind: 'managed' | 'vault';
+  relPath: string;
+  slug: string;
+  title: string;
+  kind: PageKind | string;
+  scope: 'project' | 'global';
+  /** How the page entered FORGE: who wrote it. */
+  author: 'user' | 'agent' | 'system';
+  origin: 'forge' | 'imported';
+  /** What a human last decided. */
+  status: PageStatus;
+  /** What is true right now. */
+  effectiveState: PageStatus;
+  modifiedSinceVerified: boolean;
+  verifiedSha256: string | null;
+  verifiedAt: string | null;
+  verifiedNote: string | null;
+  /** Hash of the page file as last read; pass this to knowledgeVerify as `expectedSha256`. */
+  currentSha256: string;
+  topic: string | null;
+  supersedesId: string | null;
+  supersededById: string | null;
+  files: string[];
+  tags: string[];
+  warnings: string[];
+  missing: boolean;
+  createdAt: string;
+  updatedAt: string;
+  indexedAt: string;
+}
+
+export interface KnowledgeLink { kind: 'wikilink' | 'file'; target: string; toPage: string | null; ambiguous: boolean }
+export interface KnowledgeSource {
+  id: string;
+  projectId: string;
+  kind: 'repo_file' | 'commit' | 'mission' | 'check_run' | 'user_note';
+  locator: string;
+  gitBlob: string | null;
+  rawSha256: string | null;
+  normSha256: string | null;
+  snapshot: string | null;
+  extractor: string;
+  /** Whether the source still matches what was captured. */
+  state: 'current' | 'changed' | 'missing' | 'unknown';
+  capturedAt: string;
+  checkedAt: string | null;
+}
+export interface KnowledgeReview { action: string; revisionSha256: string | null; reviewer: string; note: string | null; at: string }
+export interface KnowledgeRevision {
+  id: string;
+  pageId: string;
+  baseSha256: string;
+  /** Full proposed file text (frontmatter + body). */
+  text: string;
+  author: string;
+  note: string | null;
+  state: 'proposed' | 'applied' | 'rejected' | 'conflict';
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+export interface KnowledgePageDetail {
+  page: KnowledgePage;
+  /** The file exactly as on disk. */
+  text: string;
+  links: KnowledgeLink[];
+  backlinks: KnowledgePage[];
+  sources: KnowledgeSource[];
+  reviews: KnowledgeReview[];
+  revisions: KnowledgeRevision[];
+  /** False for pages in a read-only vault: revisions can be proposed but not applied. */
+  writable: boolean;
+}
+
+export interface VaultInfo { path: string; isObsidianVault: boolean; writable: boolean }
+export interface KnowledgeStatus {
+  managedRoot: string;
+  vault: VaultInfo | null;
+  obsidianInstalled: boolean;
+  /** Counts by effective state. */
+  counts: Partial<Record<PageStatus, number>>;
+  total: number;
+  missing: number;
+  unfinishedOperations: number;
+}
+
+export interface ScanReport { indexed: number; unchanged: number; removed: number; changedPages: string[]; skipped: string[]; warnings: string[] }
+export interface FreshnessReport { checked: number; changed: number; missing: number }
+export interface ScanResult { scan: ScanReport; freshness: FreshnessReport }
+
+export interface LintIssue { severity: 'info' | 'warning' | 'problem'; kind: string; pageId: string | null; message: string }
+
+export interface SourceArg { kind: KnowledgeSource['kind']; locator: string; eventSeq?: number }
+export interface NewKnowledgeArgs {
+  title: string;
+  kind: PageKind | string;
+  body: string;
+  files?: string[];
+  tags?: string[];
+  topic?: string;
+  sources?: SourceArg[];
+}
+
+export interface ContextSourceRef { kind: string; locator: string; state: string }
+export interface ContextItem {
+  pageId: string;
+  title: string;
+  kind: string;
+  /** verified = a person verified this exact revision; pinned_unverified = the user chose to include it anyway. */
+  trust: 'verified' | 'pinned_unverified';
+  author: string;
+  origin: string;
+  verifiedAt: string | null;
+  verifiedNote: string | null;
+  sha256: string;
+  excerpt: string;
+  truncated: boolean;
+  score: number;
+  /** Plain-words reasons it was included. */
+  reasons: string[];
+  sources: ContextSourceRef[];
+  /** A source it was written from has changed or disappeared since. */
+  stale: boolean;
+  files: string[];
+}
+export interface ContextOmitted { pageId: string; title: string; reason: string }
+export interface ContextPackage {
+  items: ContextItem[];
+  omitted: ContextOmitted[];
+  query: string;
+  charBudget: number;
+  /** Exactly what is appended to the agent's first prompt ('' when nothing qualified). */
+  text: string;
+  sha256: string;
+  pathHints: string[];
+}
+/** The package a mission actually received (persisted at its first turn). */
+export interface ContextPackageRow {
+  id: string;
+  missionId: string;
+  createdAt: string;
+  query: string;
+  params: { budgetChars?: number; pathHints?: string[] };
+  items: ContextItem[];
+  omitted: ContextOmitted[];
+  injectedText: string;
+  injectedSha256: string;
+  charBudget: number;
 }
