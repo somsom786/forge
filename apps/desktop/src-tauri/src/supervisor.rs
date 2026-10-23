@@ -79,6 +79,8 @@ pub struct Config {
     pub max_concurrent: usize,
     /// Loopback Anthropic-compatible endpoint (Ollama) for `claude-local` missions.
     pub ollama_url: String,
+    /// Extra environment for engine processes (tests isolate Claude Code's config directory this way).
+    pub engine_env: Vec<(String, String)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -553,7 +555,8 @@ impl Core {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("FORGE_ALLOW_FAKE_PROVIDER", if self.cfg.allow_fake { "1" } else { "0" });
+            .env("FORGE_ALLOW_FAKE_PROVIDER", if self.cfg.allow_fake { "1" } else { "0" })
+            .envs(self.cfg.engine_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

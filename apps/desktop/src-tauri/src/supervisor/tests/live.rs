@@ -21,7 +21,7 @@ fn live_local_model_mission_end_to_end() {
     let home = tempfile::tempdir().unwrap();
     let core = Core::new(
         Store::in_memory(),
-        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: Some(claude), codex: None, allow_fake: false, max_concurrent: 1, ollama_url: url },
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: Some(claude), codex: None, allow_fake: false, max_concurrent: 1, ollama_url: url, engine_env: vec![] },
         Arc::new(|_| {}),
     );
     let project = core.add_project(repo.path()).unwrap();
@@ -90,7 +90,7 @@ fn live_local_memory_gate_with_a_real_agent() {
     let home = tempfile::tempdir().unwrap();
     let core = Core::new(
         Store::in_memory(),
-        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: Some(claude), codex: None, allow_fake: false, max_concurrent: 1, ollama_url: url },
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: Some(claude), codex: None, allow_fake: false, max_concurrent: 1, ollama_url: url, engine_env: vec![] },
         Arc::new(|_| {}),
     );
     let project = core.add_project(repo.path()).unwrap();
@@ -174,7 +174,7 @@ fn codex_live(hostile: bool) {
     let home = tempfile::tempdir().unwrap();
     let core = Core::new(
         Store::in_memory(),
-        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: None, codex: Some(codex), allow_fake: false, max_concurrent: 1, ollama_url: "http://127.0.0.1:11434".into() },
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: None, codex: Some(codex), allow_fake: false, max_concurrent: 1, ollama_url: "http://127.0.0.1:11434".into(), engine_env: vec![] },
         Arc::new(|_| {}),
     );
     let project = core.add_project(repo.path()).unwrap();

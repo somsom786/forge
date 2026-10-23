@@ -103,6 +103,8 @@ jobs:
           FORGE_REQUIRE_SANDBOX_TESTS: ${{ runner.os == 'Linux' && '1' || '0' }}
           # Real gitleaks / osv-scanner runs through the FORGE check path must not silently skip on Linux.
           FORGE_REQUIRE_SCANNER_TESTS: ${{ runner.os == 'Linux' && '1' || '0' }}
+          # Real Claude Code (the binary npm installs with the Agent SDK) against a scripted local model: no account, no quota.
+          FORGE_REQUIRE_CLAUDE_REAL_TESTS: '1'
         run: cargo test --lib
 
   windows-scripts:

@@ -144,6 +144,22 @@ FORGE is the ACP **client** (official SDK `@agentclientprotocol/sdk` 1.8.0); an 
 asking is not mediated by FORGE (same trust class as limit 1). The worktree diff remains the authoritative record and is
 reviewed before merge. FORGE prepends its mission guidance to the prompt (ACP has no system prompt).
 
+## Real Claude Code and a real MCP server in the test suite (no account, no quota)
+
+`supervisor::tests::claude_real` runs the **real Claude Code CLI** (the binary `npm ci` installs with the Agent SDK) through
+FORGE's full mission path, as a `claude-local` mission pointed at a scripted Anthropic-compatible server on loopback
+(`packages/engine/test/fixtures/fake-anthropic.mjs`; it only replays fixed tool calls). Everything else is real:
+
+| Test | Shows |
+|---|---|
+| `real_claude_code_writes_only_after_the_human_approves_through_forge` | Claude Code's Write reaches FORGE's hook; nothing is written before the human decides |
+| `real_claude_code_cannot_write_outside_the_worktree_even_with_auto_approved_edits` | policy denies `../` writes without asking, even with auto-approved edits |
+| `a_real_mcp_server_runs_only_as_authorized` | a real MCP server (official SDK, `test/fixtures/mcp-server.mjs`) is started by Claude Code from FORGE's stored definition; the allow-listed tool runs after approval, the tool outside the allow-list never reaches the server, a server the repository declared but nobody authorized is never started, no billing key reaches it |
+| `a_hostile_repository_configuration_runs_nothing_and_widens_nothing_in_real_claude_code` | a committed `.claude/settings.json` (SessionStart/PreToolUse/UserPromptSubmit hooks, `allow` rules, `bypassPermissions`, `enableAllProjectMcpServers`) and `.mcp.json` run nothing and FORGE is still asked. **Mutation-checked:** without FORGE's lockdown options all four hook/MCP markers appear and the test fails |
+
+This replaces the quota-spending manual lockdown experiment as the regression gate (CI requires these tests on Linux and
+Windows). What it does not show: behaviour of a real model, or of the user's own (possibly different) Claude Code version.
+
 ## Fixes from the independent cloud reviews (2026-10-23)
 
 Found by independent security, protocol and data-integrity reviews of `cloud/overhaul`; each fix has a regression test that
