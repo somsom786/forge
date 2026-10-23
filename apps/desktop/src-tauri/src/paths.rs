@@ -210,15 +210,23 @@ mod tests {
         let long = d.path().join("averyveryverylongname");
         std::fs::create_dir_all(long.join("src")).unwrap();
         std::fs::create_dir_all(long.join("subdirectory_long")).unwrap();
-        // The short form of `long`, if the volume has 8.3 names enabled.
-        let short = std::process::Command::new("cmd").arg("/C").arg(format!("for %I in (\"{}\") do @echo %~sI", long.display())).output().unwrap();
-        let short = String::from_utf8_lossy(&short.stdout).trim().to_string();
-        if !short.contains('~') {
+        // The short form of `long`, if the volume has 8.3 names enabled (asked from Windows itself, no shell involved).
+        let short = {
+            use std::os::windows::ffi::{OsStrExt, OsStringExt};
+            let wide: Vec<u16> = long.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut buf = vec![0u16; 1024];
+            // SAFETY: `wide` is NUL-terminated and `buf` is a writable buffer of the length passed.
+            let n = unsafe { windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+            assert!(n > 0 && n < buf.len(), "GetShortPathNameW failed for {}", long.display());
+            PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]))
+        };
+        if !short.to_string_lossy().contains('~') {
             return; // 8.3 names are disabled on this volume; nothing to test
         }
-        let short = PathBuf::from(short);
-        assert!(resolve_within(&short, &short.join("src").join("a.rs")).is_ok(), "an absolute path under the short-spelled root");
-        assert!(resolve_within(&short, Path::new("src/a.rs")).is_ok(), "a relative path under the short-spelled root");
+        let abs = resolve_within(&short, &short.join("src").join("a.rs"));
+        assert!(abs.is_ok(), "an absolute path under the short-spelled root {}: {abs:?}", short.display());
+        let rel = resolve_within(&short, Path::new("src/a.rs"));
+        assert!(rel.is_ok(), "a relative path under the short-spelled root {}: {rel:?}", short.display());
         // A short spelling of a root the caller named in full is not guessed at: it is refused (fail closed).
         assert!(resolve_within(&long, &short.join("src").join("a.rs")).is_err());
         assert!(resolve_within(&short, Path::new("SUBDIR~1/x")).is_err(), "a short name below the root is still refused");
