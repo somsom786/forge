@@ -42,7 +42,7 @@ export function sanitizedCodexEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return out;
 }
 
-export function spawnCodexServer(exe: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): CodexServer {
+export function spawnCodexServer(exe: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number = REQUEST_TIMEOUT_MS): CodexServer {
   // No shell: the executable is a real binary and nothing here may be re-parsed by cmd.exe.
   const child = spawn(exe, args, { cwd, env: sanitizedCodexEnv(env), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   let stderrTail = '';
@@ -129,8 +129,8 @@ export function spawnCodexServer(exe: string, args: string[], cwd: string, env: 
           const id = ++nextId;
           // A server that stops answering must not hang the session forever.
           const timer = setTimeout(() => {
-            if (pending.delete(id)) reject(new Error(`codex did not answer ${method} within ${REQUEST_TIMEOUT_MS / 1000}s`));
-          }, REQUEST_TIMEOUT_MS);
+            if (pending.delete(id)) reject(new Error(`codex did not answer ${method} within ${timeoutMs / 1000}s`));
+          }, timeoutMs);
           timer.unref();
           pending.set(id, {
             resolve: (v) => { clearTimeout(timer); resolve(v); },

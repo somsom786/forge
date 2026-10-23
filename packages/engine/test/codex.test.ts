@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CODEX_DISABLED_FEATURES, codexServerArgs, createCodexAdapter, homeInside, innerCommand, projectCodexConfig, userAllowRules } from '../src/adapters/codex.js';
-import { type CodexRpc, RpcError, sanitizedCodexEnv } from '../src/adapters/codexRpc.js';
+import { type CodexRpc, RpcError, sanitizedCodexEnv, spawnCodexServer } from '../src/adapters/codexRpc.js';
 import type { PermissionDecision, PermissionRequest, RunContext } from '../src/adapters/types.js';
 import type { StartCommand } from '../src/protocol.js';
 
@@ -242,5 +242,47 @@ describe('codex adapter', () => {
 
   it('environment scrubbing is case-insensitive (Windows)', () => {
     expect(sanitizedCodexEnv({ openai_api_key: 'x', Codex_Api_Key: 'y', Path: 'p' })).toEqual({ Path: 'p' });
+  });
+
+  it('command approvals with distinct approvalIds get distinct toolUseIds even for the same item and command', async () => {
+    const p = peer(baseHandlers());
+    const c = context();
+    const run = createCodexAdapter({ spawnServer: () => p.server }).run(c.ctx);
+    await new Promise((r) => setTimeout(r, 20));
+    const params = { itemId: 'same', command: 'git status' };
+    await p.ask('item/commandExecution/requestApproval', { ...params, approvalId: 'a1' });
+    await p.ask('item/commandExecution/requestApproval', { ...params, approvalId: 'a2' });
+    expect(c.asked).toHaveLength(2);
+    expect(c.asked[0]!.toolUseId).not.toBe(c.asked[1]!.toolUseId);
+    p.push('turn/completed', completed());
+    await run;
+  });
+
+  it('if the server dies while a permission request is pending, the run still ends in error and does not hang', async () => {
+    const p = peer(baseHandlers());
+    const c = context();
+    c.ctx.requestPermission = async (r) => {
+      c.asked.push(r);
+      return new Promise<PermissionDecision>(() => {}); // never answered
+    };
+    const run = createCodexAdapter({ spawnServer: () => p.server }).run(c.ctx);
+    await new Promise((r) => setTimeout(r, 20));
+    void p.ask('item/commandExecution/requestApproval', { itemId: 'c1', command: 'git status', approvalId: 'x' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(c.asked).toHaveLength(1);
+    p.die(3, 'crashed');
+    await Promise.race([run, new Promise((_, rej) => setTimeout(() => rej(new Error('run hung')), 3000))]);
+    expect(c.result().status).toBe('error');
+    expect(c.result().message).toContain('exited unexpectedly');
+  });
+
+  it('an RPC request that gets no answer fails after the deadline', async () => {
+    const server = spawnCodexServer(process.execPath, ['-e', 'setInterval(()=>{},1000)'], process.cwd(), process.env, 100);
+    try {
+      await expect(server.rpc.request('initialize', {})).rejects.toThrow(/did not answer initialize/);
+    } finally {
+      server.kill();
+      await server.exited;
+    }
   });
 });
