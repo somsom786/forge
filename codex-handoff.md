@@ -68,7 +68,7 @@ processes. Missions run in git worktrees under the FORGE home; review binds appr
 | 3 Memory (knowledge, vault, retrieval, inspector) | **Done** | `tools/e2e/knowledge-flow.mjs`; live gate with a real local agent: with memory → correct private facts, without → hallucination |
 | 4 Harness Studio (inventory, Doctor, safe edit, hooks, dry-run, rollback) | **Done** | `tools/e2e/harness-flow.mjs`; live gate: `live_harness_hook_and_instruction_written_by_forge_take_effect_in_real_claude_code` (real Claude Code, local model) saw the hook fire and obeyed the written instruction; independent review 4 fixed (2 items deliberately open, §5) |
 | 5 Multi-agent: parallel worktrees + concurrency limit | **Done** (core, tested with scripted agent) | |
-| 5 Codex adapter | **Not started in code** — protocol explored, key findings in §6 | `research/codex-probe.mjs` |
+| 5 Codex adapter | **Done and verified** (real mission through FORGE; review 5 by GPT-6.1 Sol fixed) | `packages/engine/src/adapters/codex.ts`, `codexRpc.ts`; live tests `live_codex_mission_end_to_end` (needs `FORGE_CODEX_ALLOW_USER_RULES=1` on a machine whose `~/.codex/rules` has allow rules) and `live_codex_refuses_a_repository_with_project_codex_config` |
 | 6 Experiments | Not started | |
 | 7 Enterprise | Design only; no claims | |
 | Windows installer | **Built and install-tested** (silent install, real mission, bundled Node used): `FORGE_0.1.0_x64-setup.exe` (25.75 MiB, NSIS, per-user) via `npm run package` | built at `apps/desktop/src-tauri/target/release/bundle/nsis/` (git-ignored); the engine bundle was verified separately by running the Rust supervisor suite against a copy of `main.js` with no `node_modules` |
@@ -123,7 +123,7 @@ Local-model live tests (free; Ollama must be running with the tag `forge-qwen3.5
 
 ## 5. Known gaps and open items (priority order)
 
-1. **Codex adapter (Phase 5)** — see §6; this was the work in progress when the session ended.
+1. **Codex adapter follow-ups** (see §6 and docs/ENGINEERING_REVIEWS.md review 5): verify the effective sandbox Codex applies (review finding 8), write the two missing tests (hostile `taskkill.exe` sentinel; real Codex run with every permission denied), consider an isolated Codex home so user exec allow-rules need not block missions, validate approval item scope.
 2. **Install-test the installer** (`FORGE_0.1.0_x64-setup.exe`): install, launch, run a scripted mission, confirm the bundled `node.exe` and engine are located (`locate_node`/`locate_engine` in `lib.rs`). Not done.
 3. **Write `docs/PROGRESS.md`**; fix stale `docs/ROADMAP.md`; add the `harness_*` rows and migrations 5–6 to `docs/DATA_MODEL.md` if anything changed since.
 4. Harness items deliberately **not** done (documented in ENGINEERING_REVIEWS.md review 4 and SECURITY.md limits 3, 13–15): handle-pinned directory identities / exclusive-create for the write path (a concurrent local process could still win a microsecond race), spawning hook dry-runs suspended before Job assignment, backup retention/pruning.
@@ -131,7 +131,9 @@ Local-model live tests (free; Ollama must be running with the tag `forge-qwen3.5
 6. Phase 6 (experiments) and Phase 7 (design only).
 7. A further independent review (Astra, read-only) of the Codex adapter before relying on it. Consultation budget used: 4 of 4–6 (reviews 1–4 in `docs/ENGINEERING_REVIEWS.md`). Invoke with: `codex exec -m gpt-6-astra -c model_reasoning_effort=high -s read-only --ephemeral -C <repo> -o <out.txt> -` and a prompt on stdin; evaluate every finding yourself (reproduce, then adopt/adapt/decline).
 
-## 6. Codex adapter — everything learned so far (do not re-derive)
+## 6. Codex adapter — IMPLEMENTED; this section is the design record and protocol notes (do not re-derive)
+
+Status: implemented in `packages/engine/src/adapters/codex.ts` + `codexRpc.ts`, Rust plumbing done, reviewed (review 5). Deviations from the design below: because `config/read` inside a git worktree omits repo-defined MCP servers that `thread/start` still starts, the adapter **refuses to run** when the worktree has project Codex config; it also refuses when the Codex home has exec allow-rules (they bypass approvals), requires a ChatGPT login via `account/read`, and passes `-c notify=[] -c web_search="disabled"`. Reviews use `codex exec -m gpt-6.1-sol -c model_reasoning_effort=high` (the user asked for Sol instead of Astra); use the local qwen3.5:9b model for small mechanical tasks to save limits.
 
 Codex CLI 0.163.0 is installed as `C:\Users\raynh\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe` (a real exe, so it can be spawned
 without a shell; npm `.cmd` shims cannot be spawned directly by modern Node). Auth is the user's existing ChatGPT login in `~/.codex`; FORGE
