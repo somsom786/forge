@@ -213,7 +213,8 @@ impl Store {
         let scope = if meta.scope.as_deref() == Some("global") { "global" } else { "project" };
         let slug = page::slugify(i.rel_path.rsplit('/').next().unwrap_or(i.rel_path).trim_end_matches(".md"));
         let (files, tags) = (meta.files.clone(), meta.tags.clone());
-        let body: String = i.parsed.body.chars().take(page::MAX_PAGE_BYTES).collect();
+        // The stored and indexed copy is redacted; the file (and its hash) stay exactly as the user wrote them.
+        let body: String = crate::redact::redact_str(&i.parsed.body.chars().take(page::MAX_PAGE_BYTES).collect::<String>());
         let t = now();
 
         let mut c = self.c();
@@ -286,15 +287,22 @@ impl Store {
     }
 
     /// (size, mtime, sha) of what is currently indexed, for cheap change detection.
-    pub fn k_signature(&self, project_id: &str, root_kind: &str, rel_path: &str) -> Result<Option<(i64, i64, String)>> {
+    pub fn k_signature(&self, project_id: &str, root_kind: &str, rel_path: &str) -> Result<Option<(i64, i64, String, bool)>> {
         Ok(self
             .c()
             .query_row(
-                "SELECT file_size, file_mtime, current_sha256 FROM knowledge_page WHERE project_id=?1 AND root_kind=?2 AND rel_path=?3",
+                "SELECT file_size, file_mtime, current_sha256, missing FROM knowledge_page WHERE project_id=?1 AND root_kind=?2 AND rel_path=?3",
                 params![project_id, root_kind, rel_path],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0)),
             )
             .optional()?)
+    }
+
+    /// Mark ONE page whose file is gone. (Never mark a whole root: one absent file must not hide every other page.)
+    pub fn k_mark_page_missing(&self, page_id: &str) -> Result<()> {
+        self.c().execute("UPDATE knowledge_page SET missing=1 WHERE id=?1", [page_id])?;
+        self.c().execute("DELETE FROM knowledge_fts WHERE page_id=?1", [page_id])?;
+        Ok(())
     }
 
     /// Full-text search restricted to one project. Lower bm25 = better; returned as a positive relevance.
@@ -609,14 +617,20 @@ impl Store {
         ] {
             tx.execute(sql, [page_id])?;
         }
-        // Scrub the injected snapshots that quoted this page.
+        // Scrub the injected snapshots that quoted this page: remove the item itself (excerpt, sources, reasons), not just its id.
         let rows: Vec<(String, String)> = {
             let mut s = tx.prepare("SELECT id, items_json FROM context_package WHERE items_json LIKE ?1")?;
             s.query_map([format!("%{page_id}%")], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?
         };
         for (id, items) in rows {
-            tx.execute("UPDATE context_package SET injected_text='[purged: a page quoted here was deleted]', items_json=?2 WHERE id=?1", params![id, items.replace(page_id, "purged")])?;
+            let mut v: serde_json::Value = serde_json::from_str(&items).unwrap_or(serde_json::Value::Null);
+            if let Some(a) = v.as_array_mut() {
+                a.retain(|it| it.get("pageId").and_then(|p| p.as_str()) != Some(page_id));
+            }
+            tx.execute("UPDATE context_package SET injected_text='[purged: a page quoted here was deleted]', items_json=?2 WHERE id=?1", params![id, v.to_string()])?;
         }
+        // Source snapshots that belonged only to this page go with it.
+        tx.execute("DELETE FROM knowledge_source WHERE id NOT IN (SELECT source_id FROM knowledge_page_source)", [])?;
         tx.commit()?;
         Ok(())
     }

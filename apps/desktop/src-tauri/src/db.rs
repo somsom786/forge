@@ -270,6 +270,11 @@ const MIGRATIONS: &[&str] = &[
         tokenize = 'unicode61 remove_diacritics 2'
     );
     "#,
+    // v4 - evidence is bound to the definition it was gathered for
+    r#"
+    ALTER TABLE verification_run ADD COLUMN spec_rev TEXT NOT NULL DEFAULT '';
+    ALTER TABLE manual_verdict ADD COLUMN criterion_rev TEXT NOT NULL DEFAULT '';
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {

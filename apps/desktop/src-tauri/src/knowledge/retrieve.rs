@@ -198,22 +198,25 @@ pub fn build(ctx: Ctx, project_id: &str, repo_root: &Path, objective: &str, hint
             note(&mut omitted, &p, "its file no longer exists");
             continue;
         }
-        // Re-check the file now: nothing edited since indexing is injected on the strength of an old review.
-        match service::read_page_text(ctx, &p) {
-            Ok(text) => {
-                if page::content_hash(&text) != p.current_sha256 {
-                    p = service::reindex_page(ctx, &p)?;
-                }
-            }
+        // One read yields the text we will inject AND the hash we judge trust by: whatever happens to the file or the
+        // index afterwards, the bytes injected are exactly the bytes whose hash was compared with the human's verification.
+        let text = match service::read_page_text(ctx, &p) {
+            Ok(t) => t,
             Err(e) => {
                 note(&mut omitted, &p, &format!("could not be read safely: {e}"));
                 continue;
             }
+        };
+        let text_hash = page::content_hash(&text);
+        if text_hash != p.current_sha256 {
+            p = service::reindex_page(ctx, &p)?; // keep the index honest; trust below is still judged on `text_hash`
         }
-        let verified_now = p.effective_state == "verified";
+        let fresh = ctx.store.k_get(&p.id)?;
+        let verified_now = fresh.status == "verified" && fresh.verified_sha256.as_deref() == Some(text_hash.as_str()) && !fresh.missing;
+        let p = fresh;
         let trust = if verified_now {
             "verified"
-        } else if c.pinned && matches!(p.status.as_str(), "proposed" | "verified") {
+        } else if c.pinned && !p.missing && matches!(p.status.as_str(), "proposed" | "verified") {
             "pinned_unverified"
         } else {
             let why = match p.status.as_str() {
@@ -227,7 +230,7 @@ pub fn build(ctx: Ctx, project_id: &str, repo_root: &Path, objective: &str, hint
             note(&mut omitted, &p, &why);
             continue;
         };
-        let body = ctx.store.k_body(&p.id)?;
+        let body = page::parse(&text).body;
         let sources = ctx.store.k_sources_for(&p.id)?;
         let stale = sources.iter().any(|s| matches!(s.state.as_str(), "changed" | "missing"));
         let age_days = chrono::DateTime::parse_from_rfc3339(&p.updated_at).map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_days()).unwrap_or(999);
@@ -255,7 +258,7 @@ pub fn build(ctx: Ctx, project_id: &str, repo_root: &Path, objective: &str, hint
             body: String::new(),
             item: ContextItem {
                 page_id: p.id.clone(), title: p.title.clone(), kind: p.kind.clone(), trust: trust.into(), author: p.author.clone(), origin: p.origin.clone(),
-                verified_at: p.verified_at.clone(), verified_note: p.verified_note.clone(), sha256: p.current_sha256.clone(), excerpt, truncated, score, reasons,
+                verified_at: p.verified_at.clone(), verified_note: p.verified_note.clone(), sha256: text_hash.clone(), excerpt, truncated, score, reasons,
                 sources: source_refs(&sources), stale, files: p.files.clone(),
             },
         });

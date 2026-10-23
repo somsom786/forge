@@ -33,6 +33,14 @@ impl ReviewDecision {
     }
 }
 
+/// What the reviewer was looking at. Approving or giving a verdict is only valid for exactly this state.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Seen {
+    pub fingerprint: String,
+    pub contract_sha256: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeOutcome {
@@ -139,6 +147,12 @@ impl Core {
 
         let cancel = Arc::new(AtomicBool::new(false));
         {
+            // Claim the mission for this check in the same critical section that proves nothing else owns it, so a
+            // start/merge/discard cannot slip in between the test and the registration (lock order: registry, then checks).
+            let reg = self.reg();
+            if reg.reserved.contains(mission_id) || reg.sessions.values().any(|h| h.mission_id == mission_id) {
+                return Err(ForgeError::InvalidState("another operation owns this mission right now (agent, start, merge or discard); try again when it finishes".into()));
+            }
             let mut checks = lock(&self.checks);
             if checks.contains_key(mission_id) {
                 return Err(ForgeError::InvalidState("a check is already running on this mission".into()));
@@ -165,6 +179,7 @@ impl Core {
                 output_tail: String::new(),
                 output_truncated: false,
                 log_path: None,
+                spec_rev: spec.revision(),
             };
             self.store.insert_run(&run)?;
             Ok(run)
@@ -206,21 +221,22 @@ impl Core {
         }
     }
 
-    pub fn set_manual_verdict(&self, mission_id: &str, criterion_id: &str, pass: bool, note: Option<&str>) -> Result<()> {
+    pub fn set_manual_verdict(&self, mission_id: &str, criterion_id: &str, pass: bool, note: Option<&str>, expected_fingerprint: &str) -> Result<()> {
         let contract = self.store.get_contract(mission_id)?;
-        if !contract.criteria.iter().any(|c| c.id == criterion_id) {
-            return Err(ForgeError::NotFound(format!("criterion \"{criterion_id}\"")));
-        }
+        let criterion = contract.criteria.iter().find(|c| c.id == criterion_id).ok_or_else(|| ForgeError::NotFound(format!("criterion \"{criterion_id}\"")))?;
         let (_m, _p, wt, base) = self.workspace(mission_id)?;
         let fp = git::fingerprint(&wt, &base)?;
-        self.store.add_manual_verdict(mission_id, criterion_id, pass, note.map(str::trim).filter(|n| !n.is_empty()), &fp)?;
+        if fp != expected_fingerprint {
+            return Err(ForgeError::InvalidState("the changes are not the ones you were looking at; reload the verification view and judge the current changes".into()));
+        }
+        self.store.add_manual_verdict(mission_id, criterion_id, pass, note.map(str::trim).filter(|n| !n.is_empty()), &fp, &criterion.revision())?;
         self.store.audit("user", "criterion.verdict", Some(mission_id), &json!({"criterion": criterion_id, "pass": pass}));
         Ok(())
     }
 
     // ---- review ------------------------------------------------------------------------------
 
-    pub fn review(self: &Arc<Self>, mission_id: &str, decision: ReviewDecision, note: Option<&str>, override_reason: Option<&str>) -> Result<Mission> {
+    pub fn review(self: &Arc<Self>, mission_id: &str, decision: ReviewDecision, note: Option<&str>, override_reason: Option<&str>, seen: Option<&Seen>) -> Result<Mission> {
         let note = note.map(str::trim).filter(|n| !n.is_empty());
         let override_reason = override_reason.map(str::trim).filter(|n| !n.is_empty());
         let res = self.reserve(mission_id, false)?;
@@ -232,6 +248,13 @@ impl Core {
         let record = |ovr: Option<&str>| self.store.add_review_decision(mission_id, decision.as_str(), note, ovr, &report.fingerprint, report.head_commit.as_deref());
         match decision {
             ReviewDecision::Approve => {
+                // Approval is a statement about a specific state of the changes and the contract. It must name them.
+                let Some(seen) = seen else {
+                    return Err(ForgeError::InvalidState("an approval must name the changes and contract that were reviewed".into()));
+                };
+                if seen.fingerprint != report.fingerprint || seen.contract_sha256 != report.contract_sha256 {
+                    return Err(ForgeError::InvalidState("the changes (or the success criteria) are not the ones you reviewed; reload and review the current state before approving".into()));
+                }
                 if !report.can_approve() {
                     return Err(ForgeError::InvalidState(format!("cannot approve yet: {}", report.hard_blockers.join("; "))));
                 }
@@ -283,26 +306,32 @@ impl Core {
         let branch = m.branch.clone().ok_or_else(|| ForgeError::InvalidState("mission has no branch".into()))?;
         let target = m.base_ref.clone().ok_or_else(|| ForgeError::InvalidState("mission has no base branch".into()))?;
 
-        // What was approved must be exactly what is merged.
-        let fp = git::fingerprint(&wt, &base)?;
+        // What was approved must be exactly what is merged. One read yields both the fingerprint and the reviewed tree.
+        let (fp, tree) = git::fingerprint_and_tree(&wt, &base)?;
         let approved = self.store.review_decisions(mission_id)?.into_iter().rev().find(|d| d.decision == "approve");
         if approved.as_ref().map(|d| d.fingerprint.as_str()) != Some(fp.as_str()) {
             self.settle(mission_id, MissionState::AwaitingReview, "changes were made after approval");
             return Err(ForgeError::InvalidState("the changes differ from what was approved; review them again".into()));
         }
-
+        git::ensure_no_external_programs(&wt)?;
         merge::ensure_ready(&root, &target)?;
-        let message = format!("{}\n\nFORGE mission {}\nBranch: {}", m.title, m.id, branch);
-        merge::commit_all(&root, &wt, &message)?;
-        let conflicts = merge::conflicts(&root, &target, &branch)?;
-        if !conflicts.is_empty() {
+        let message = format!("{}
+
+FORGE mission {}
+Branch: {}", m.title, m.id, branch);
+        // Commit the reviewed tree itself (never the worktree's index), then resolve everything to object ids once.
+        let (branch_oid, _created) = merge::commit_reviewed_tree(&root, &wt, &branch, &tree, &message)?;
+        let target_oid = merge::oid(&root, "HEAD")?;
+        let prediction = merge::predict(&root, &target_oid, &branch_oid)?;
+        if !prediction.conflicts.is_empty() {
             return Err(ForgeError::Git(format!(
                 "merging would conflict in {} file(s): {}. Nothing was changed; resolve by asking the agent to rebase or by merging manually.",
-                conflicts.len(),
-                conflicts.join(", ")
+                prediction.conflicts.len(),
+                prediction.conflicts.join(", ")
             )));
         }
-        let commit = merge::merge(&root, &branch, &message, squash)?;
+        let predicted_tree = prediction.tree.ok_or_else(|| ForgeError::Git("git did not report the merged tree".into()))?;
+        let commit = merge::merge(&root, &branch_oid, &message, squash, &target_oid, &predicted_tree)?;
         self.store.audit("user", "mission.merge", Some(mission_id), &json!({"commit": commit, "squash": squash, "target": target}));
         self.set_state(mission_id, MissionState::Merged, "merged into the main checkout")?;
 
@@ -344,7 +373,7 @@ impl Core {
         let project = self.store.get_project(&m.project_id)?;
         let root = Path::new(&project.root_path);
         let safety = self.worktree_safety(mission_id)?;
-        if (safety.dirty_files > 0 || safety.unmerged_commits > 0) && !confirm_loss && m.state != "merged" {
+        if (safety.dirty_files > 0 || safety.unmerged_commits > 0) && !confirm_loss {
             return Err(ForgeError::InvalidState(format!(
                 "cleaning up would permanently delete {} uncommitted file change(s) and {} unmerged commit(s) on branch {}",
                 safety.dirty_files, safety.unmerged_commits, m.branch.as_deref().unwrap_or("?")

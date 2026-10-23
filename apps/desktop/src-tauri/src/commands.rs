@@ -345,15 +345,15 @@ pub async fn check_cancel(core: CoreState<'_>, mission_id: String) -> Result<()>
 }
 
 #[tauri::command]
-pub async fn verdict_set(core: CoreState<'_>, mission_id: String, criterion_id: String, pass: bool, note: Option<String>) -> Result<()> {
-    blocking(&core, move |c| c.set_manual_verdict(&mission_id, &criterion_id, pass, note.as_deref())).await
+pub async fn verdict_set(core: CoreState<'_>, mission_id: String, criterion_id: String, pass: bool, note: Option<String>, expected_fingerprint: String) -> Result<()> {
+    blocking(&core, move |c| c.set_manual_verdict(&mission_id, &criterion_id, pass, note.as_deref(), &expected_fingerprint)).await
 }
 
 #[tauri::command]
-pub async fn review_submit(core: CoreState<'_>, mission_id: String, decision: String, note: Option<String>, override_reason: Option<String>) -> Result<Mission> {
+pub async fn review_submit(core: CoreState<'_>, mission_id: String, decision: String, note: Option<String>, override_reason: Option<String>, seen: Option<crate::supervisor::Seen>) -> Result<Mission> {
     blocking(&core, move |c| {
         let d = ReviewDecision::parse(&decision).ok_or_else(|| ForgeError::Other(format!("unknown review decision \"{decision}\"")))?;
-        c.review(&mission_id, d, note.as_deref(), override_reason.as_deref())
+        c.review(&mission_id, d, note.as_deref(), override_reason.as_deref(), seen.as_ref())
     })
     .await
 }

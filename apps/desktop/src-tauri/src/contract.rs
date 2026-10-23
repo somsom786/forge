@@ -4,8 +4,9 @@
 //! what an agent says. An agent claiming "done" changes nothing here.
 
 use crate::error::{ForgeError, Result};
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
 pub const CONTRACT_VERSION: u32 = 1;
@@ -38,6 +39,31 @@ pub struct CheckSpec {
 
 fn default_timeout() -> u64 {
     600
+}
+
+fn rev_of(parts: &[&str]) -> String {
+    let mut h = Sha256::new();
+    for p in parts {
+        h.update(p.as_bytes());
+        h.update([0u8]);
+    }
+    format!("{:x}", h.finalize())[..24].to_string()
+}
+
+impl CheckSpec {
+    /// Identity of what this check *means*: changing the command, kind or timeout makes old results about a different check.
+    pub fn revision(&self) -> String {
+        rev_of(&[&self.id, &self.command, &format!("{:?}", self.kind), &self.timeout_secs.to_string()])
+    }
+}
+
+impl Criterion {
+    /// Identity of what this criterion *requires*: text, linked checks and flags.
+    pub fn revision(&self) -> String {
+        let mut by = self.verified_by.clone();
+        by.sort();
+        rev_of(&[&self.id, &self.text, &by.join(","), &self.manual.to_string(), &self.scope_rule.to_string()])
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +103,12 @@ pub struct Contract {
 }
 
 impl Contract {
+    /// Hash of the whole contract: an approval is only valid for the contract the reviewer saw.
+    pub fn revision(&self) -> String {
+        let json = serde_json::to_string(self).unwrap_or_default();
+        rev_of(&[&json])
+    }
+
     pub fn validate(&self) -> Result<()> {
         let mut seen = HashSet::new();
         for c in &self.checks {
@@ -114,7 +146,12 @@ fn build_set(globs: &[String]) -> Result<GlobSet> {
     for g in globs {
         // `dir/` means everything beneath it.
         let pat = if g.ends_with('/') { format!("{g}**") } else { g.clone() };
-        b.add(Glob::new(&pat).map_err(|e| ForgeError::Other(format!("bad scope glob \"{g}\": {e}")))?);
+        // Windows paths are case-insensitive: `SRC/**` must match `src/a.rs` there.
+        let glob = globset::GlobBuilder::new(&pat)
+            .case_insensitive(cfg!(windows))
+            .build()
+            .map_err(|e| ForgeError::Other(format!("bad scope glob \"{g}\": {e}")))?;
+        b.add(glob);
     }
     b.build().map_err(|e| ForgeError::Other(format!("bad scope globs: {e}")))
 }
@@ -172,8 +209,11 @@ pub struct RunEvidence {
     pub check_id: String,
     pub run_id: String,
     pub state: RunState,
-    /// Fingerprint of the mission's changes when the check ran.
     pub fingerprint: String,
+    /// Revision of the check definition it ran under.
+    pub spec_rev: String,
+    /// The check modified the worktree; its result cannot be trusted as evidence about the current changes.
+    pub mutated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +221,8 @@ pub struct ManualVerdict {
     pub pass: bool,
     pub note: Option<String>,
     pub fingerprint: String,
+    /// Revision of the criterion the verdict was given on.
+    pub criterion_rev: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -203,51 +245,71 @@ pub enum CriterionStatus {
 pub struct EvalContext<'a> {
     /// Latest run per check id.
     pub runs: &'a HashMap<String, RunEvidence>,
+    /// Current revision of every check definition in the contract.
+    pub check_revs: &'a HashMap<String, String>,
     pub manual: &'a HashMap<String, ManualVerdict>,
     pub fingerprint: &'a str,
     pub scope: &'a ScopeReport,
 }
 
 /// Derive a criterion's status. Precedence: Failed > Inconclusive > CheckPending > RequiresManualReview > Verified.
+/// A scope rule is one requirement among others: it can fail the criterion, but it never hides linked checks or a
+/// required human verdict.
 pub fn evaluate(c: &Criterion, x: &EvalContext) -> CriterionStatus {
     use CriterionStatus::*;
-
-    if c.scope_rule {
-        return if x.scope.clean() {
-            VerifiedByScopeCheck
-        } else {
-            let mut all: Vec<&str> = x.scope.in_out_of_scope.iter().map(String::as_str).collect();
-            all.extend(x.scope.outside_in_scope.iter().map(String::as_str));
-            Failed { reason: format!("{} file(s) violate the contract scope: {}", all.len(), all.iter().take(5).copied().collect::<Vec<_>>().join(", ")) }
-        };
-    }
 
     let mut failed = vec![];
     let mut inconclusive = vec![];
     let mut pending = vec![];
     let mut passed = vec![];
+
+    if c.scope_rule && !x.scope.clean() {
+        let mut all: Vec<&str> = x.scope.in_out_of_scope.iter().map(String::as_str).collect();
+        all.extend(x.scope.outside_in_scope.iter().map(String::as_str));
+        failed.push(format!("{} file(s) violate the contract scope: {}", all.len(), all.iter().take(5).copied().collect::<Vec<_>>().join(", ")));
+    }
+
     for id in &c.verified_by {
         match x.runs.get(id) {
             None => pending.push(id.clone()),
-            Some(r) => match r.state {
-                RunState::Running => pending.push(id.clone()),
-                RunState::Failed => failed.push(id.clone()),
-                RunState::Error | RunState::Timeout | RunState::Cancelled => inconclusive.push(format!("check {id} {}", match r.state {
-                    RunState::Timeout => "timed out",
-                    RunState::Cancelled => "was cancelled",
-                    _ => "could not run",
-                })),
-                RunState::Passed if r.fingerprint != x.fingerprint => inconclusive.push(format!("check {id} passed on earlier changes; re-run it")),
-                RunState::Passed => passed.push(format!("{id}#{}", &r.run_id[..r.run_id.len().min(8)])),
-            },
+            Some(r) if r.state == RunState::Running => pending.push(id.clone()),
+            Some(r) => {
+                // Evidence only counts for the exact check definition it ran under.
+                if x.check_revs.get(id).map(String::as_str) != Some(r.spec_rev.as_str()) {
+                    inconclusive.push(format!("check {id} was changed after it ran; re-run it"));
+                    continue;
+                }
+                match r.state {
+                    RunState::Running => {}
+                    RunState::Failed => failed.push(id.clone()),
+                    RunState::Error | RunState::Timeout | RunState::Cancelled => inconclusive.push(format!(
+                        "check {id} {}",
+                        match r.state {
+                            RunState::Timeout => "timed out",
+                            RunState::Cancelled => "was cancelled",
+                            _ => "could not run",
+                        }
+                    )),
+                    // A check that changes the files it is judging proves nothing about them, even if the files later
+                    // happen to return to the fingerprint it recorded.
+                    RunState::Passed if r.mutated => inconclusive.push(format!("check {id} modified the worktree while running; its result is not trusted")),
+                    RunState::Passed if r.fingerprint != x.fingerprint => inconclusive.push(format!("check {id} passed on earlier changes; re-run it")),
+                    RunState::Passed => passed.push(format!("{id}#{}", &r.run_id[..r.run_id.len().min(8)])),
+                }
+            }
         }
     }
-    let manual = x.manual.get(&c.id);
-    if let Some(m) = manual {
+
+    // A human verdict only counts for the criterion text it was given on and the changes it was given on.
+    let rev = c.revision();
+    let verdict = x.manual.get(&c.id).filter(|m| m.criterion_rev == rev);
+    let stale_verdict = x.manual.get(&c.id).filter(|m| m.criterion_rev != rev);
+    if let Some(m) = verdict {
         if !m.pass && m.fingerprint == x.fingerprint {
             failed.push(format!("manual review: {}", m.note.clone().unwrap_or_else(|| "marked failed".into())));
         }
     }
+
     if !failed.is_empty() {
         return Failed { reason: format!("failed: {}", failed.join(", ")) };
     }
@@ -258,29 +320,34 @@ pub fn evaluate(c: &Criterion, x: &EvalContext) -> CriterionStatus {
         return CheckPending { pending };
     }
     if c.manual {
-        return match manual {
+        return match verdict {
             Some(m) if m.pass && m.fingerprint == x.fingerprint => VerifiedManually { note: m.note.clone() },
             Some(m) if m.fingerprint != x.fingerprint => RequiresManualReview { reason: "changes were made after the last manual verdict".into() },
+            _ if stale_verdict.is_some() => RequiresManualReview { reason: "this criterion was edited after the last manual verdict".into() },
             _ => RequiresManualReview { reason: "needs a human verdict".into() },
         };
     }
     if !passed.is_empty() {
         return VerifiedByChecks { evidence: passed };
     }
-    if let Some(m) = manual {
+    if let Some(m) = verdict {
         if m.pass && m.fingerprint == x.fingerprint {
             return VerifiedManually { note: m.note.clone() };
         }
     }
+    if c.scope_rule {
+        return VerifiedByScopeCheck;
+    }
     NotChecked
 }
 
-/// Required checks that are not currently passing on the current changes.
+/// Required checks that are not passing on the current changes, under their current definition, without having
+/// modified the worktree.
 pub fn blocking_checks(c: &Contract, runs: &HashMap<String, RunEvidence>, fingerprint: &str) -> Vec<String> {
     c.checks
         .iter()
         .filter(|k| k.required)
-        .filter(|k| !matches!(runs.get(&k.id), Some(r) if r.state == RunState::Passed && r.fingerprint == fingerprint))
+        .filter(|k| !matches!(runs.get(&k.id), Some(r) if r.state == RunState::Passed && r.fingerprint == fingerprint && !r.mutated && r.spec_rev == k.revision()))
         .map(|k| k.name.clone())
         .collect()
 }
@@ -291,7 +358,7 @@ mod tests {
     use CriterionStatus::*;
 
     fn run(id: &str, state: RunState, fp: &str) -> (String, RunEvidence) {
-        (id.into(), RunEvidence { check_id: id.into(), run_id: format!("{id}-run-0001"), state, fingerprint: fp.into() })
+        (id.into(), RunEvidence { check_id: id.into(), run_id: format!("{id}-run-0001"), state, fingerprint: fp.into(), spec_rev: "r1".into(), mutated: false })
     }
     fn crit(by: &[&str]) -> Criterion {
         Criterion { id: "c1".into(), text: "tokens expire".into(), verified_by: by.iter().map(|s| s.to_string()).collect(), manual: false, scope_rule: false }
@@ -303,7 +370,8 @@ mod tests {
         let runs: HashMap<_, _> = runs.iter().cloned().collect();
         let manual: HashMap<_, _> = manual.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
         let scope = clean();
-        evaluate(c, &EvalContext { runs: &runs, manual: &manual, fingerprint: fp, scope: &scope })
+        let revs: HashMap<String, String> = c.verified_by.iter().map(|id| (id.clone(), "r1".to_string())).collect();
+        evaluate(c, &EvalContext { runs: &runs, check_revs: &revs, manual: &manual, fingerprint: fp, scope: &scope })
     }
 
     #[test]
@@ -345,10 +413,10 @@ mod tests {
         c.manual = true;
         let runs = [run("t", RunState::Passed, "f")];
         assert!(matches!(eval(&c, &runs, &[], "f"), RequiresManualReview { .. }));
-        let ok = ManualVerdict { pass: true, note: Some("looks right".into()), fingerprint: "f".into() };
+        let ok = ManualVerdict { pass: true, note: Some("looks right".into()), fingerprint: "f".into(), criterion_rev: c.revision() };
         assert!(matches!(eval(&c, &runs, &[("c1", ok.clone())], "f"), VerifiedManually { .. }));
         assert!(matches!(eval(&c, &runs, &[("c1", ok)], "g"), Inconclusive { .. } | RequiresManualReview { .. }), "verdict goes stale when changes move");
-        let bad = ManualVerdict { pass: false, note: Some("wrong".into()), fingerprint: "f".into() };
+        let bad = ManualVerdict { pass: false, note: Some("wrong".into()), fingerprint: "f".into(), criterion_rev: c.revision() };
         assert!(matches!(eval(&c, &runs, &[("c1", bad)], "f"), Failed { .. }));
     }
 
@@ -364,8 +432,9 @@ mod tests {
         assert_eq!(bad.in_out_of_scope, vec!["src/legacy/old.rs", "Cargo.lock"]);
         let runs = HashMap::new();
         let manual = HashMap::new();
-        assert_eq!(evaluate(&c, &EvalContext { runs: &runs, manual: &manual, fingerprint: "f", scope: &ok }), VerifiedByScopeCheck);
-        assert!(matches!(evaluate(&c, &EvalContext { runs: &runs, manual: &manual, fingerprint: "f", scope: &bad }), Failed { .. }));
+        let revs = HashMap::new();
+        assert_eq!(evaluate(&c, &EvalContext { runs: &runs, check_revs: &revs, manual: &manual, fingerprint: "f", scope: &ok }), VerifiedByScopeCheck);
+        assert!(matches!(evaluate(&c, &EvalContext { runs: &runs, check_revs: &revs, manual: &manual, fingerprint: "f", scope: &bad }), Failed { .. }));
     }
 
     #[test]
@@ -404,7 +473,9 @@ mod tests {
         for (id, req) in [("t", true), ("l", true), ("o", false)] {
             c.checks.push(CheckSpec { id: id.into(), name: id.into(), command: "x".into(), kind: CheckKind::Custom, timeout_secs: 10, required: req });
         }
-        let runs: HashMap<_, _> = [run("t", RunState::Passed, "f")].into_iter().collect();
+        let mut passed = run("t", RunState::Passed, "f");
+        passed.1.spec_rev = c.checks[0].revision(); // it ran under the check's current definition
+        let runs: HashMap<_, _> = [passed].into_iter().collect();
         assert_eq!(blocking_checks(&c, &runs, "f"), vec!["l"]);
         assert_eq!(blocking_checks(&c, &runs, "g"), vec!["t", "l"], "a pass on older changes does not count");
     }
@@ -416,5 +487,113 @@ mod tests {
         assert!(c.checks.is_empty());
         let s = serde_json::to_string(&c).unwrap();
         assert!(s.contains("inScope"));
+    }
+
+    // ---- regression tests for the independent review (evidence is bound to definitions) ----
+
+    fn eval_with(c: &Criterion, runs: &[(String, RunEvidence)], revs: &[(&str, &str)], manual: &[(&str, ManualVerdict)], fp: &str, scope: &ScopeReport) -> CriterionStatus {
+        let runs: HashMap<_, _> = runs.iter().cloned().collect();
+        let manual: HashMap<_, _> = manual.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        let revs: HashMap<String, String> = revs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        evaluate(c, &EvalContext { runs: &runs, check_revs: &revs, manual: &manual, fingerprint: fp, scope })
+    }
+
+    #[test]
+    fn a_pass_does_not_carry_over_to_a_check_whose_command_was_changed() {
+        let c = crit(&["t"]);
+        let runs = [run("t", RunState::Passed, "f")]; // ran under revision "r1"
+        assert!(matches!(eval_with(&c, &runs, &[("t", "r1")], &[], "f", &clean()), VerifiedByChecks { .. }));
+        let s = eval_with(&c, &runs, &[("t", "r2-the-command-was-edited-to-exit-0")], &[], "f", &clean());
+        assert!(matches!(s, Inconclusive { ref reason } if reason.contains("changed after it ran")), "{s:?}");
+        let failed = [run("t", RunState::Failed, "f")];
+        assert!(matches!(eval_with(&c, &failed, &[("t", "r2")], &[], "f", &clean()), Inconclusive { .. }), "a failure under an old definition is not a failure of the new one either");
+    }
+
+    #[test]
+    fn a_check_that_modified_the_worktree_is_never_evidence_even_if_files_return_to_the_same_fingerprint() {
+        let c = crit(&["t"]);
+        let mut r = run("t", RunState::Passed, "f");
+        r.1.mutated = true;
+        let s = eval_with(&c, &[r], &[("t", "r1")], &[], "f", &clean());
+        assert!(matches!(s, Inconclusive { ref reason } if reason.contains("modified the worktree")), "{s:?}");
+    }
+
+    #[test]
+    fn a_manual_verdict_does_not_survive_an_edit_to_the_criterion_it_judged() {
+        let mut c = crit(&[]);
+        c.manual = true;
+        let verdict = ManualVerdict { pass: true, note: None, fingerprint: "f".into(), criterion_rev: c.revision() };
+        assert!(matches!(eval_with(&c, &[], &[], &[("c1", verdict.clone())], "f", &clean()), VerifiedManually { .. }));
+        let mut edited = c.clone();
+        edited.text = "tokens never expire".into();
+        let s = eval_with(&edited, &[], &[], &[("c1", verdict)], "f", &clean());
+        assert!(matches!(s, RequiresManualReview { ref reason } if reason.contains("edited after")), "{s:?}");
+    }
+
+    #[test]
+    fn a_scope_rule_cannot_hide_linked_checks_or_a_required_human_verdict() {
+        let mut c = crit(&["t"]);
+        c.scope_rule = true;
+        // scope is clean but the linked check never ran: not verified
+        assert!(matches!(eval_with(&c, &[], &[("t", "r1")], &[], "f", &clean()), CheckPending { .. }));
+        // scope is clean and the check passed: verified by the check
+        assert!(matches!(eval_with(&c, &[run("t", RunState::Passed, "f")], &[("t", "r1")], &[], "f", &clean()), VerifiedByChecks { .. }));
+        // scope violated: fails regardless of a passing check
+        let bad = ScopeReport { outside_in_scope: vec!["x".into()], in_out_of_scope: vec![] };
+        assert!(matches!(eval_with(&c, &[run("t", RunState::Passed, "f")], &[("t", "r1")], &[], "f", &bad), Failed { .. }));
+        // scope + manual: still needs the human
+        let mut m = crit(&[]);
+        m.scope_rule = true;
+        m.manual = true;
+        assert!(matches!(eval_with(&m, &[], &[], &[], "f", &clean()), RequiresManualReview { .. }));
+    }
+
+    #[test]
+    fn scope_globs_are_case_insensitive_on_windows() {
+        let c = Contract { out_of_scope: vec!["Secrets/**".into()], in_scope: vec!["SRC/**".into()], ..Default::default() };
+        let r = check_scope(&c, &["secrets/key.txt".into(), "src/a.rs".into()]).unwrap();
+        if cfg!(windows) {
+            assert_eq!(r.in_out_of_scope, vec!["secrets/key.txt"], "{r:?}");
+            assert_eq!(r.outside_in_scope, vec!["secrets/key.txt"], "src/a.rs matches SRC/** on Windows");
+        } else {
+            assert!(r.in_out_of_scope.is_empty());
+        }
+    }
+
+    #[test]
+    fn revisions_change_with_meaning_and_not_with_noise() {
+        let a = CheckSpec { id: "t".into(), name: "Tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true };
+        let mut renamed = a.clone();
+        renamed.name = "Unit tests".into();
+        renamed.required = false;
+        assert_eq!(a.revision(), renamed.revision(), "a display name or the required flag does not change what the check does");
+        for edit in [|c: &mut CheckSpec| c.command = "npm test -- --passWithNoTests".into(), |c: &mut CheckSpec| c.timeout_secs = 61, |c: &mut CheckSpec| c.kind = CheckKind::Lint] {
+            let mut b = a.clone();
+            edit(&mut b);
+            assert_ne!(a.revision(), b.revision());
+        }
+        let k1 = Criterion { id: "c".into(), text: "x".into(), verified_by: vec!["b".into(), "a".into()], manual: false, scope_rule: false };
+        let mut k2 = k1.clone();
+        k2.verified_by = vec!["a".into(), "b".into()];
+        assert_eq!(k1.revision(), k2.revision(), "link order is not meaning");
+        let ct = Contract { criteria: vec![k1.clone()], checks: vec![a.clone()], ..Default::default() };
+        let mut ct2 = ct.clone();
+        ct2.criteria[0].text = "y".into();
+        assert_ne!(ct.revision(), ct2.revision());
+    }
+
+    #[test]
+    fn blocking_checks_require_current_definition_and_no_mutation() {
+        let mut ct = Contract::default();
+        let spec = CheckSpec { id: "t".into(), name: "Tests".into(), command: "x".into(), kind: CheckKind::Test, timeout_secs: 10, required: true };
+        ct.checks.push(spec.clone());
+        let mut r = RunEvidence { check_id: "t".into(), run_id: "r".into(), state: RunState::Passed, fingerprint: "f".into(), spec_rev: spec.revision(), mutated: false };
+        let ok: HashMap<_, _> = [("t".to_string(), r.clone())].into();
+        assert!(blocking_checks(&ct, &ok, "f").is_empty());
+        r.mutated = true;
+        assert_eq!(blocking_checks(&ct, &[("t".to_string(), r.clone())].into(), "f"), vec!["Tests"]);
+        r.mutated = false;
+        r.spec_rev = "old".into();
+        assert_eq!(blocking_checks(&ct, &[("t".to_string(), r)].into(), "f"), vec!["Tests"]);
     }
 }

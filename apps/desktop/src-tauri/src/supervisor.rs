@@ -810,10 +810,11 @@ impl Core {
             if let Ok(s) = self.store.get_session(&h.session_id) {
                 self.emit(UiEvent::Session { session: s });
             }
+            // Kill anything the agent left behind (and unblock any reader holding a pipe) BEFORE releasing the mission:
+            // a new start, check, merge or discard must never overlap a still-running descendant.
+            h.terminate_tree();
             self.reg().sessions.remove(&h.session_id);
         }
-        // Outside the lock: kill anything the agent left behind (and unblock any reader holding a pipe).
-        h.terminate_tree();
     }
 
     // ---- startup recovery ------------------------------------------------------------------
@@ -851,7 +852,10 @@ impl Core {
             return Ok(git::WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: 0 });
         };
         let project = self.store.get_project(&m.project_id)?;
-        git::worktree_safety(Path::new(&project.root_path), m.worktree_path.as_deref().map(Path::new), m.branch.as_deref(), base)
+        // A merged mission's commits are "safe" only if they are actually in the main checkout's history now. Anything added to
+        // the branch after the merge is unmerged work and needs the same confirmation as any other.
+        let yardstick = if m.state == MissionState::Merged.as_str() { crate::merge::oid(Path::new(&project.root_path), "HEAD").unwrap_or_else(|_| base.to_string()) } else { base.to_string() };
+        git::worktree_safety(Path::new(&project.root_path), m.worktree_path.as_deref().map(Path::new), m.branch.as_deref(), &yardstick)
     }
 
     /// Discard a mission and its worktree/branch. Refuses to destroy uncommitted or unmerged work unless
@@ -891,7 +895,7 @@ fn derive_title(objective: &str) -> String {
 mod memory;
 mod review;
 pub use memory::{KnowledgeStatus, NewKnowledgeArgs, PageDetail};
-pub use review::{MergeOutcome, ReviewDecision};
+pub use review::{MergeOutcome, ReviewDecision, Seen};
 
 #[cfg(test)]
 mod tests;

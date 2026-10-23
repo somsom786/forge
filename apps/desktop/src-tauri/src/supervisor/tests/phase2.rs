@@ -3,7 +3,21 @@
 
 use super::*;
 use crate::contract::{CheckKind, CheckSpec, Contract, Criterion, CriterionStatus};
-use crate::supervisor::ReviewDecision;
+use crate::supervisor::{ReviewDecision, Seen};
+
+/// What a reviewer's screen would hold right now: the current fingerprint and contract revision.
+fn seen(f: &Fixture, id: &str) -> Seen {
+    let r = f.core.verification_report(id).unwrap();
+    Seen { fingerprint: r.fingerprint, contract_sha256: r.contract_sha256 }
+}
+
+fn approve(f: &Fixture, id: &str, note: Option<&str>, override_reason: Option<&str>) -> Result<Mission> {
+    f.core.review(id, ReviewDecision::Approve, note, override_reason, Some(&seen(f, id)))
+}
+
+fn verdict(f: &Fixture, id: &str, criterion: &str, pass: bool, note: Option<&str>) -> Result<()> {
+    f.core.set_manual_verdict(id, criterion, pass, note, &seen(f, id).fingerprint)
+}
 
 /// Passes only if the agent's file exists: genuine evidence about the worktree, not a constant.
 const FILE_EXISTS: &str = "node -e \"process.exit(require('fs').existsSync('FORGE_TEST.md')?0:1)\"";
@@ -59,7 +73,7 @@ fn full_lifecycle_contract_check_review_merge_proof() {
     assert!(matches!(crit_status(&r0, "clean"), CriterionStatus::VerifiedByScopeCheck));
     assert_eq!(r0.blocking_checks, vec!["Note exists"]);
     assert!(r0.needs_override());
-    let err = f.core.review(&m.id, ReviewDecision::Approve, None, None).unwrap_err().to_string();
+    let err = approve(&f, &m.id, None, None).unwrap_err().to_string();
     assert!(err.contains("not established") && err.contains("recorded reason"), "{err}");
 
     // Run the real check against the real worktree.
@@ -72,7 +86,7 @@ fn full_lifecycle_contract_check_review_merge_proof() {
     assert!(r1.checks[0].fresh);
 
     // Approve, merge.
-    let approved = f.core.review(&m.id, ReviewDecision::Approve, Some("looks right"), None).unwrap();
+    let approved = approve(&f, &m.id, Some("looks right"), None).unwrap();
     assert_eq!(approved.state, "approved");
     let out = f.core.merge_mission(&m.id, false).unwrap();
     assert_eq!(state(&f, &m.id), "merged");
@@ -109,7 +123,7 @@ fn evidence_goes_stale_when_the_code_changes_after_the_check() {
     assert!(matches!(crit_status(&r, "file"), CriterionStatus::Inconclusive { .. }), "{:?}", crit_status(&r, "file"));
     assert_eq!(r.blocking_checks, vec!["Note exists"], "a pass on older changes must not count");
     assert!(!r.checks[0].fresh);
-    assert!(f.core.review(&m.id, ReviewDecision::Approve, None, None).is_err());
+    assert!(approve(&f, &m.id, None, None).is_err());
 }
 
 #[test]
@@ -126,8 +140,8 @@ fn a_failing_check_is_recorded_as_failed_and_can_only_be_approved_over_with_a_re
     let rep = f.core.verification_report(&m.id).unwrap();
     assert!(matches!(crit_status(&rep, "broken"), CriterionStatus::Failed { .. }));
     assert!(rep.unresolved.iter().any(|u| u.contains("FAILED")));
-    assert!(f.core.review(&m.id, ReviewDecision::Approve, None, None).is_err());
-    let ok = f.core.review(&m.id, ReviewDecision::Approve, None, Some("known flaky infra check; reviewed by hand")).unwrap();
+    assert!(approve(&f, &m.id, None, None).is_err());
+    let ok = approve(&f, &m.id, None, Some("known flaky infra check; reviewed by hand")).unwrap();
     assert_eq!(ok.state, "approved");
     let d = f.core.store.review_decisions(&m.id).unwrap();
     assert_eq!(d[0].override_reason.as_deref(), Some("known flaky infra check; reviewed by hand"), "the override is on the record");
@@ -141,19 +155,19 @@ fn manual_verdicts_count_only_for_the_changes_they_were_given_on() {
     c.criteria = vec![Criterion { id: "human".into(), text: "Reads well".into(), verified_by: vec![], manual: true, scope_rule: false }];
     f.core.set_contract(&m.id, c).unwrap();
     assert!(matches!(crit_status(&f.core.verification_report(&m.id).unwrap(), "human"), CriterionStatus::RequiresManualReview { .. }));
-    f.core.set_manual_verdict(&m.id, "human", true, Some("read it, fine")).unwrap();
+    verdict(&f, &m.id, "human", true, Some("read it, fine")).unwrap();
     assert!(matches!(crit_status(&f.core.verification_report(&m.id).unwrap(), "human"), CriterionStatus::VerifiedManually { .. }));
     let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
     std::fs::write(wt.join("more.txt"), "x").unwrap();
     assert!(matches!(crit_status(&f.core.verification_report(&m.id).unwrap(), "human"), CriterionStatus::RequiresManualReview { .. }), "a verdict is stale once the changes move");
-    assert!(f.core.set_manual_verdict(&m.id, "no-such-criterion", true, None).is_err());
+    assert!(verdict(&f, &m.id, "no-such-criterion", true, None).is_err());
 }
 
 #[test]
 fn changes_after_approval_must_be_reviewed_again_before_merging() {
     let f = fixture();
     let m = mission_in_review(&f, "make a note");
-    f.core.review(&m.id, ReviewDecision::Approve, None, None).unwrap();
+    approve(&f, &m.id, None, None).unwrap();
     let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
     std::fs::write(wt.join("unreviewed.txt"), "slipped in after approval\n").unwrap();
     let err = f.core.merge_mission(&m.id, false).unwrap_err().to_string();
@@ -166,7 +180,7 @@ fn changes_after_approval_must_be_reviewed_again_before_merging() {
 fn merge_refuses_a_dirty_main_checkout_and_leaves_everything_alone() {
     let f = fixture();
     let m = mission_in_review(&f, "make a note");
-    f.core.review(&m.id, ReviewDecision::Approve, None, None).unwrap();
+    approve(&f, &m.id, None, None).unwrap();
     std::fs::write(f.repo.path().join("my-wip.txt"), "uncommitted user work\n").unwrap();
     let err = f.core.merge_mission(&m.id, false).unwrap_err().to_string();
     assert!(err.contains("uncommitted"), "{err}");
@@ -188,7 +202,7 @@ fn merge_conflicts_are_reported_before_touching_the_checkout() {
     git::run(f.repo.path(), &["add", "-A"]).unwrap();
     git::run(f.repo.path(), &["commit", "-q", "-m", "conflicting change on main"]).unwrap();
     let head = git::head_commit(f.repo.path()).unwrap();
-    f.core.review(&m.id, ReviewDecision::Approve, None, None).unwrap();
+    approve(&f, &m.id, None, None).unwrap();
     let err = f.core.merge_mission(&m.id, false).unwrap_err().to_string();
     assert!(err.contains("conflict") && err.contains("FORGE_TEST.md"), "{err}");
     assert_eq!(git::head_commit(f.repo.path()).unwrap(), head);
@@ -200,21 +214,21 @@ fn merge_conflicts_are_reported_before_touching_the_checkout() {
 fn request_changes_sends_a_follow_up_turn_and_returns_to_review() {
     let f = fixture();
     let m = mission_in_review(&f, "make a note");
-    let back = f.core.review(&m.id, ReviewDecision::RequestChanges, Some("also add a second note please"), None).unwrap();
+    let back = f.core.review(&m.id, ReviewDecision::RequestChanges, Some("also add a second note please"), None, None).unwrap();
     assert!(["preparing", "running", "awaiting_approval", "awaiting_review"].contains(&back.state.as_str()));
     wait_until("second turn finished", || f.core.store.sessions_for_mission(&m.id).unwrap().len() == 2 && state(&f, &m.id) == "awaiting_review" && f.core.live_session_count() == 0);
     assert_eq!(f.core.store.review_decisions(&m.id).unwrap()[0].decision, "request_changes");
-    assert!(f.core.review(&m.id, ReviewDecision::RequestChanges, None, None).is_err(), "a request needs text for the agent");
+    assert!(f.core.review(&m.id, ReviewDecision::RequestChanges, None, None, None).is_err(), "a request needs text for the agent");
 }
 
 #[test]
 fn rejecting_is_final_and_keeps_the_record() {
     let f = fixture();
     let m = mission_in_review(&f, "make a note");
-    f.core.review(&m.id, ReviewDecision::Reject, Some("wrong approach"), None).unwrap();
+    f.core.review(&m.id, ReviewDecision::Reject, Some("wrong approach"), None, None).unwrap();
     assert_eq!(state(&f, &m.id), "rejected");
     assert!(f.core.merge_mission(&m.id, false).is_err());
-    assert!(f.core.review(&m.id, ReviewDecision::Approve, None, None).is_err());
+    assert!(approve(&f, &m.id, None, None).is_err());
     assert_eq!(f.core.store.review_decisions(&m.id).unwrap()[0].note.as_deref(), Some("wrong approach"));
 }
 
@@ -263,7 +277,7 @@ fn invalid_contracts_are_rejected_and_finished_missions_are_frozen() {
     let mut bad = contract(false);
     bad.criteria[0].verified_by = vec!["no-such-check".into()];
     assert!(f.core.set_contract(&m.id, bad).is_err());
-    f.core.review(&m.id, ReviewDecision::Reject, Some("no"), None).unwrap();
+    f.core.review(&m.id, ReviewDecision::Reject, Some("no"), None, None).unwrap();
     assert!(f.core.set_contract(&m.id, contract(false)).unwrap_err().to_string().contains("can no longer be changed"));
 }
 
@@ -274,7 +288,7 @@ fn restart_recovery_resolves_checks_that_were_mid_flight() {
     let run = crate::store_review::VerificationRun {
         id: crate::store::new_id(), mission_id: m.id.clone(), check_id: "exists".into(), name: "n".into(), command: "c".into(), kind: "test".into(),
         state: crate::contract::RunState::Running, exit_code: None, started_at: crate::store::now(), ended_at: None, duration_ms: None,
-        fingerprint: "f".into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None,
+        fingerprint: "f".into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: String::new(),
     };
     f.core.store.insert_run(&run).unwrap();
     f.core.recover().unwrap();
@@ -287,7 +301,7 @@ fn a_rejected_missions_leftovers_are_cleaned_only_with_confirmation() {
     let m = mission_in_review(&f, "make a note");
     let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
     assert!(f.core.cleanup_workspace(&m.id, false).unwrap_err().to_string().contains("only finished"), "not before it is finished");
-    f.core.review(&m.id, ReviewDecision::Reject, Some("no"), None).unwrap();
+    f.core.review(&m.id, ReviewDecision::Reject, Some("no"), None, None).unwrap();
     let err = f.core.cleanup_workspace(&m.id, false).unwrap_err().to_string();
     assert!(err.contains("permanently delete") && err.contains("uncommitted"), "{err}");
     assert!(wt.join("FORGE_TEST.md").exists(), "refusal leaves the work intact");

@@ -27,15 +27,20 @@ pub struct CriterionReport {
 pub struct CheckReport {
     pub spec: CheckSpec,
     pub latest: Option<VerificationRun>,
-    /// The latest run passed/failed against the changes as they are now.
+    /// The latest run passed/failed against the changes as they are now, under the check's current definition.
     pub fresh: bool,
     pub runs: usize,
+    /// Changed files that define or configure this check (its own command's files, package.json, test configs, CI...).
+    /// An agent that edits them can make a check pass without the code being correct.
+    pub touched_inputs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerificationReport {
     pub fingerprint: String,
+    /// Revision hash of the contract this report was computed for; approval is bound to it.
+    pub contract_sha256: String,
     pub head_commit: Option<String>,
     pub files: Vec<ChangedFile>,
     pub scope: ScopeReport,
@@ -81,14 +86,15 @@ pub fn build_report(i: ReportInput) -> crate::error::Result<VerificationReport> 
     let evidence: HashMap<String, RunEvidence> = i
         .latest_runs
         .iter()
-        .map(|(k, r)| (k.clone(), RunEvidence { check_id: r.check_id.clone(), run_id: r.id.clone(), state: r.state, fingerprint: r.fingerprint.clone() }))
+        .map(|(k, r)| (k.clone(), RunEvidence { check_id: r.check_id.clone(), run_id: r.id.clone(), state: r.state, fingerprint: r.fingerprint.clone(), spec_rev: r.spec_rev.clone(), mutated: r.mutated }))
         .collect();
     let manual: HashMap<String, ManualVerdict> = i
         .verdicts
         .iter()
-        .map(|(k, v)| (k.clone(), ManualVerdict { pass: v.pass, note: v.note.clone(), fingerprint: v.fingerprint.clone() }))
+        .map(|(k, v)| (k.clone(), ManualVerdict { pass: v.pass, note: v.note.clone(), fingerprint: v.fingerprint.clone(), criterion_rev: v.criterion_rev.clone() }))
         .collect();
-    let ctx = EvalContext { runs: &evidence, manual: &manual, fingerprint: &i.fingerprint, scope: &scope };
+    let check_revs: HashMap<String, String> = i.contract.checks.iter().map(|c| (c.id.clone(), c.revision())).collect();
+    let ctx = EvalContext { runs: &evidence, check_revs: &check_revs, manual: &manual, fingerprint: &i.fingerprint, scope: &scope };
 
     let criteria: Vec<CriterionReport> = i
         .contract
@@ -111,8 +117,9 @@ pub fn build_report(i: ReportInput) -> crate::error::Result<VerificationReport> 
         .iter()
         .map(|spec| {
             let latest = i.latest_runs.get(&spec.id).cloned();
-            let fresh = latest.as_ref().is_some_and(|r| r.fingerprint == i.fingerprint && r.state != RunState::Running);
-            CheckReport { spec: spec.clone(), latest, fresh, runs: i.run_counts.get(&spec.id).copied().unwrap_or(0) }
+            let fresh = latest.as_ref().is_some_and(|r| r.fingerprint == i.fingerprint && r.state != RunState::Running && !r.mutated && r.spec_rev == spec.revision());
+            let touched_inputs = touched_inputs(spec, &i.files);
+            CheckReport { spec: spec.clone(), latest, fresh, runs: i.run_counts.get(&spec.id).copied().unwrap_or(0), touched_inputs }
         })
         .collect();
 
@@ -140,6 +147,12 @@ pub fn build_report(i: ReportInput) -> crate::error::Result<VerificationReport> 
         ));
     }
     for c in &checks {
+        if !c.touched_inputs.is_empty() {
+            unresolved.push(format!("Check \"{}\" may be affected by changes to files that define or configure it ({}); a passing result is weaker evidence", c.spec.name, c.touched_inputs.iter().take(4).cloned().collect::<Vec<_>>().join(", ")));
+        }
+        if c.latest.as_ref().is_some_and(|r| r.spec_rev != c.spec.revision()) {
+            unresolved.push(format!("Check \"{}\" was edited after its last run; that result no longer counts", c.spec.name));
+        }
         if c.latest.as_ref().is_some_and(|r| r.mutated) {
             unresolved.push(format!("Check \"{}\" modified files while running, so its result does not match the current changes", c.spec.name));
         }
@@ -158,6 +171,7 @@ pub fn build_report(i: ReportInput) -> crate::error::Result<VerificationReport> 
     }
 
     Ok(VerificationReport {
+        contract_sha256: i.contract.revision(),
         fingerprint: i.fingerprint,
         head_commit: i.head_commit,
         files: i.files,
@@ -170,6 +184,26 @@ pub fn build_report(i: ReportInput) -> crate::error::Result<VerificationReport> 
         hard_blockers,
         contract: i.contract.clone(),
     })
+}
+
+/// Files the agent changed that define or configure a check: the check's own command tokens, build/test manifests and CI.
+pub fn touched_inputs(spec: &CheckSpec, files: &[ChangedFile]) -> Vec<String> {
+    const DEFINITIONS: &[&str] = &["package.json", "cargo.toml", "makefile", "justfile", "pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg", "go.mod", "build.gradle", "pom.xml", "noxfile.py", "conftest.py"];
+    let tokens: Vec<String> = spec.command.split(|c: char| c.is_whitespace() || "\"'=(),;".contains(c)).map(|t| t.trim_start_matches("./").replace('\\', "/").to_lowercase()).filter(|t| t.len() > 2).collect();
+    let mut out = vec![];
+    for f in files {
+        let path = f.path.replace('\\', "/");
+        let lower = path.to_lowercase();
+        let name = lower.rsplit('/').next().unwrap_or("");
+        let config_like = name.contains(".config.") || name.starts_with(".eslintrc") || name.starts_with("jest.config") || name.starts_with("vitest.config") || name.starts_with("tsconfig");
+        // Only SCRIPT-like files named in the command count: `node scripts/check.js` is defined by that file, whereas a path
+        // the command merely inspects (`existsSync('out.txt')`) is the subject of the check, not part of its definition.
+        let script_like = [".js", ".mjs", ".cjs", ".ts", ".py", ".sh", ".ps1", ".bat", ".cmd", ".rb", ".pl"].iter().any(|e| name.ends_with(e));
+        if DEFINITIONS.contains(&name) || config_like || lower.starts_with(".github/workflows/") || (script_like && tokens.iter().any(|t| t == &lower || t == name)) {
+            out.push(path);
+        }
+    }
+    out
 }
 
 pub struct PackInput<'a> {
@@ -391,7 +425,7 @@ mod tests {
     }
 
     fn vrun(check: &str, state: RunState, fp: &str, mutated: bool) -> VerificationRun {
-        VerificationRun { id: format!("{check}-run-123456"), mission_id: "m".into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state, exit_code: Some(0), started_at: "t".into(), ended_at: None, duration_ms: Some(10), fingerprint: fp.into(), head_commit: None, mutated, output_tail: String::new(), output_truncated: false, log_path: None }
+        VerificationRun { id: format!("{check}-run-123456"), mission_id: "m".into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state, exit_code: Some(0), started_at: "t".into(), ended_at: None, duration_ms: Some(10), fingerprint: fp.into(), head_commit: None, mutated, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: contract().checks.iter().find(|c| c.id == check).map(|c| c.revision()).unwrap_or_default() }
     }
 
     fn report(runs: Vec<VerificationRun>, verdicts: Vec<ManualVerdictRow>, files: &[&str], pending: usize, running: bool) -> VerificationReport {

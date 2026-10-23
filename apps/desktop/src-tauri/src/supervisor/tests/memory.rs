@@ -4,7 +4,12 @@
 use super::*;
 use crate::knowledge::page;
 use crate::knowledge::retrieve::DEFAULT_BUDGET_CHARS;
-use crate::supervisor::NewKnowledgeArgs;
+use crate::supervisor::{NewKnowledgeArgs, ReviewDecision, Seen};
+
+fn approve(f: &Fixture, id: &str, note: Option<&str>, override_reason: Option<&str>) -> Result<Mission> {
+    let r = f.core.verification_report(id).unwrap();
+    f.core.review(id, ReviewDecision::Approve, note, override_reason, Some(&Seen { fingerprint: r.fingerprint, contract_sha256: r.contract_sha256 }))
+}
 
 fn knowledge(f: &Fixture, title: &str, body: &str) -> crate::knowledge::store::KPage {
     f.core
@@ -147,7 +152,7 @@ fn a_memory_failure_never_blocks_a_mission() {
 fn merging_records_a_factual_unverified_mission_record_that_is_not_injected_until_verified() {
     let f = fixture();
     let m = run_to_review(&f, "make a note about caches");
-    f.core.review(&m.id, crate::supervisor::ReviewDecision::Approve, Some("fine"), None).unwrap();
+    approve(&f, &m.id, Some("fine"), None).unwrap();
     let out = f.core.merge_mission(&m.id, false).unwrap();
     assert!(out.notes.iter().all(|n| !n.contains("mission record could not")), "{:?}", out.notes);
 

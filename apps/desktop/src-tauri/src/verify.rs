@@ -34,19 +34,48 @@ struct Buf {
     total: u64,
     log: Option<std::fs::File>,
     logged: u64,
+    /// Bytes of an unfinished line, redacted as a whole when it completes (a secret can straddle two reads).
+    pending: Vec<u8>,
 }
 
 impl Buf {
-    fn push(&mut self, chunk: &[u8]) {
-        self.total += chunk.len() as u64;
+    fn write_log(&mut self, bytes: &[u8]) {
         if let Some(f) = self.log.as_mut() {
             if self.logged < LOG_CAP_BYTES {
                 let room = (LOG_CAP_BYTES - self.logged) as usize;
-                let n = chunk.len().min(room);
-                let _ = f.write_all(&chunk[..n]);
+                let n = bytes.len().min(room);
+                let _ = f.write_all(&bytes[..n]);
                 self.logged += n as u64;
             }
         }
+    }
+
+    /// Write the log redacted, line by line.
+    fn log_chunk(&mut self, chunk: &[u8]) {
+        self.pending.extend_from_slice(chunk);
+        while let Some(pos) = self.pending.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=pos).collect();
+            let red = redact::redact_str(&String::from_utf8_lossy(&line));
+            self.write_log(red.as_bytes());
+        }
+        if self.pending.len() > 64 * 1024 {
+            let line: Vec<u8> = std::mem::take(&mut self.pending);
+            let red = redact::redact_str(&String::from_utf8_lossy(&line));
+            self.write_log(red.as_bytes());
+        }
+    }
+
+    fn finish_log(&mut self) {
+        if !self.pending.is_empty() {
+            let line: Vec<u8> = std::mem::take(&mut self.pending);
+            let red = redact::redact_str(&String::from_utf8_lossy(&line));
+            self.write_log(red.as_bytes());
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) {
+        self.total += chunk.len() as u64;
+        self.log_chunk(chunk);
         self.tail.extend_from_slice(chunk);
         if self.tail.len() > TAIL_BYTES * 2 {
             let cut = self.tail.len() - TAIL_BYTES;
@@ -165,7 +194,8 @@ pub fn run_check(command: &str, cwd: &Path, timeout: Duration, log_path: Option<
         }
     }
 
-    let b = buf.lock().unwrap_or_else(|p| p.into_inner());
+    let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
+    b.finish_log();
     let truncated = b.total as usize > b.tail.len().min(TAIL_BYTES);
     let start = b.tail.len().saturating_sub(TAIL_BYTES);
     let text = String::from_utf8_lossy(&b.tail[start..]).into_owned();
@@ -246,7 +276,8 @@ mod tests {
         assert!(r.output_tail.len() <= TAIL_BYTES + 16);
         assert!(r.output_tail.contains("line 19999"), "tail must keep the end");
         let logged = std::fs::read_to_string(&log).unwrap();
-        assert!(logged.contains("supersecretvalue123"), "raw log is the user's own data on disk, kept verbatim for debugging");
+        assert!(!logged.contains("supersecretvalue123"), "the on-disk log is redacted line by line too");
+        assert!(logged.contains("line 19999"));
         assert!(!r.output_tail.contains("supersecretvalue123") || !r.output_tail.starts_with("token="), "tail shown in the UI is redacted");
     }
 

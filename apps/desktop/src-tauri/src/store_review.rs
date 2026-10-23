@@ -29,6 +29,8 @@ pub struct VerificationRun {
     pub output_tail: String,
     pub output_truncated: bool,
     pub log_path: Option<String>,
+    /// Revision of the check definition this ran under; results never carry over to a changed check.
+    pub spec_rev: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -38,6 +40,8 @@ pub struct ManualVerdictRow {
     pub pass: bool,
     pub note: Option<String>,
     pub fingerprint: String,
+    /// Revision of the criterion the verdict was given on.
+    pub criterion_rev: String,
     pub decided_by: String,
     pub at: String,
 }
@@ -90,7 +94,7 @@ fn run_state_parse(s: &str) -> RunState {
     }
 }
 
-const RUN_COLS: &str = "id, mission_id, check_id, name, command, kind, state, exit_code, started_at, ended_at, duration_ms, fingerprint, head_commit, mutated, output_tail, output_truncated, log_path";
+const RUN_COLS: &str = "id, mission_id, check_id, name, command, kind, state, exit_code, started_at, ended_at, duration_ms, fingerprint, head_commit, mutated, output_tail, output_truncated, log_path, spec_rev";
 
 fn run_from(r: &Row) -> rusqlite::Result<VerificationRun> {
     let state: String = r.get(6)?;
@@ -112,6 +116,7 @@ fn run_from(r: &Row) -> rusqlite::Result<VerificationRun> {
         output_tail: r.get(14)?,
         output_truncated: r.get::<_, i64>(15)? != 0,
         log_path: r.get(16)?,
+        spec_rev: r.get(17)?,
     })
 }
 
@@ -143,8 +148,8 @@ impl Store {
 
     pub fn insert_run(&self, run: &VerificationRun) -> Result<()> {
         self.c().execute(
-            "INSERT INTO verification_run(id,mission_id,check_id,name,command,kind,state,started_at,fingerprint,head_commit) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![run.id, run.mission_id, run.check_id, run.name, run.command, run.kind, run_state_str(run.state), run.started_at, run.fingerprint, run.head_commit],
+            "INSERT INTO verification_run(id,mission_id,check_id,name,command,kind,state,started_at,fingerprint,head_commit,spec_rev) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![run.id, run.mission_id, run.check_id, run.name, run.command, run.kind, run_state_str(run.state), run.started_at, run.fingerprint, run.head_commit, run.spec_rev],
         )?;
         Ok(())
     }
@@ -190,19 +195,19 @@ impl Store {
 
     // ---- manual verdicts ------------------------------------------------------------------------
 
-    pub fn add_manual_verdict(&self, mission_id: &str, criterion_id: &str, pass: bool, note: Option<&str>, fingerprint: &str) -> Result<()> {
+    pub fn add_manual_verdict(&self, mission_id: &str, criterion_id: &str, pass: bool, note: Option<&str>, fingerprint: &str, criterion_rev: &str) -> Result<()> {
         self.c().execute(
-            "INSERT INTO manual_verdict(mission_id, criterion_id, pass, note, fingerprint, decided_by, at) VALUES (?1,?2,?3,?4,?5,'user',?6)",
-            params![mission_id, criterion_id, pass as i64, note, fingerprint, now()],
+            "INSERT INTO manual_verdict(mission_id, criterion_id, pass, note, fingerprint, criterion_rev, decided_by, at) VALUES (?1,?2,?3,?4,?5,?6,'user',?7)",
+            params![mission_id, criterion_id, pass as i64, note, fingerprint, criterion_rev, now()],
         )?;
         Ok(())
     }
 
     pub fn latest_manual_verdicts(&self, mission_id: &str) -> Result<HashMap<String, ManualVerdictRow>> {
         let c = self.c();
-        let mut s = c.prepare("SELECT criterion_id, pass, note, fingerprint, decided_by, at FROM manual_verdict WHERE mission_id=?1 ORDER BY id")?;
+        let mut s = c.prepare("SELECT criterion_id, pass, note, fingerprint, criterion_rev, decided_by, at FROM manual_verdict WHERE mission_id=?1 ORDER BY id")?;
         let rows = s.query_map([mission_id], |r| {
-            Ok(ManualVerdictRow { criterion_id: r.get(0)?, pass: r.get::<_, i64>(1)? != 0, note: r.get(2)?, fingerprint: r.get(3)?, decided_by: r.get(4)?, at: r.get(5)? })
+            Ok(ManualVerdictRow { criterion_id: r.get(0)?, pass: r.get::<_, i64>(1)? != 0, note: r.get(2)?, fingerprint: r.get(3)?, criterion_rev: r.get(4)?, decided_by: r.get(5)?, at: r.get(6)? })
         })?;
         let mut m = HashMap::new();
         for r in rows {
@@ -271,7 +276,7 @@ mod tests {
     }
 
     fn run(mid: &str, check: &str, fp: &str) -> VerificationRun {
-        VerificationRun { id: new_id(), mission_id: mid.into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state: RunState::Running, exit_code: None, started_at: now(), ended_at: None, duration_ms: None, fingerprint: fp.into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None }
+        VerificationRun { id: new_id(), mission_id: mid.into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state: RunState::Running, exit_code: None, started_at: now(), ended_at: None, duration_ms: None, fingerprint: fp.into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: "r1".into() }
     }
 
     #[test]
@@ -321,9 +326,9 @@ mod tests {
     #[test]
     fn latest_manual_verdict_per_criterion_and_review_history() {
         let (s, id) = seeded();
-        s.add_manual_verdict(&id, "c1", true, Some("fine"), "f1").unwrap();
-        s.add_manual_verdict(&id, "c1", false, Some("no, regressed"), "f2").unwrap();
-        s.add_manual_verdict(&id, "c2", true, None, "f2").unwrap();
+        s.add_manual_verdict(&id, "c1", true, Some("fine"), "f1", "cr1").unwrap();
+        s.add_manual_verdict(&id, "c1", false, Some("no, regressed"), "f2", "cr1").unwrap();
+        s.add_manual_verdict(&id, "c2", true, None, "f2", "cr2").unwrap();
         let v = s.latest_manual_verdicts(&id).unwrap();
         assert!(!v["c1"].pass && v["c1"].fingerprint == "f2" && v["c2"].pass);
         s.add_review_decision(&id, "request_changes", Some("add tests"), None, "f1", Some("abc")).unwrap();

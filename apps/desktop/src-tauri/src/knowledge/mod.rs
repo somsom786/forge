@@ -9,3 +9,5 @@ pub mod retrieve;
 #[cfg(test)]
 mod service_tests;
 pub mod lint;
+#[cfg(test)]
+mod hardening_tests;

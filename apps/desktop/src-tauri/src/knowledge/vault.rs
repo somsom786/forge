@@ -76,6 +76,9 @@ pub fn safe_file(root: &Path, rel: &str) -> Result<PathBuf> {
         return Err(ForgeError::PathRejected(format!("invalid page path \"{rel}\"")));
     }
     let canon_root = dunce::canonicalize(root).map_err(|e| ForgeError::PathRejected(format!("wiki root not accessible: {e}")))?;
+    // Walk the path as SPELLED first: canonicalising resolves an internal junction/symlink away and would hide it.
+    let spelled = paths::lexical_normalize(&canon_root.join(rel));
+    check_components(&canon_root, &spelled)?;
     let real = paths::resolve_within(&canon_root, Path::new(rel))?;
     check_components(&canon_root, &real)?;
     if real.is_dir() {
@@ -202,6 +205,25 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), &link).unwrap();
         let err = safe_file(r.path(), "pages/shortcut/secret.md").unwrap_err().to_string();
         assert!(err.contains("outside") || err.contains("link") || err.contains("resolves"), "{err}");
+    }
+
+    #[test]
+    fn a_junction_that_points_elsewhere_inside_the_same_tree_is_still_refused() {
+        // Canonicalising `pages/alias` yields `pages/real`, which looks innocent; only the spelled path reveals the link.
+        let r = root();
+        std::fs::create_dir_all(r.path().join("pages").join("real")).unwrap();
+        std::fs::write(r.path().join("pages").join("real").join("x.md"), "x").unwrap();
+        let alias = r.path().join("pages").join("alias");
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&alias).arg(r.path().join("pages").join("real")).output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(r.path().join("pages").join("real"), &alias).unwrap();
+        assert!(safe_file(r.path(), "pages/real/x.md").is_ok());
+        let err = safe_file(r.path(), "pages/alias/x.md").unwrap_err().to_string();
+        assert!(err.contains("link"), "{err}");
     }
 
     #[test]

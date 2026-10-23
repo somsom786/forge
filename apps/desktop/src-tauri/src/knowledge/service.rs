@@ -209,8 +209,9 @@ pub fn scan(ctx: Ctx, project_id: &str) -> Result<ScanReport> {
                 continue;
             }
             let (size, mt) = (meta.len() as i64, mtime_ms(&meta));
-            if let Some((s, m, _)) = ctx.store.k_signature(project_id, root.kind, &rel)? {
-                if s == size && m == mt {
+            if let Some((s, m, _, was_missing)) = ctx.store.k_signature(project_id, root.kind, &rel)? {
+                // A page that was marked missing must be re-read even if the file looks identical (it came back).
+                if s == size && m == mt && !was_missing {
                     report.unchanged += 1;
                     continue;
                 }
@@ -242,7 +243,7 @@ pub fn reindex_page(ctx: Ctx, page: &KPage) -> Result<KPage> {
     let root = root_for(ctx, &page.project_id, &page.root_kind)?;
     let real = safe_file(&root.path, &page.rel_path)?;
     if !real.exists() {
-        ctx.store.k_mark_missing(&page.project_id, &page.root_kind, &HashSet::new()).ok();
+        ctx.store.k_mark_page_missing(&page.id)?;
         return ctx.store.k_get(&page.id);
     }
     let text = String::from_utf8_lossy(&std::fs::read(&real)?).into_owned();
@@ -572,13 +573,22 @@ pub fn recover(ctx: Ctx) -> Result<RecoveryNotes> {
             }
         }
     }
-    // Leftover temp files from a crash between create and rename.
+    // Leftover temp files from a crash between create and rename. Only in roots FORGE may write to, under the root's lock,
+    // only in the folder FORGE itself writes pages to, never through a link, and only plain files with our temp prefix.
     let projects = ctx.store.list_projects()?;
     for p in projects {
-        for r in roots(ctx, &p.id)? {
-            if let Ok(rd) = std::fs::read_dir(r.path.join("pages")) {
+        for r in roots(ctx, &p.id)?.into_iter().filter(|r| r.writable) {
+            let dir_rel = if r.kind == "managed" { "pages" } else { "FORGE/pages" };
+            let Ok(_lock) = writer_lock(&r.path) else { continue };
+            let dir = r.path.join(dir_rel);
+            let Ok(meta) = std::fs::symlink_metadata(&dir) else { continue };
+            if !meta.is_dir() || vault::is_reparse_meta(&meta) {
+                continue;
+            }
+            if let Ok(rd) = std::fs::read_dir(&dir) {
                 for e in rd.flatten() {
-                    if e.file_name().to_string_lossy().starts_with(".forge-tmp-") && std::fs::remove_file(e.path()).is_ok() {
+                    let Ok(m) = std::fs::symlink_metadata(e.path()) else { continue };
+                    if m.is_file() && !vault::is_reparse_meta(&m) && e.file_name().to_string_lossy().starts_with(".forge-tmp-") && std::fs::remove_file(e.path()).is_ok() {
                         notes.temp_files_removed += 1;
                     }
                 }

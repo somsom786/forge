@@ -31,9 +31,23 @@ const REDIRECTING_ENV: &[&str] = &[
     "GIT_PAGER",
 ];
 
+/// An empty directory used as `core.hooksPath`, so no repository hook (pre-commit, post-checkout, index hooks...) ever
+/// runs as a side effect of something FORGE does. FORGE's own checks are the verification step.
+fn empty_hooks_dir() -> String {
+    static D: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    D.get_or_init(|| {
+        let p = std::env::temp_dir().join("forge-empty-hooks");
+        let _ = std::fs::create_dir_all(&p);
+        p.to_string_lossy().replace('\\', "/")
+    })
+    .clone()
+}
+
 fn base_command(dir: &Path) -> Result<Command> {
     let mut c = Command::new(git_binary()?);
     c.current_dir(dir)
+        .arg("-c")
+        .arg(format!("core.hooksPath={}", empty_hooks_dir()))
         .args([
             "-c", "core.quotepath=false",
             "-c", "core.longpaths=true",
@@ -358,6 +372,7 @@ struct PreviewIndex {
 
 impl PreviewIndex {
     fn build(worktree: &Path) -> Result<Self> {
+        ensure_no_external_programs(worktree)?;
         let path = std::env::temp_dir().join(format!("forge-idx-{}", uuid::Uuid::now_v7()));
         let idx = path.to_string_lossy().into_owned();
         let me = Self { path };
@@ -394,7 +409,7 @@ impl Drop for PreviewIndex {
 
 pub fn changed_files(worktree: &Path, base: &str) -> Result<Vec<ChangedFile>> {
     let idx = PreviewIndex::build(worktree)?;
-    let raw = idx.run(worktree, &["diff", "--cached", "--numstat", "-z", "--no-ext-diff", "--no-textconv", base])?;
+    let raw = idx.run(worktree, &["diff", "--cached", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", base])?;
     let mut out = vec![];
     let mut it = raw.split('\0').peekable();
     while let Some(rec) = it.next() {
@@ -424,15 +439,57 @@ pub fn diff(worktree: &Path, base: &str) -> Result<String> {
 /// Stable identity of the mission's current changes: base-relative content of every changed path.
 /// Evidence (check results, manual verdicts, approvals) is only valid for the fingerprint it was recorded against.
 pub fn fingerprint(worktree: &Path, base: &str) -> Result<String> {
+    Ok(fingerprint_and_tree(worktree, base)?.0)
+}
+
+/// The fingerprint together with the git tree it was derived from. Merging commits *that tree*, never whatever the
+/// worktree's real index happens to hold, so what is merged is exactly what was reviewed.
+pub fn fingerprint_and_tree(worktree: &Path, base: &str) -> Result<(String, String)> {
     use sha2::{Digest, Sha256};
     let idx = PreviewIndex::build(worktree)?;
-    // The tree object of the full current state is a content hash of exactly what a merge would bring.
-    let tree = idx.run(worktree, &["write-tree"])?;
+    let tree = idx.run(worktree, &["write-tree"])?.trim().to_string();
     let mut h = Sha256::new();
     h.update(base.as_bytes());
     h.update(b"\0");
-    h.update(tree.trim().as_bytes());
-    Ok(format!("{:x}", h.finalize())[..32].to_string())
+    h.update(tree.as_bytes());
+    Ok((format!("{:x}", h.finalize())[..32].to_string(), tree))
+}
+
+/// Git filters, merge drivers and diff/textconv helpers are programs named in repository configuration. Running one
+/// would execute code outside any tool approval, so FORGE refuses to operate on a repository that configures one
+/// (Git LFS's own `git-lfs` helper is recognised and allowed).
+pub fn external_programs(dir: &Path) -> Result<Vec<String>> {
+    // Only what can actually execute during `add` / `merge`: clean/smudge/process filters and merge drivers. Diff helpers
+    // (textconv, external diff) never run because every diff FORGE performs passes --no-textconv --no-ext-diff.
+    // System-scope entries come from the Git installation itself (e.g. Git for Windows ships `astextplain`), which only an
+    // administrator can change, so they are not treated as repository- or agent-supplied.
+    let out = run_raw(dir, &["config", "--show-scope", "--get-regexp", r"^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$"])?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut found = vec![];
+    for line in text.lines() {
+        let (scope, rest) = line.split_once(char::is_whitespace).unwrap_or(("", line));
+        if scope == "system" {
+            continue;
+        }
+        let (k, v) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+        let v = v.trim();
+        let lfs = v == "git-lfs" || v.starts_with("git-lfs ") || v.starts_with("git lfs ") || v.starts_with("git-lfs.exe");
+        if !lfs && !v.is_empty() {
+            found.push(format!("{k} = {v}"));
+        }
+    }
+    Ok(found)
+}
+
+pub fn ensure_no_external_programs(dir: &Path) -> Result<()> {
+    let found = external_programs(dir)?;
+    if found.is_empty() {
+        return Ok(());
+    }
+    Err(ForgeError::Git(format!(
+        "this repository configures external git programs ({}). FORGE will not run them automatically because they execute code outside the agent's approvals. Remove them from the git configuration (or use a copy of the repository without them) to continue.",
+        found.join("; ")
+    )))
 }
 
 #[cfg(test)]

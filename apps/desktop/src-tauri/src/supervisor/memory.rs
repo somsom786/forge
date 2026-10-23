@@ -39,6 +39,8 @@ pub struct PageDetail {
     pub page: KPage,
     /// The file exactly as it is on disk (what an editor would show).
     pub text: String,
+    /// Hash of exactly `text`. Verify against THIS, so what a person reads is what they verify.
+    pub text_sha256: String,
     pub links: Vec<KLink>,
     pub backlinks: Vec<KPage>,
     pub sources: Vec<KSource>,
@@ -186,8 +188,10 @@ impl Core {
         let page = self.store.k_get(page_id)?;
         let page = if page.missing { page } else { service::reindex_page(self.kctx(), &page)? };
         let root = service::root_for(self.kctx(), &page.project_id, &page.root_kind)?;
+        let text = if page.missing { String::new() } else { service::read_page_text(self.kctx(), &page)? };
         Ok(PageDetail {
-            text: if page.missing { String::new() } else { service::read_page_text(self.kctx(), &page)? },
+            text_sha256: page::content_hash(&text),
+            text,
             links: self.store.k_links(page_id)?,
             backlinks: self.store.k_backlinks(page_id)?,
             sources: self.store.k_sources_for(page_id)?,
