@@ -267,12 +267,12 @@ export function NewMissionDialog() {
                 <span className="font-medium">Use verified project knowledge</span>
               </label>
               <div className="mt-1 text-[12px] text-muted">
-                {!useMemory ? 'Memory will be off for this mission.' : !objective.trim() ? 'Write an objective to see which notes match.' : pkgError ? `Preview unavailable: ${pkgError}` : pkg ? previewSummary(pkg.items) : 'Checking…'}
+                {!useMemory ? 'Memory will be off for this mission.' : !objective.trim() ? 'Write an objective to see which notes match.' : pkgError ? `Preview unavailable: ${pkgError}` : pkg ? `${previewSummary(pkg.items)}${pkg.code?.items.length ? `; plus ${pkg.code.items.length} relevant-code pointer${pkg.code.items.length === 1 ? '' : 's'}` : ''}` : 'Checking…'}
               </div>
               {pkg && useMemory && (
                 <>
                   <button type="button" className="btn btn-sm btn-ghost mt-1" aria-expanded={showPkg} onClick={() => setShowPkg(!showPkg)}>See what would be sent</button>
-                  {showPkg && <div className="mt-2"><ContextView ctx={{ items: pkg.items, omitted: pkg.omitted, charBudget: pkg.charBudget, text: pkg.text, sha256: pkg.sha256 }} /></div>}
+                  {showPkg && <div className="mt-2"><ContextView ctx={{ items: pkg.items, omitted: pkg.omitted, charBudget: pkg.charBudget, text: pkg.text, sha256: pkg.sha256, code: pkg.code }} /></div>}
                 </>
               )}
             </div>

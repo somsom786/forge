@@ -1,3 +1,4 @@
+pub mod codeintel;
 pub mod commands;
 pub mod conflicts;
 pub mod contract;
@@ -194,6 +195,8 @@ pub fn run() {
             commands::mission_conflicts,
             commands::execution_backends,
             commands::project_set_execution_backend,
+            commands::code_map,
+            commands::code_symbols,
             commands::mcp_preview,
             commands::mcp_authorize,
             commands::mcp_revoke,

@@ -215,3 +215,34 @@ fn status_reports_effective_states_and_the_vault_configuration() {
     assert_eq!(st.counts.get("verified"), None, "the edit made the only verified page unreviewed again: {:?}", st.counts);
     let _ = page::MAX_PAGE_BYTES;
 }
+
+#[test]
+fn relevant_code_follows_the_knowledge_block_labelled_and_recorded_with_its_reasons() {
+    let f = fixture();
+    let src = "pub struct ResetToken { pub issued_at: u64 }\n\nimpl ResetToken {\n    pub fn is_expired(&self, now: u64) -> bool {\n        now - self.issued_at > 3600\n    }\n}\n";
+    std::fs::create_dir_all(f.repo.path().join("src/auth")).unwrap();
+    std::fs::write(f.repo.path().join("src/auth/token.rs"), src).unwrap();
+    git::run(f.repo.path(), &["add", "-A"]).unwrap();
+    git::run(f.repo.path(), &["commit", "-q", "-m", "token"]).unwrap();
+    let page = knowledge(&f, "Auth tests flake on clock skew", NOTE_BODY);
+    f.core.knowledge_verify(&page.id, &page.current_sha256, None).unwrap();
+
+    let m = run_to_review(&f, OBJECTIVE);
+    let (prompt, sys) = prompt_seen_by_agent(&f, &m.id);
+    assert!(!sys, "code pointers are never in the system prompt either");
+    let k = prompt.find("<<<FORGE_PROJECT_KNOWLEDGE").expect("knowledge block");
+    let c = prompt.find("<<<FORGE_RELEVANT_CODE").expect("code block");
+    assert!(prompt.starts_with(OBJECTIVE) && k < c, "task, then knowledge, then code:\n{prompt}");
+    assert!(prompt.contains("src/auth/token.rs:1 struct ResetToken") && prompt.contains("is_expired"), "{prompt}");
+
+    // Provenance: the package records which symbols, why, from which commit; the hash covers the code block too.
+    let ctx = &f.core.store.k_contexts_for(&m.id).unwrap()[0];
+    assert!(ctx.injected_text.contains("<<<FORGE_RELEVANT_CODE") && prompt.contains(&ctx.injected_text));
+    assert_eq!(ctx.injected_sha256, crate::proof::sha256_hex(ctx.injected_text.as_bytes()));
+    let code = &ctx.params["relevantCode"];
+    let first = &code["items"][0];
+    assert_eq!((first["name"].as_str(), first["file"].as_str()), (Some("ResetToken"), Some("src/auth/token.rs")));
+    assert!(first["reasons"].to_string().contains("\\\"reset\\\"") && first["reasons"].to_string().contains("\\\"token\\\""), "{first}");
+    assert_eq!(code["indexHead"].as_str(), Some(git::head_commit(f.repo.path()).unwrap().as_str()));
+    assert!(code["usedBytes"].as_u64().unwrap() <= code["budgetBytes"].as_u64().unwrap());
+}

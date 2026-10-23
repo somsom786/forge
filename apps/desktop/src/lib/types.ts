@@ -519,6 +519,8 @@ export interface ContextPackage {
   text: string;
   sha256: string;
   pathHints: string[];
+  /** "Relevant code" pointers; their labelled block is part of `text`, after the knowledge block. */
+  code: RelevantCode;
 }
 /** The package a mission actually received (persisted at its first turn). */
 export interface ContextPackageRow {
@@ -526,7 +528,8 @@ export interface ContextPackageRow {
   missionId: string;
   createdAt: string;
   query: string;
-  params: { budgetChars?: number; pathHints?: string[] };
+  /** `relevantCode` is absent in packages recorded before code intelligence existed. */
+  params: { budgetChars?: number; pathHints?: string[]; relevantCode?: RelevantCode };
   items: ContextItem[];
   omitted: ContextOmitted[];
   injectedText: string;
@@ -983,4 +986,87 @@ export interface AgentsOverview {
   days: number;
   sessions: AgentSessionRow[];
   usage: ProviderUsage[];
+}
+
+// ---- Code intelligence ----
+
+export type SymbolKind = 'function' | 'method' | 'struct' | 'class' | 'enum' | 'trait' | 'interface' | 'type' | 'const' | 'module';
+
+export interface CodeSymbol {
+  name: string;
+  kind: SymbolKind;
+  /** Repository-relative, '/'-separated. */
+  file: string;
+  /** 1-based, inclusive. */
+  startLine: number;
+  endLine: number;
+  /** The declaration up to its body, on one line (truncated). */
+  signature: string;
+  /** Enclosing class / impl type / trait / module; null at top level. */
+  container: string | null;
+}
+export interface SymbolHit { symbol: CodeSymbol; score: number }
+
+export interface IndexedFile {
+  path: string;
+  /** null = a language FORGE does not parse (listed, not read). */
+  language: string | null;
+  bytes: number;
+  symbols: number;
+  parseErrors: boolean;
+  /** Why a file in a supported language was not parsed. */
+  skipped: string | null;
+}
+export interface SymbolBrief { name: string; kind: SymbolKind; file: string; line: number }
+export interface DirSummary {
+  /** '' is the repository root. */
+  path: string;
+  /** Files directly in this directory. */
+  files: IndexedFile[];
+  totalFiles: number;
+  totalSymbols: number;
+  languages: Record<string, number>;
+  topSymbols: SymbolBrief[];
+}
+export interface CodeIndexSkipped { tooLarge: number; binary: number; unreadable: number; excludedDirs: number; symlinks: number; parseFailed: number; overFileLimit: number }
+export interface CodeMap {
+  head: string | null;
+  dirty: boolean;
+  builtAt: string;
+  builtMs: number;
+  filesListed: number;
+  filesParsed: number;
+  symbolCount: number;
+  languages: Record<string, number>;
+  skipped: CodeIndexSkipped;
+  /** Set when a limit stopped indexing early: the map is partial. */
+  truncated: string | null;
+  limits: { maxFileBytes: number; maxFiles: number };
+  dirs: DirSummary[];
+}
+
+export interface CodeRef {
+  name: string;
+  kind: SymbolKind;
+  file: string;
+  startLine: number;
+  endLine: number;
+  signature: string;
+  container: string | null;
+  score: number;
+  /** Why it was chosen, in plain words. */
+  reasons: string[];
+}
+/** The "Relevant code" section of a context package. */
+export interface RelevantCode {
+  items: CodeRef[];
+  omitted: number;
+  terms: string[];
+  budgetBytes: number;
+  usedBytes: number;
+  indexHead: string | null;
+  indexDirty: boolean;
+  indexTruncated: string | null;
+  /** Why there is no section (e.g. the code index was unavailable). */
+  note: string | null;
 }

@@ -1051,6 +1051,7 @@ fn derive_title(objective: &str) -> String {
 }
 
 mod acp;
+mod code;
 mod execution;
 mod mcp;
 mod agents;
