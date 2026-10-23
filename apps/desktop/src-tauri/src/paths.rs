@@ -115,6 +115,11 @@ pub fn resolve_within(root: &Path, candidate: &Path) -> Result<PathBuf> {
     let mut probe = lex.clone();
     let mut tail: Vec<std::ffi::OsString> = vec![];
     while !probe.exists() {
+        // `exists()` follows links, so a *broken* link looks absent. It is not: writing through it creates its target, which
+        // can be anywhere (outside the worktree, or a protected file inside it). Refuse any link on the not-yet-existing part.
+        if std::fs::symlink_metadata(&probe).is_ok() {
+            return Err(ForgeError::PathRejected(format!("{} is a link whose target does not exist; FORGE does not write through it", probe.display())));
+        }
         match probe.file_name() {
             Some(n) => tail.push(n.to_os_string()),
             None => break,
@@ -261,5 +266,29 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(outside.path(), &link).unwrap();
         assert!(resolve_within(d.path(), Path::new("link/file.txt")).is_err());
+    }
+
+    /// Security review F1: a link to a path that does not exist yet used to resolve to the link's own (inside) path.
+    #[test]
+    fn a_broken_link_is_refused_wherever_it_points() {
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let gone = outside.path().join("not-yet").join("autostart");
+        // A dangling directory link (a junction on Windows: create it to a real directory, then remove the target).
+        std::fs::create_dir_all(&gone).unwrap();
+        test_dir_link(&d.path().join("notes"), &gone);
+        std::fs::remove_dir_all(outside.path().join("not-yet")).unwrap();
+        assert!(resolve_within(d.path(), Path::new("notes")).is_err(), "the dangling link itself");
+        assert!(resolve_within(d.path(), Path::new("notes/x.desktop")).is_err(), "a path through it");
+        #[cfg(unix)]
+        {
+            // A dangling *file* link, to outside and to a protected file inside the worktree.
+            std::os::unix::fs::symlink(outside.path().join("victim.txt"), d.path().join("a.md")).unwrap();
+            assert!(resolve_within(d.path(), Path::new("a.md")).is_err());
+            std::fs::create_dir_all(d.path().join(".claude")).unwrap();
+            std::os::unix::fs::symlink(d.path().join(".claude/settings.json"), d.path().join("b.md")).unwrap();
+            assert!(resolve_within(d.path(), Path::new("b.md")).is_err());
+        }
+        assert!(resolve_within(d.path(), Path::new("fresh/new.txt")).is_ok(), "plain new paths still resolve");
     }
 }

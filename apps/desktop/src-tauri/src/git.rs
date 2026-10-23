@@ -31,16 +31,13 @@ const REDIRECTING_ENV: &[&str] = &[
     "GIT_PAGER",
 ];
 
-/// An empty directory used as `core.hooksPath`, so no repository hook (pre-commit, post-checkout, index hooks...) ever
-/// runs as a side effect of something FORGE does. FORGE's own checks are the verification step.
-fn empty_hooks_dir() -> String {
-    static D: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    D.get_or_init(|| {
-        let p = std::env::temp_dir().join("forge-empty-hooks");
-        let _ = std::fs::create_dir_all(&p);
-        p.to_string_lossy().replace('\\', "/")
-    })
-    .clone()
+/// `core.hooksPath` for every git command FORGE runs, so no repository hook (pre-commit, post-checkout,
+/// reference-transaction...) ever runs as a side effect of something FORGE does. FORGE's own checks are the verification step.
+///
+/// It names the null device, which is not a directory, so git finds no hook in it and nobody can put one there. (It used to
+/// be a shared directory under the temp dir: another local user, or an approved agent command, could plant hooks in it.)
+pub(crate) fn empty_hooks_dir() -> String {
+    if cfg!(windows) { "NUL".into() } else { "/dev/null".into() }
 }
 
 fn base_command(dir: &Path) -> Result<Command> {

@@ -144,6 +144,25 @@ FORGE is the ACP **client** (official SDK `@agentclientprotocol/sdk` 1.8.0); an 
 asking is not mediated by FORGE (same trust class as limit 1). The worktree diff remains the authoritative record and is
 reviewed before merge. FORGE prepends its mission guidance to the prompt (ACP has no system prompt).
 
+## Fixes from the independent cloud reviews (2026-10-23)
+
+Found by independent security, protocol and data-integrity reviews of `cloud/overhaul`; each fix has a regression test that
+fails without it (mutation-checked where noted).
+
+| Finding | Severity | Fix | Test |
+|---|---|---|---|
+| A **dangling** symlink/junction in the worktree let a Write escape the worktree or reach a protected file: `exists()` follows links, so the link's own (inside) path was checked | **P0** | `resolve_within` refuses any component that exists as a link but whose target does not | `paths::a_broken_link_is_refused_wherever_it_points`, `approvals::a_dangling_link_*` (mutation-checked) |
+| Redaction could hide part of a shell command from the approver (`TOKEN=$(… \| sh)` shown as `TOKEN=[REDACTED]`) while the digest covered the real command | P1 | A shell command whose text redaction would change is refused, not asked; other tools get High risk + a warning | `approvals::a_command_whose_text_would_be_hidden…` |
+| An approved call could be replayed indefinitely with the same tool-use id (ACP agents choose their ids) without a policy re-check | P1 | A decided allow is reused once (the provider prompt after FORGE's hook), after re-running policy; further repeats are denied | `approvals::an_approval_is_reused_at_most_once…` |
+| `core.hooksPath` pointed at a shared, pre-creatable directory under the temp dir | P1 | Points at the null device (`/dev/null`, `NUL`), which cannot hold hooks | `review_hardening::a_hostile_git_hook_never_runs…` |
+| Unicode look-alikes (`.claude/ſettings.json`, zero-width characters) passed the protected-name check on case-insensitive file systems | P1 (unconfirmed on macOS/Windows) | Protected names are compared after folding characters such file systems fold onto ASCII | `policy::unicode_lookalikes_of_protected_names_are_denied` |
+| `~`, `$VAR`, `%VAR%` in a write path were checked literally | P2 | Denied | `policy::home_and_variable_shorthands_are_denied` |
+| MCP server names with edge underscores made tool names ambiguous; `http://localhost.evil.com` counted as loopback | P2 | Names may not start/end with `_`; URL host parsed exactly | `mcp::tests::dangerous_or_malformed_definitions_are_refused` |
+| Approving without the card's binding skipped the binding check | P2 | Approving a bound request requires the binding; denying does not | `approvals::approving_without_the_cards_binding_is_refused` |
+| A `Read` naming no file was allowed silently | P2 | Asked | `policy::write_without_path_is_denied_and_unknown_tools_ask` |
+
+Policy revision bumped to `policy-2026-10-23.2` (approvals requested under the old revision are never reused).
+
 ## Execution backends (Stage B; docs/EXECUTION.md)
 
 * Checks and experiment runs execute through the project's **execution backend**. `trusted_local` (the default, unchanged

@@ -135,6 +135,8 @@ struct SessionHandle {
     waiters: Mutex<HashMap<String, Vec<String>>>,
     /// approval id -> the exact (tool, input) the agent asked for, unredacted, so policy can be re-checked at decision time.
     requests: Mutex<HashMap<String, (String, Value)>>,
+    /// Approvals whose single permitted reuse (provider prompt after FORGE's hook for the same call) has been spent.
+    reused: Mutex<std::collections::HashSet<String>>,
     fatal: Mutex<Option<String>>,
     stderr_tail: Mutex<String>,
     /// Dropping this terminates the whole process tree (Windows Job Object).
@@ -544,6 +546,7 @@ impl Core {
             life: Mutex::new(()),
             waiters: Mutex::new(HashMap::new()),
             requests: Mutex::new(HashMap::new()),
+            reused: Mutex::new(std::collections::HashSet::new()),
             fatal: Mutex::new(None),
             stderr_tail: Mutex::new(String::new()),
             containment: Mutex::new(Some(containment)),
@@ -720,7 +723,17 @@ impl Core {
             Ok(Some(existing)) => {
                 match existing.state.as_str() {
                     "pending" => lock(&h.waiters).entry(existing.id).or_default().push(req.request_id.clone()),
-                    "approved" | "auto_allowed" => reply("allow", None),
+                    "approved" | "auto_allowed" => {
+                        // The only legitimate repeat is the provider's own prompt following FORGE's hook for the same call, so
+                        // an allow is reused once, and only if policy still allows it now (the world may have changed).
+                        let first_reuse = lock(&h.reused).insert(existing.id.clone());
+                        let still = self.policy_decision(h, &req.tool, &req.input);
+                        match (first_reuse, still) {
+                            (false, _) => reply("deny", Some("this tool call was already answered; FORGE does not reuse an approval twice")),
+                            (true, Decision::Deny { reason }) => reply("deny", Some(&format!("Blocked by FORGE policy: {reason}"))),
+                            (true, _) => reply("allow", None),
+                        }
+                    }
                     _ => reply("deny", existing.decision_note.as_deref().or(Some("Denied by FORGE"))),
                 }
                 return;
@@ -735,15 +748,19 @@ impl Core {
         let mut detail = json!({"tool": req.tool, "input": req.input, "source": req.source, "blockedPath": req.blocked_path, "providerReason": req.reason});
         redact::redact_value(&mut detail);
 
-        // MCP tools: only servers (and tools) the user authorized for this project can even be asked about.
-        let decision = if req.tool.starts_with("mcp__") {
-            match self.mcp_gate(&h.mission_id, &req.tool) {
-                Ok(()) => policy::evaluate(&req.tool, &req.input, &h.worktree, h.profile),
-                Err(reason) => Decision::Deny { reason },
+        let mut decision = self.policy_decision(h, &req.tool, &req.input);
+        // What the human approves must be what runs. Redaction hides secret-looking text on the card, so a command whose text
+        // redaction would change cannot be shown faithfully: refuse it rather than ask about a censored version.
+        let mut shown = req.input.clone();
+        redact::redact_value(&mut shown);
+        if shown != req.input {
+            if policy::is_shell_tool(&req.tool) {
+                decision = Decision::Deny { reason: "the command contains text FORGE would have to hide from you (it looks like a secret); write the command without inline secrets".into() };
+            } else if let Decision::Ask { risk, warnings, .. } = &mut decision {
+                *risk = Risk::High;
+                warnings.push("Part of this request looks like a secret and is hidden here; what you approve includes the hidden text".into());
             }
-        } else {
-            policy::evaluate(&req.tool, &req.input, &h.worktree, h.profile)
-        };
+        }
         match decision {
             Decision::Allow => reply("allow", None),
             Decision::Deny { reason } => {
@@ -786,6 +803,16 @@ impl Core {
                 }
             }
         }
+    }
+
+    /// FORGE policy for one request: the MCP gate first (only authorized servers/tools), then the general rules.
+    fn policy_decision(&self, h: &SessionHandle, tool: &str, input: &Value) -> Decision {
+        if tool.starts_with("mcp__") {
+            if let Err(reason) = self.mcp_gate(&h.mission_id, tool) {
+                return Decision::Deny { reason };
+            }
+        }
+        policy::evaluate(tool, input, &h.worktree, h.profile)
     }
 
     /// The provider withdrew a tool call (interrupt/timeout): drop its prompt instead of leaving it stale.
@@ -842,8 +869,10 @@ impl Core {
     }
 
     /// The human's answer. Single-shot; fails if the request is no longer pending or its session is gone.
+    /// Internal/test path: decides the request as stored (the UI path is `decide_approval_checked` with the card's binding).
     pub fn decide_approval(&self, approval_id: &str, approved: bool, note: Option<&str>) -> Result<Approval> {
-        self.decide_approval_checked(approval_id, approved, note, None)
+        let binding = self.store.get_approval(approval_id)?.binding_sha256;
+        self.decide_approval_checked(approval_id, approved, note, binding.as_deref())
     }
 
     /// Answer the agent's waiting tool calls for `approval_id` and update the mission state. Caller holds `life`.
@@ -870,10 +899,15 @@ impl Core {
             .ok_or_else(|| ForgeError::InvalidState("the agent session for this request has ended".into()))?;
         let _life = lock(&handle.life);
         let existing = self.store.get_approval(approval_id)?; // re-read under the lock
-        if let Some(expected) = expected_binding {
-            if existing.binding_sha256.as_deref() != Some(expected) {
+        match (expected_binding, existing.binding_sha256.as_deref()) {
+            (Some(expected), stored) if stored != Some(expected) => {
                 return Err(ForgeError::InvalidState("this request is not the one you were shown; reload and decide again".into()));
             }
+            // A bound request can only be *approved* by naming what was shown; denying needs no proof.
+            (None, Some(_)) if approved => {
+                return Err(ForgeError::InvalidState("an approval must name the request it approves; reload and decide again".into()));
+            }
+            _ => {}
         }
         if existing.state == "pending" && existing.expires_at.as_deref().is_some_and(|e| e < crate::store::now().as_str()) {
             if let Ok(Some(a)) = self.store.expire_approval(approval_id, "no decision before it expired") {

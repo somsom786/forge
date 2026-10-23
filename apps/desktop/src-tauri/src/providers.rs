@@ -170,12 +170,12 @@ pub fn detect_codex(path: Option<PathBuf>) -> ProviderInfo {
 
 // ---- local models (Ollama) ---------------------------------------------------------------
 
-/// Plain `http://` on a loopback host only. A "local model" setting must never be able to send prompts off-box.
 /// `codex login status`: signed in only if it succeeded and says so. "Not logged in" also contains "logged in".
 fn codex_signed_in(exit_ok: bool, lower: &str) -> bool {
     exit_ok && lower.contains("logged in") && !lower.contains("not logged in")
 }
 
+/// Plain `http://` on a loopback host only. A "local model" setting must never be able to send prompts off-box.
 pub fn is_loopback_http(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("http://") else { return false };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");

@@ -32,7 +32,9 @@ pub struct McpDefinition {
 }
 
 fn name_ok(n: &str) -> bool {
-    !n.is_empty() && n.len() <= 64 && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') && !n.contains("__")
+    // No `__` anywhere and no leading/trailing `_`: `mcp__<server>__<tool>` must split one way only (a server `docs_` would
+    // make `mcp__docs___x` ambiguous between `docs`/`_x` and `docs_`/`x`).
+    !n.is_empty() && n.len() <= 64 && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') && !n.contains("__") && !n.starts_with('_') && !n.ends_with('_')
 }
 
 fn env_name_ok(n: &str) -> bool {
@@ -59,7 +61,8 @@ impl McpDefinition {
             }
             "http" => {
                 let u = self.url.as_deref().unwrap_or("");
-                let loopback = u.starts_with("http://127.0.0.1") || u.starts_with("http://localhost") || u.starts_with("http://[::1]");
+                // Parsed, exact host: `http://localhost.evil.com` is not loopback.
+                let loopback = crate::providers::is_loopback_http(u);
                 if !(u.starts_with("https://") || loopback) {
                     return bad(format!("{}: an HTTP server must use https (or plain http on loopback)", self.name));
                 }
@@ -275,8 +278,15 @@ mod tests {
         }
         let https = McpDefinition { transport: "http".into(), command: None, url: Some("https://mcp.example.com".into()), ..base.clone() };
         assert!(https.validate().is_ok());
-        let local = McpDefinition { url: Some("http://127.0.0.1:3000/mcp".into()), ..https };
+        let local = McpDefinition { url: Some("http://127.0.0.1:3000/mcp".into()), ..https.clone() };
         assert!(local.validate().is_ok());
+        // Security review F6: a look-alike host is not loopback; edge underscores would make tool names ambiguous.
+        for url in ["http://localhost.evil.com/mcp", "http://127.0.0.1.evil.com/mcp", "http://localhost@evil.com/mcp"] {
+            assert!(McpDefinition { url: Some(url.into()), ..https.clone() }.validate().is_err(), "{url}");
+        }
+        for name in ["docs_", "_docs"] {
+            assert!(McpDefinition { name: name.into(), ..base.clone() }.validate().is_err(), "{name}");
+        }
     }
 
     #[test]

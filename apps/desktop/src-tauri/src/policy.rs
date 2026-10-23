@@ -56,6 +56,25 @@ const WRITE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit"];
 const READ_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "NotebookRead"];
 const SHELL_TOOLS: &[&str] = &["Bash", "PowerShell"];
 
+pub fn is_shell_tool(tool: &str) -> bool {
+    SHELL_TOOLS.contains(&tool)
+}
+
+/// Lowercase plus the Unicode characters that case-insensitive file systems (APFS, NTFS) fold onto ASCII letters, so
+/// `.claude/ſettings.json` (U+017F) or `.claude/hookſ` is recognised as the protected name it would open.
+fn fold_protected(rel: &str) -> String {
+    rel.to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            '\u{017F}' => Some('s'),                // long s
+            '\u{0131}' => Some('i'),                // dotless i
+            '\u{0300}'..='\u{036F}' => None,        // combining marks (e.g. the dot left by lowercasing U+0130)
+            '\u{200B}'..='\u{200D}' | '\u{FEFF}' => None, // zero-width characters
+            c => Some(c),
+        })
+        .collect()
+}
+
 /// Paths an agent may never write, regardless of approval: they would let the agent
 /// change its own permissions, hooks, or FORGE's state.
 fn protected_reason(rel_lower: &str) -> Option<&'static str> {
@@ -140,13 +159,17 @@ fn short(s: &str, n: usize) -> String {
 
 /// Revision of the rules in this file. Every approval records the revision it was requested under; an approval requested under
 /// another revision is never reused. **Bump it whenever `evaluate` changes what it allows, denies or asks.**
-pub const REVISION: &str = "policy-2026-10-23.1";
+pub const REVISION: &str = "policy-2026-10-23.2";
 
 pub fn evaluate(tool: &str, input: &Value, worktree: &Path, profile: PermissionProfile) -> Decision {
     if WRITE_TOOLS.contains(&tool) {
         let Some(p) = path_arg(tool, input) else {
             return Decision::Deny { reason: format!("{tool} request carries no recognisable path") };
         };
+        // FORGE checks the path as spelled; a tool that expands `~` or variables would write somewhere else.
+        if p.starts_with('~') || p.contains('$') || p.matches('%').count() >= 2 {
+            return Decision::Deny { reason: format!("{tool}: \"{}\" uses a home or variable shorthand; use a path inside the worktree", short(&p, 120)) };
+        }
         let resolved = match paths::resolve_within(worktree, Path::new(&p)) {
             Ok(r) => r,
             Err(e) => return Decision::Deny { reason: format!("write outside the mission worktree: {e}") },
@@ -157,7 +180,7 @@ pub fn evaluate(tool: &str, input: &Value, worktree: &Path, profile: PermissionP
             return Decision::Deny { reason: "write outside the mission worktree".into() };
         };
         let rel = parts.join("/");
-        if let Some(reason) = protected_reason(&rel.to_lowercase()) {
+        if let Some(reason) = protected_reason(&fold_protected(&rel)) {
             return Decision::Deny { reason: format!("{rel} is protected: {reason}") };
         }
         if profile == PermissionProfile::AcceptEdits {
@@ -171,6 +194,10 @@ pub fn evaluate(tool: &str, input: &Value, worktree: &Path, profile: PermissionP
     }
 
     if READ_TOOLS.contains(&tool) {
+        // `Read` always names a file; one that does not (e.g. a translated ACP request) is asked about, not allowed.
+        if tool == "Read" && path_arg(tool, input).is_none() {
+            return Decision::Ask { risk: Risk::Medium, summary: "Read (no file named)".into(), warnings: vec!["The request does not say which file it reads".into()] };
+        }
         return match path_arg(tool, input) {
             Some(p) if paths::resolve_within(worktree, Path::new(&p)).is_err() => Decision::Ask {
                 risk: Risk::High,
@@ -332,5 +359,29 @@ mod tests {
         assert!(matches!(evaluate("Edit", &json!({}), d.path(), PermissionProfile::Default), Decision::Deny { .. }));
         assert!(matches!(evaluate("Mystery", &json!({}), d.path(), PermissionProfile::Default), Decision::Ask { .. }));
         assert!(matches!(evaluate("mcp__x__y", &json!({}), d.path(), PermissionProfile::Default), Decision::Ask { .. }));
+        // A Read that names no file is asked about, never silently allowed (Glob/Grep default to the worktree).
+        assert!(matches!(evaluate("Read", &json!({}), d.path(), PermissionProfile::AcceptEdits), Decision::Ask { .. }));
+        assert_eq!(evaluate("Grep", &json!({"pattern": "x"}), d.path(), PermissionProfile::Default), Decision::Allow);
+    }
+
+    /// Security review F4: names a case-insensitive file system opens as a protected file must be treated as that file.
+    #[test]
+    fn unicode_lookalikes_of_protected_names_are_denied() {
+        let d = wt();
+        for p in [".claude/\u{017F}ettings.json", ".claude/hook\u{017F}/x.sh", ".claude/SETTINGS.json", ".claude/set\u{200B}tings.json", ".G\u{0130}T/config"] {
+            let input = json!({"file_path": p});
+            assert!(matches!(evaluate("Write", &input, d.path(), PermissionProfile::AcceptEdits), Decision::Deny { .. }), "{p} should be denied");
+        }
+    }
+
+    /// Security review F5: the path FORGE checks must be the path that is written.
+    #[test]
+    fn home_and_variable_shorthands_are_denied() {
+        let d = wt();
+        for p in ["~/.bashrc", "~", "$HOME/.profile", "src/${X}/a.rs", "%APPDATA%\\x.txt"] {
+            let input = json!({"file_path": p});
+            assert!(matches!(evaluate("Write", &input, d.path(), PermissionProfile::AcceptEdits), Decision::Deny { .. }), "{p} should be denied");
+        }
+        assert_eq!(evaluate("Write", &json!({"file_path": "src/100%.txt"}), d.path(), PermissionProfile::AcceptEdits), Decision::Allow);
     }
 }
