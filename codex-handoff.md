@@ -71,7 +71,7 @@ processes. Missions run in git worktrees under the FORGE home; review binds appr
 | 5 Codex adapter | **Not started in code** — protocol explored, key findings in §6 | `research/codex-probe.mjs` |
 | 6 Experiments | Not started | |
 | 7 Enterprise | Design only; no claims | |
-| Windows installer | **Built, not install-tested**: `FORGE_0.1.0_x64-setup.exe` (25.75 MiB, NSIS, per-user) via `npm run package` | built at `apps/desktop/src-tauri/target/release/bundle/nsis/` (git-ignored); the engine bundle was verified separately by running the Rust supervisor suite against a copy of `main.js` with no `node_modules` |
+| Windows installer | **Built and install-tested** (silent install, real mission, bundled Node used): `FORGE_0.1.0_x64-setup.exe` (25.75 MiB, NSIS, per-user) via `npm run package` | built at `apps/desktop/src-tauri/target/release/bundle/nsis/` (git-ignored); the engine bundle was verified separately by running the Rust supervisor suite against a copy of `main.js` with no `node_modules` |
 
 Last recorded test counts (re-run to confirm): Rust ~277 passing + ~20 later harness tests (4 live tests ignored), engine 36, UI 100
 (vitest). `docs/PROGRESS.md` is **missing** — write it (the directive requires it) with exact counts and evidence levels.
