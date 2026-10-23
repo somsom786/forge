@@ -827,3 +827,42 @@ export interface ExperimentDetail {
   /** Runs of the latest attempt. */
   results: ExperimentResult[];
 }
+
+// ---- Conflicts between missions (Phase 5; backend only, no screen yet) ----
+
+export interface ConflictPrediction {
+  outcome: 'clean' | 'conflicts' | 'unknown';
+  conflictedFiles: string[];
+  /** Why no prediction could be made (outcome 'unknown'). */
+  error: string | null;
+}
+
+export interface MissionPairConflict {
+  a: string;
+  b: string;
+  /** Paths both missions changed (relative to their own bases). */
+  overlappingFiles: string[];
+  /** Whether landing both would conflict, predicted with `git merge-tree` on their current states. */
+  prediction: ConflictPrediction;
+}
+
+export interface MissionBaseDrift {
+  missionId: string;
+  baseRef: string;
+  baseCommit: string;
+  /** Where the base branch points now; null if it no longer exists. */
+  baseHead: string | null;
+  commitsBehind: number;
+  overlappingFiles: string[];
+  /** Merging the mission into the current base; null when the base has not moved. */
+  prediction: ConflictPrediction | null;
+}
+
+export interface ConflictReport {
+  projectId: string;
+  generatedAt: string;
+  missions: { missionId: string; title: string; state: string; baseRef: string; baseCommit: string; changedFiles: string[] }[];
+  pairs: MissionPairConflict[];
+  drift: MissionBaseDrift[];
+  skipped: { missionId: string; reason: string }[];
+}

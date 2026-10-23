@@ -16,7 +16,7 @@ Inventory, Doctor, safe edit with preview/backup/rollback, hook templates and dr
 
 ## Phase 5 — Multi-agent (P1) 🟡
 ✅ Codex adapter via `codex app-server` (real mission verified; independent review 5) · ✅ parallel worktrees + concurrency limit ·
-⬜ conflict detection between missions · ⬜ independent review missions.
+🟡 conflict detection between missions (backend: file overlap, predicted textual conflicts, base drift; `cloud/mission-conflicts`, Linux tests; no UI) · ⬜ independent review missions.
 
 ## Phase 6 — Experiments (P2)  🟡
 ✅ backend: definitions pinned to commits, isolated worktrees, correctness gate, warm-up + interleaved repetitions, verdict that names no winner

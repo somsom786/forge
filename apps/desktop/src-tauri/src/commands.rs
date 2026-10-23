@@ -654,3 +654,13 @@ pub async fn experiment_run(core: CoreState<'_>, experiment_id: String) -> Resul
 pub async fn experiment_cancel(core: CoreState<'_>, experiment_id: String) -> Result<()> {
     blocking(&core, move |c| c.experiment_cancel(&experiment_id)).await
 }
+
+// ---- Phase 5: conflicts between missions ---------------------------------------------------------------------------
+
+use crate::supervisor::ConflictReport;
+
+/// File overlap, predicted textual conflicts and base drift across the project's active missions. Read-only.
+#[tauri::command]
+pub async fn mission_conflicts(core: CoreState<'_>, project_id: String) -> Result<ConflictReport> {
+    blocking(&core, move |c| c.mission_conflicts(&project_id)).await
+}

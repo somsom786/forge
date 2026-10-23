@@ -918,6 +918,8 @@ mod memory;
 mod review;
 pub use experiment::ExperimentDetail;
 pub use harness::{BackupUsage, DEFAULT_KEEP_BACKUPS_PER_FILE, HookSpec, PruneReport, RollbackPreview};
+mod conflicts;
+pub use conflicts::{ConflictReport, MissionChangeSet, SkippedMission};
 pub use memory::{KnowledgeStatus, NewKnowledgeArgs, PageDetail};
 pub use review::{MergeOutcome, ReviewDecision, Seen};
 

@@ -112,6 +112,14 @@ correctness command once per revision, then warm-ups, then the measured runs int
 all through `verify::run_check`. A run that fails, prints no metric or changes its worktree invalidates that revision; a variant is
 *better* only if every measured value beats every baseline value with at least 3 runs on both sides. Worktrees are removed at the end;
 every run of every attempt is kept. No UI and no progress events yet.
+## Conflicts between missions (Phase 5, backend only)
+
+`conflicts.rs` + `supervisor/conflicts.rs`, command `mission_conflicts(projectId)`. For every mission that still has work to land
+(not merged, rejected or cancelled) and a verified worktree: its changed files and the tree of its current state (temporary index,
+as for review fingerprints). Pairs report shared paths and a `git merge-tree --write-tree` prediction of landing both; drift reports
+how far the base branch moved, which moved files the mission also changed, and whether the mission would conflict with the new base.
+Trees are wrapped in unreferenced `commit-tree` objects (older git cannot merge bare trees); no ref, index or file is changed. A git
+error is reported as `unknown`, never as a conflict.
 
 ## Planned domains (not yet built)
 

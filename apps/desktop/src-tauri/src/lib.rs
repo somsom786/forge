@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod conflicts;
 pub mod contract;
 pub mod db;
 pub mod detect;
@@ -185,6 +186,7 @@ pub fn run() {
             commands::experiment_get,
             commands::experiment_run,
             commands::experiment_cancel,
+            commands::mission_conflicts,
             commands::knowledge_open_in_obsidian,
             commands::context_preview,
             commands::context_for_mission,

@@ -9,6 +9,7 @@ import type {
   DoctorFinding, HarnessApplyArgs, HarnessBackupUsage, HarnessChange, HarnessFile, HarnessInventory, HarnessPreview, HarnessPruneReport, HookDryRun, HookSpec, HookTemplate, RollbackPreview,
   CheckSpec, Contract, MergeOutcome, Seen, ProofPack, ReviewDecisionKind, VerificationReport, VerificationRun, WorktreeSafety,
   Experiment, ExperimentDetail, NewExperiment,
+  ConflictReport,
 } from './types';
 
 export const api = {
@@ -105,6 +106,8 @@ export const api = {
   /** Resolves when the attempt ends (it can take minutes). */
   experimentRun: (experimentId: string) => invoke<ExperimentDetail>('experiment_run', { experimentId }),
   experimentCancel: (experimentId: string) => invoke<void>('experiment_cancel', { experimentId }),
+  /** Read-only: overlap, predicted textual conflicts and base drift across the project's active missions. */
+  missionConflicts: (projectId: string) => invoke<ConflictReport>('mission_conflicts', { projectId }),
 
   approvalsPending: (missionId?: string) => invoke<Approval[]>('approvals_pending', { missionId: missionId ?? null }),
   approvalDecide: (approvalId: string, approved: boolean, note?: string) =>
