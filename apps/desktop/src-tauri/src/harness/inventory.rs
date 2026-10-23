@@ -534,8 +534,7 @@ mod tests {
         std::fs::write(outside.path().join("settings.json"), r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo from-outside","timeout":5}]}]}}"#).unwrap();
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("CLAUDE.md"), "# ok\n").unwrap();
-        let out = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(d.path().join(".claude")).arg(outside.path()).output().unwrap();
-        assert!(out.status.success());
+        crate::paths::test_dir_link(&d.path().join(".claude"), outside.path());
         let inv = scan(d.path(), None);
         assert!(inv.items.iter().all(|i| i.kind != "settings"), "{:?}", inv.items.iter().map(|i| &i.id).collect::<Vec<_>>());
         assert!(inv.hooks.is_empty(), "hooks from outside the project must not be listed as its own");

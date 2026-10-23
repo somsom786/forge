@@ -122,6 +122,7 @@ pub fn run_check(command: &str, cwd: &Path, timeout: Duration, log_path: Option<
         .env("NO_COLOR", "1")
         .env("FORCE_COLOR", "0")
         .env("GIT_TERMINAL_PROMPT", "0");
+    proc::isolate(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return fail(format!("could not start the command: {e}")),

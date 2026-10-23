@@ -388,8 +388,7 @@ mod tests {
         std::fs::write(outside.path().join("CLAUDE.md"), "secret").unwrap();
         let link = d.path().join(".claude");
         // A junction named .claude pointing outside the project.
-        let status = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&link).arg(outside.path()).output();
-        assert!(status.map(|o| o.status.success()).unwrap_or(false), "could not create the test junction");
+        crate::paths::test_dir_link(&link, outside.path());
         assert!(target(d.path(), ".claude/rules/x.md").is_err());
         assert!(target(d.path(), ".claude/settings.json").is_err());
     }
@@ -408,8 +407,7 @@ mod tests {
         let rules = target(root, ".claude/rules/a.md").unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.join(".claude")).unwrap();
-        let out = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(root.join(".claude").join("rules")).arg(outside.path()).output().unwrap();
-        assert!(out.status.success());
+        crate::paths::test_dir_link(&root.join(".claude").join("rules"), outside.path());
         assert!(write_checked(root, ".claude/rules/a.md", &rules, b"x\n", None).is_err());
         assert!(!outside.path().join("a.md").exists(), "nothing may land outside the project");
         assert!(remove_checked(root, ".claude/rules/a.md", &rules, None).is_err());
