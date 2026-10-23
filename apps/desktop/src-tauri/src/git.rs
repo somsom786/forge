@@ -308,7 +308,10 @@ pub fn worktree_safety(repo: &Path, worktree: Option<&Path>, branch: Option<&str
 /// Defends against a replaced directory/junction or a tampered `.git` file redirecting git elsewhere.
 pub fn verify_worktree(repo: &Path, worktree: &Path, expected_branch: Option<&str>) -> Result<()> {
     let top = toplevel(worktree)?;
-    if !crate::paths::is_within(&top, worktree) || !crate::paths::is_within(worktree, &top) {
+    // Compare real paths: git reports the long form, while the stored path may be spelled with an 8.3 alias.
+    let top = dunce::canonicalize(&top).unwrap_or(top);
+    let real_wt = dunce::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    if !crate::paths::is_within(&top, &real_wt) || !crate::paths::is_within(&real_wt, &top) {
         return Err(ForgeError::Git(format!("{} is not the root of its own working tree (found {})", worktree.display(), top.display())));
     }
     let common = run(worktree, &["rev-parse", "--git-common-dir"])?;
