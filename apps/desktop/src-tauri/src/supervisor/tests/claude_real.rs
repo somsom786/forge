@@ -53,7 +53,8 @@ fn fake_model() -> FakeModel {
 fn claude_fixture(claude: PathBuf, model: &FakeModel) -> Fixture {
     let repo = git::testutil::init_repo();
     let home = tempfile::tempdir().unwrap();
-    let cfg_dir = home.path().join("claude-config");
+    // Outside FORGE's home: a contained agent may not see FORGE's data, and its provider state must not live there.
+    let cfg_dir = repo.path().join(".claude-test-config");
     std::fs::create_dir_all(&cfg_dir).unwrap();
     let events: Arc<StdMutex<Vec<UiEvent>>> = Arc::new(StdMutex::new(vec![]));
     let ev2 = events.clone();

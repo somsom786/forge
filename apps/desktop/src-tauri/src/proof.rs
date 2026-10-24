@@ -237,7 +237,9 @@ pub fn build_pack(i: PackInput) -> (Value, String) {
         "contract": i.report.contract,
         "sessions": i.sessions.iter().map(|s| json!({
             "id": s.id, "providerSessionId": s.provider_session_id, "state": s.state, "startedAt": s.started_at,
-            "endedAt": s.ended_at, "endReason": s.end_reason, "usage": s.usage, "ranOn": s.executes_on,
+            "endedAt": s.ended_at, "endReason": s.end_reason, "usage": s.usage,
+            // Where it ran, only for a session that actually started (a session refused at launch ran nowhere).
+            "ranOn": s.pid.map(|_| s.executes_on.clone()),
             "usageNote": "token and cost figures are provider-reported estimates, not billing",
         })).collect::<Vec<_>>(),
         "changes": {
@@ -315,8 +317,12 @@ pub fn render_markdown(c: &Value) -> String {
         c["generatedAt"].as_str().unwrap_or("")
     ));
     let ran: Vec<String> = {
-        let mut v: Vec<String> = c["sessions"].as_array().into_iter().flatten().filter_map(|s| s["ranOn"].as_str()).map(agent_place).collect();
-        v.dedup();
+        let mut v: Vec<String> = vec![];
+        for p in c["sessions"].as_array().into_iter().flatten().filter_map(|s| s["ranOn"].as_str()).map(agent_place) {
+            if !v.contains(&p) {
+                v.push(p);
+            }
+        }
         v
     };
     if !ran.is_empty() {

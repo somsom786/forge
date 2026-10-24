@@ -449,7 +449,7 @@ impl Store {
 
     // ---- links ---------------------------------------------------------------------------------------
 
-    /// Resolve wikilinks to pages by title or slug. Ambiguity is recorded, never guessed.
+    /// Resolve wikilinks to pages by file name, vault path or title. Ambiguity is recorded, never guessed.
     pub fn k_resolve_links(&self, project_id: &str) -> Result<()> {
         let pages = self.k_list(project_id)?;
         let mut c = self.c();
@@ -460,7 +460,8 @@ impl Store {
         };
         // Obsidian resolves a link by file name or vault path, case-insensitively; titles are FORGE's addition. Names are
         // compared composed (NFC) and case-folded, so `[[Café]]` finds a decomposed `Café.md` from macOS and `[[über]]`
-        // finds `Über.md`. The ASCII slug is only a fallback for ASCII targets: non-ASCII names would all share a slug.
+        // finds `Über.md`. Slugs are never used to match: different names share them (every non-ASCII name, `C++` and
+        // `C`, names that differ after 60 characters), so a slug match can point a link at the wrong page.
         let keys: Vec<(&KPage, [String; 3])> = pages
             .iter()
             .filter(|p| !p.missing)
@@ -474,10 +475,9 @@ impl Store {
             let bare = target.trim().trim_start_matches('/');
             let bare = bare.strip_suffix(".md").unwrap_or(bare);
             let t_key = link_key(bare);
-            let t_slug = bare.is_ascii().then(|| page::slugify(bare));
             let matches: Vec<&KPage> = keys
                 .iter()
-                .filter(|(p, k)| p.id != from && (k.contains(&t_key) || t_slug.as_deref().is_some_and(|s| p.slug == s)))
+                .filter(|(p, k)| p.id != from && k.contains(&t_key))
                 .map(|(p, _)| *p)
                 .collect();
             let (to, amb) = match matches.len() {

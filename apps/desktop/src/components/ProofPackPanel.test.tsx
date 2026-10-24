@@ -26,7 +26,7 @@ describe('ProofSummary', () => {
     render(<ProofSummary content={content} />);
     expect(screen.getByText('1 not established')).toBeTruthy();
     expect(screen.getByText('criteria 1/2 met')).toBeTruthy();
-    expect(screen.getByText('checks 1/4 passed, 1 not passing, 1 out of date, 1 never run')).toBeTruthy();
+    expect(screen.getByText('checks 1/4 passed, 1 not passing, 1 passed on older changes, 1 never run')).toBeTruthy();
     expect(screen.getByText('2 files changed')).toBeTruthy();
     expect(screen.getByText('agent ran on the host')).toBeTruthy();
   });
@@ -37,6 +37,9 @@ describe('ProofSummary', () => {
     expect(screen.getByText('agent isolated')).toBeTruthy();
     rerender(<ProofSummary content={{ ...content, sessions: [{ ranOn: 'linux_namespaces' }, { ranOn: 'agent_host' }] }} />);
     expect(screen.getByText('agent ran on the host')).toBeTruthy();
+    // A session refused at launch (ranOn null) ran nowhere and does not count.
+    rerender(<ProofSummary content={{ ...content, sessions: [{ ranOn: 'linux_namespaces' }, { ranOn: null }] }} />);
+    expect(screen.getByText('agent isolated')).toBeTruthy();
     // Packs written before sessions recorded this have no ranOn: they ran on the host.
     rerender(<ProofSummary content={{ ...content, sessions: [{}] }} />);
     expect(screen.getByText('agent ran on the host')).toBeTruthy();

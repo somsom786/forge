@@ -29,7 +29,7 @@ Embedded: ![[Architecture]] and an attachment ![[diagram.png]].\n\
 Folders: [[design/Caching]] and with the extension [[Caching.md]].\n\
 Unicode: [[日本語]], [[中文]], [[Café]], [[über]].\n\
 Duplicates: [[Index]] and [[a/Index]].\n\
-Later: [[Renamed Later]]. Missing: [[Nowhere]].\n\
+Later: [[Renamed Later]]. Missing: [[Nowhere]], [[page]], [[???]], [[C++]].\n\
 ```\n[[Inside a fence]]\n```\n";
 
 impl Env {
@@ -49,6 +49,7 @@ impl Env {
         write(v, "Cafe\u{301}.md", "decomposed file name, as macOS writes it\n");
         write(v, "Über.md", "capitalised umlaut\n");
         write(v, "Caf.md", "a different note whose ASCII slug would collide with Café\n");
+        write(v, "C.md", "a note whose slug equals that of C++\n");
         write(v, "a/Index.md", "index a\n");
         write(v, "b/Index.md", "index b\n");
         write(v, "Renamed Later.md", "will be renamed\n");
@@ -83,8 +84,8 @@ fn link<'a>(links: &'a [KLink], target: &str) -> &'a KLink {
 fn a_realistic_vault_imports_and_its_links_resolve_like_obsidian() {
     let e = Env::new();
     let rep = service::scan(e.ctx(), &e.project).unwrap();
-    // 15 notes outside .trash and .obsidian; the PNG is not a note.
-    assert_eq!(rep.indexed, 15, "{rep:?}");
+    // 16 notes outside .trash and .obsidian; the PNG is not a note.
+    assert_eq!(rep.indexed, 16, "{rep:?}");
     let pages = e.store.k_list(&e.project).unwrap();
     assert!(pages.iter().all(|p| !p.rel_path.starts_with('.')), "trash and config are not imported");
     assert_eq!(e.page("Windows.md").title, "Written on Windows", "BOM and CRLF frontmatter");
@@ -104,6 +105,10 @@ fn a_realistic_vault_imports_and_its_links_resolve_like_obsidian() {
     let png = link(&l, "diagram.png");
     assert!(png.to_page.is_none() && !png.ambiguous, "an attachment is not a note");
     assert!(link(&l, "Nowhere").to_page.is_none());
+    // Names that merely share a slug with an existing note do not resolve to it (security review: wrong-page links).
+    for t in ["page", "???", "C++"] {
+        assert!(link(&l, t).to_page.is_none() && !link(&l, t).ambiguous, "{t} must stay unresolved: {:?}", link(&l, t));
+    }
     assert!(!l.iter().any(|x| x.target == "Inside a fence"));
     assert_eq!(e.store.k_backlinks(&e.page("Home.md").id).unwrap().len(), 1, "Windows.md links back");
 
@@ -155,6 +160,15 @@ fn a_note_the_user_marked_read_only_is_never_rewritten_or_deleted() {
     assert!(service::forget_page(e.ctx(), &pg.id).is_err(), "forgetting would delete a file the user protected");
     assert!(file.exists());
     assert!(!e.store.k_get(&pg.id).unwrap().missing, "a refused forget leaves the page as it was");
+
+    // Owner write removed but group write kept: still protected on Unix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o464)).unwrap();
+        assert!(service::apply_revision(e.ctx(), &rev.id).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "the plan\n");
+    }
 
     #[allow(clippy::permissions_set_readonly_false)]
     perm.set_readonly(false);

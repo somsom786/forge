@@ -419,10 +419,15 @@ impl Store {
     pub fn sessions_since(&self, since: &str, limit: i64) -> Result<Vec<(AgentSession, String, String)>> {
         let c = self.c();
         let mut s = c.prepare(
-            "SELECT s.id, s.mission_id, s.provider, s.provider_session_id, s.state, s.pid, s.started_at, s.ended_at, s.end_reason, s.usage_json, m.title, m.project_id \
-             FROM agent_session s JOIN mission m ON m.id = s.mission_id WHERE s.started_at >= ?1 OR s.state IN ('starting','live') ORDER BY s.started_at DESC LIMIT ?2",
+            &format!(
+                "SELECT {}, m.title, m.project_id FROM agent_session s JOIN mission m ON m.id = s.mission_id \
+                 WHERE s.started_at >= ?1 OR s.state IN ('starting','live') ORDER BY s.started_at DESC LIMIT ?2",
+                SESSION_COLS.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ")
+            ),
         )?;
-        let rows = s.query_map(params![since, limit], |r| Ok((session_from(r)?, r.get::<_, String>(10)?, r.get::<_, String>(11)?)))?;
+        // The session's own columns come first, exactly as `session_from` reads them; the mission's follow.
+        let n = SESSION_COLS.split(", ").count();
+        let rows = s.query_map(params![since, limit], |r| Ok((session_from(r)?, r.get::<_, String>(n)?, r.get::<_, String>(n + 1)?)))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -584,6 +589,12 @@ impl Store {
         )?)
     }
 
+    /// At startup no agent is running, so no pending request can be answered any more, whatever its session's row says
+    /// (a crash between ending a session and expiring its requests leaves exactly that).
+    pub fn expire_all_pending(&self, reason: &str) -> Result<usize> {
+        Ok(self.c().execute("UPDATE approval_request SET state='expired', decision_note=?1, decided_at=?2 WHERE state='pending'", params![reason, now()])?)
+    }
+
     /// Withdraw a single still-pending request (the provider cancelled the tool call it was for).
     pub fn expire_approval(&self, id: &str, reason: &str) -> Result<Option<Approval>> {
         let n = self.c().execute(
@@ -602,8 +613,15 @@ fn project_from(r: &Row) -> rusqlite::Result<Project> {
     Ok(Project { id: r.get(0)?, name: r.get(1)?, root_path: r.get(2)?, default_branch: r.get(3)?, created_at: r.get(4)?, execution_backend: r.get(5)?, agent_backend: r.get(6)? })
 }
 
-const SESSION_SELECT: &str = "SELECT id, mission_id, provider, provider_session_id, state, pid, started_at, ended_at, end_reason, usage_json, executes_on FROM agent_session";
-const SESSION_SQL_ONE: &str = "SELECT id, mission_id, provider, provider_session_id, state, pid, started_at, ended_at, end_reason, usage_json, executes_on FROM agent_session WHERE id=?1";
+/// Every query that builds an [`AgentSession`] selects exactly these, in this order (`session_from` reads by position).
+macro_rules! session_cols {
+    () => {
+        "id, mission_id, provider, provider_session_id, state, pid, started_at, ended_at, end_reason, usage_json, executes_on"
+    };
+}
+const SESSION_COLS: &str = session_cols!();
+const SESSION_SELECT: &str = concat!("SELECT ", session_cols!(), " FROM agent_session");
+const SESSION_SQL_ONE: &str = concat!("SELECT ", session_cols!(), " FROM agent_session WHERE id=?1");
 
 fn session_from(r: &Row) -> rusqlite::Result<AgentSession> {
     let usage: Option<String> = r.get(9)?;
@@ -725,5 +743,18 @@ mod tests {
         s.end_session(&sess.id, "lost", "late").unwrap();
         let got = s.get_session(&sess.id).unwrap();
         assert_eq!((got.state.as_str(), got.end_reason.as_deref()), ("ended", Some("completed")));
+    }
+
+    /// Reliability review: the Agents listing's query was not updated with the new column, so `executes_on` received the
+    /// mission's title. Every session query now selects the same column list.
+    #[test]
+    fn every_session_query_reads_where_the_session_ran() {
+        let (s, _, m) = seeded();
+        let sess = s.create_session(&m.id, "claude", None).unwrap();
+        s.set_session_executes_on(&sess.id, "linux_namespaces").unwrap();
+        assert_eq!(s.get_session(&sess.id).unwrap().executes_on, "linux_namespaces");
+        assert_eq!(s.sessions_for_mission(&m.id).unwrap()[0].executes_on, "linux_namespaces");
+        let (listed, title, project) = s.sessions_since("2000-01-01T00:00:00.000Z", 10).unwrap().remove(0);
+        assert_eq!((listed.executes_on.as_str(), title, project), ("linux_namespaces", m.title.clone(), m.project_id.clone()));
     }
 }

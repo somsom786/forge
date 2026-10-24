@@ -8,16 +8,24 @@ export function Modal({
   // A body that scrolls but holds nothing focusable (for example only disabled buttons) must itself be focusable, or
   // keyboard users cannot scroll it. Otherwise it stays out of the tab order so the first control gets focus as usual.
   const [scrollFocus, setScrollFocus] = useState(false);
-  const observer = useRef<ResizeObserver | null>(null);
+  const observers = useRef<{ disconnect(): void }[]>([]);
   const body = useCallback((el: HTMLDivElement | null) => {
-    observer.current?.disconnect();
-    observer.current = null;
+    observers.current.forEach((o) => o.disconnect());
+    observers.current = [];
     if (!el) return;
+    // Its own focusability does not count: only content that can take focus.
     const check = () => setScrollFocus(el.scrollHeight > el.clientHeight && !el.querySelector('a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'));
     check();
+    // Re-check when the body resizes and when its content changes (controls added, enabled or disabled).
     if (typeof ResizeObserver !== 'undefined') {
-      observer.current = new ResizeObserver(check);
-      observer.current.observe(el);
+      const r = new ResizeObserver(check);
+      r.observe(el);
+      observers.current.push(r);
+    }
+    if (typeof MutationObserver !== 'undefined') {
+      const m = new MutationObserver(check);
+      m.observe(el, { subtree: true, childList: true, attributes: true, attributeFilter: ['disabled', 'tabindex', 'href'] });
+      observers.current.push(m);
     }
   }, []);
   return (

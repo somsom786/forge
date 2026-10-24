@@ -86,3 +86,63 @@ fn an_unavailable_agent_backend_cannot_be_selected_and_never_falls_back() {
     assert!(f.core.start_mission(&m.id, None).is_err() || { wait_until("failed", || state(&f, &m.id) == "failed"); true });
     assert!(f.core.store.events(&m.id, 0, 1000).unwrap().iter().all(|e| e.kind != "session.started"), "no agent ran on the host instead");
 }
+
+#[cfg(unix)]
+fn core_with_env(env: Vec<(String, String)>) -> (Arc<Core>, tempfile::TempDir) {
+    let home = tempfile::tempdir().unwrap();
+    let core = Core::new(
+        Store::in_memory(),
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: None, codex: None, allow_fake: true, max_concurrent: 1, ollama_url: "http://127.0.0.1:11434".into(), engine_env: env },
+        Arc::new(|_| {}),
+    );
+    (core, home)
+}
+
+/// Security review (agent containment): paths named by ACP/MCP definitions used to expose their parent folder, so an
+/// argument like `$HOME/projects` exposed the whole home. Now: directories are never exposed, scripts by their folder,
+/// other files only themselves, and anything too broad stops the agent from starting.
+#[cfg(unix)]
+#[test]
+fn what_a_contained_agent_may_see_is_never_broader_than_its_programs() {
+    let (core, _h) = core_with_env(vec![]);
+    let wt = tempfile::tempdir().unwrap();
+    let home = PathBuf::from(std::env::var("HOME").unwrap());
+    let tools = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tools.path().join("srv")).unwrap();
+    std::fs::write(tools.path().join("srv/server.mjs"), "").unwrap();
+    std::fs::write(tools.path().join("config.json"), "{}").unwrap();
+    let node = which::which("node").unwrap_or_else(|_| PathBuf::from("/usr/bin/node"));
+    let mcp: serde_json::Map<String, Value> = serde_json::from_value(json!({
+        "docs": {"command": node.to_string_lossy(), "args": [tools.path().join("srv/server.mjs"), tools.path().join("config.json"), home.join("projects"), home, "/home", "/"]}
+    }))
+    .unwrap();
+    let paths = core.agent_read_only_paths(&node, &engine_script(), wt.path(), None, &mcp).unwrap();
+    let canon = |p: PathBuf| dunce::canonicalize(&p).unwrap();
+    assert!(paths.contains(&canon(tools.path().join("srv"))), "a script is exposed with its folder: {paths:?}");
+    assert!(paths.contains(&canon(tools.path().join("config.json"))), "a data file only as itself: {paths:?}");
+    let home_c = canon(PathBuf::from(std::env::var("HOME").unwrap()));
+    for p in &paths {
+        assert!(!home_c.starts_with(p), "{} exposes the home folder", p.display());
+        assert!(p.components().count() > 2, "{} is too broad", p.display());
+    }
+    // A script whose folder is a top-level one is refused outright.
+    let broad = tempfile::Builder::new().suffix(".js").tempfile_in("/tmp").unwrap();
+    let mcp: serde_json::Map<String, Value> = serde_json::from_value(json!({"x": {"command": "node", "args": [broad.path()]}})).unwrap();
+    let err = core.agent_read_only_paths(&node, &engine_script(), wt.path(), None, &mcp).unwrap_err().to_string();
+    assert!(err.contains("top-level"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_provider_state_folder_that_is_too_broad_or_relative_stops_a_contained_agent() {
+    let wt = tempfile::tempdir().unwrap();
+    for (dir, why) in [(std::env::var("HOME").unwrap(), "home"), ("relative/dir".to_string(), "absolute"), ("/".to_string(), "top-level")] {
+        let (core, _h) = core_with_env(vec![("CLAUDE_CONFIG_DIR".into(), dir.clone())]);
+        let err = core.agent_state_paths("claude", wt.path()).unwrap_err().to_string();
+        // A home directly under the root (`/root`) is caught as a top-level folder first.
+        assert!(err.contains(why) || (why == "home" && err.contains("top-level")), "{dir}: {err}");
+    }
+    let ok = tempfile::tempdir().unwrap();
+    let (core, _h) = core_with_env(vec![("CLAUDE_CONFIG_DIR".into(), ok.path().to_string_lossy().into_owned())]);
+    assert_eq!(core.agent_state_paths("claude", wt.path()).unwrap(), vec![dunce::canonicalize(ok.path()).unwrap()]);
+}

@@ -355,6 +355,9 @@ mod claude_real;
 mod agent_sandbox;
 mod storage;
 mod bench;
+mod upgrade;
+#[cfg(windows)]
+mod windows;
 
 #[test]
 fn the_agents_overview_lists_running_and_recent_sessions_with_their_missions() {

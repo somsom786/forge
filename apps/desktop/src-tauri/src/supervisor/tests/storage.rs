@@ -86,3 +86,33 @@ fn worktrees_no_mission_refers_to_are_listed_never_deleted() {
     f.core.storage_cleanup_apply(0, &plan.token).unwrap();
     assert!(stray.join("unsaved.txt").exists());
 }
+
+/// Reliability review: a failure on one mission used to abort the clean-up after earlier missions had already lost their
+/// data, and nothing was audited. Now the rest continue, the failure is reported, and the audit always names what went.
+#[test]
+fn a_cleanup_that_fails_on_one_mission_finishes_the_others_and_audits_what_it_did() {
+    let f = fixture();
+    let mut ids = vec![];
+    for _ in 0..2 {
+        let m = mission_in_review(&f, "make a note");
+        f.core.discard_mission(&m.id, true).unwrap();
+        age(&f, &m.id);
+        ids.push(m.id);
+    }
+    // The second mission's transcript cannot be deleted (as with a full disk).
+    f.core.store.c().execute_batch(&format!("CREATE TRIGGER no_delete BEFORE DELETE ON activity_event WHEN OLD.mission_id = '{}' BEGIN SELECT RAISE(FAIL, 'disk full'); END;", ids[1])).unwrap();
+    let plan = f.core.storage_cleanup_preview(30).unwrap();
+    let res = f.core.storage_cleanup_apply(30, &plan.token).unwrap();
+    assert!(res.failures.iter().any(|x| x.contains(&ids[1]) && x.contains("disk full")), "{res:?}");
+    assert!(f.core.store.events(&ids[0], 0, 1000).unwrap().iter().all(|e| e.payload["retention"] == true), "the first mission was cleaned");
+    let audit: String = f.core.store.c().query_row("SELECT detail_json FROM audit_event WHERE action='storage.cleanup'", [], |r| r.get(0)).unwrap();
+    assert!(audit.contains(&ids[0]) && audit.contains("disk full"), "{audit}");
+}
+
+#[test]
+fn an_absurd_age_means_everything_and_does_not_crash() {
+    let f = fixture();
+    let plan = f.core.storage_cleanup_preview(u32::MAX).unwrap();
+    assert_eq!(plan.older_than_days, 36_500);
+    f.core.storage_cleanup_apply(u32::MAX, &plan.token).unwrap();
+}

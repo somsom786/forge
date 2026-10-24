@@ -4,7 +4,7 @@ use crate::error::Result;
 use rusqlite::Connection;
 use std::path::Path;
 
-const MIGRATIONS: &[&str] = &[
+pub(crate) const MIGRATIONS: &[&str] = &[
     // v1 — core orchestration
     r#"
     CREATE TABLE project (
@@ -455,6 +455,14 @@ fn configure(conn: &Connection) -> Result<()> {
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    // A newer FORGE wrote this database: this build does not know what its newer columns mean (for example that a
+    // project's agents must run isolated) and would silently ignore them. Refuse instead of running on it.
+    if current as usize > MIGRATIONS.len() {
+        return Err(crate::error::ForgeError::InvalidState(format!(
+            "this FORGE data folder was written by a newer version of FORGE (database version {current}, this build knows {}); install that version or newer",
+            MIGRATIONS.len()
+        )));
+    }
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
         let tx = conn.unchecked_transaction()?;
         tx.execute_batch(sql)?;
@@ -474,6 +482,13 @@ mod tests {
         migrate(&c).unwrap();
         let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v as usize, MIGRATIONS.len());
+    }
+
+    #[test]
+    fn a_database_from_a_newer_forge_is_refused_not_silently_misread() {
+        let c = open_in_memory().unwrap();
+        c.pragma_update(None, "user_version", (MIGRATIONS.len() + 1) as i64).unwrap();
+        assert!(migrate(&c).unwrap_err().to_string().contains("newer version of FORGE"));
     }
 
     #[test]

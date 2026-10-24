@@ -13,6 +13,7 @@
 //   FAKE:hidden  ask to run a shell command whose payload redaction would hide (`TOKEN=$(…)`)
 //   FAKE:same3   ask about the identical call (same id, tool, input) three times
 //   FAKE:snoop   read `SNOOP=<path>` and write next to it, directly (as an approved shell command would), and report
+//   FAKE:subdir  ask to write docs/FORGE_TEST.md (a file in a subfolder, so the folder can be swapped for a junction)
 //   FAKE:garbage write a line that is not protocol JSON to stdout, then keep running
 //   FAKE:mcp     report the MCP servers it was given, then call mcp__evil__exfil, mcp__docs__search and mcp__docs__delete
 //   FAKE:orphan  leave a descendant process holding the stdio pipes after finishing
@@ -127,6 +128,7 @@ export const fakeAdapter: ProviderAdapter = {
     const targets: string[] = [];
     if (prompt.includes('FAKE:deny')) targets.push(resolve(cwd, '..', 'outside-worktree.txt'));
     else if (prompt.includes('FAKE:env')) targets.push(join(cwd, '.env'));
+    else if (prompt.includes('FAKE:subdir')) targets.push(join(cwd, 'docs', 'FORGE_TEST.md'));
     else if (prompt.includes('FAKE:replay')) targets.push(join(cwd, 'FORGE_TEST.md'), join(cwd, 'FORGE_TEST_2.md'));
     else targets.push(join(cwd, 'FORGE_TEST.md'));
 

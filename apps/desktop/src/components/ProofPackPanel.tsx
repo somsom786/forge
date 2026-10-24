@@ -69,9 +69,11 @@ export function ProofSummary({ content }: { content: Record<string, any> }) {
   const passed = checks.filter((c) => c.latest?.state === 'passed' && c.fresh).length;
   const failed = checks.filter((c) => c.latest && c.latest.state !== 'passed').length;
   const never = checks.filter((c) => !c.latest).length;
-  const stale = checks.filter((c) => c.latest && !c.fresh).length;
+  const stale = checks.filter((c) => c.latest?.state === 'passed' && !c.fresh).length;
   const files = content.changes?.files?.length ?? 0;
-  const ranOn = [...new Set<string>((content.sessions ?? []).map((s: any) => s.ranOn ?? 'agent_host'))];
+  // Packs from before sessions recorded this have no `ranOn`: those sessions ran on the host. `null` means the session
+  // never started, so it ran nowhere.
+  const ranOn = [...new Set<string>((content.sessions ?? []).map((s: any) => ('ranOn' in s ? s.ranOn : 'agent_host')).filter((r: string | null) => r !== null))];
   const isolated = ranOn.length > 0 && ranOn.every((r) => r !== 'agent_host');
   return (
     <div className="flex flex-wrap items-center gap-1.5" aria-label="Proof Pack summary">
@@ -79,7 +81,7 @@ export function ProofSummary({ content }: { content: Record<string, any> }) {
       {criteria.length > 0 && <Badge tone={failedCrit ? 'bad' : met === criteria.length ? 'ok' : 'warn'}>criteria {met}/{criteria.length} met{failedCrit ? `, ${failedCrit} failed` : ''}</Badge>}
       {checks.length > 0 && (
         <Badge tone={failed ? 'bad' : never || stale ? 'warn' : 'ok'}>
-          checks {passed}/{checks.length} passed{failed ? `, ${failed} not passing` : ''}{stale ? `, ${stale} out of date` : ''}{never ? `, ${never} never run` : ''}
+          checks {passed}/{checks.length} passed{failed ? `, ${failed} not passing` : ''}{stale ? `, ${stale} passed on older changes` : ''}{never ? `, ${never} never run` : ''}
         </Badge>
       )}
       <Badge>{files} file{files === 1 ? '' : 's'} changed</Badge>

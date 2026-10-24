@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -545,25 +545,24 @@ impl Core {
         if m.provider == "codex" && self.cfg.codex.is_none() {
             return Err(ForgeError::Provider("Codex was not found (or only an npm shim was found); install the Codex app/CLI and sign in with `codex login`".into()));
         }
+        // Where the agent runs: the project's agent backend, required (never a silent fallback to the host). Decided, and
+        // what a contained agent may see checked, before a session is recorded: a refusal here leaves no session behind.
+        let project = self.store.get_project(&m.project_id)?;
+        let backend = crate::execution::Backend::parse(&project.agent_backend)?;
+        let executes_on = if backend == crate::execution::Backend::TrustedLocal { AGENT_EXECUTES_ON.to_string() } else { backend.as_str().to_string() };
+        let (read_only, read_write) = if backend == crate::execution::Backend::TrustedLocal {
+            (vec![], vec![])
+        } else {
+            (self.agent_read_only_paths(&node, &script, worktree, acp_agent.as_ref(), &mcp_servers)?, self.agent_state_paths(&m.provider, worktree)?)
+        };
         let session = self.store.create_session(&m.id, &m.provider, resume)?;
         let fail_session = |reason: String| {
             let _ = self.store.end_session(&session.id, "lost", &reason);
             ForgeError::Provider(reason)
         };
-
-        // Where the agent runs: the project's agent backend, required (never a silent fallback to the host).
-        let project = self.store.get_project(&m.project_id).map_err(|e| fail_session(e.to_string()))?;
-        let backend = crate::execution::Backend::parse(&project.agent_backend).map_err(|e| fail_session(e.to_string()))?;
-        let executes_on = if backend == crate::execution::Backend::TrustedLocal { AGENT_EXECUTES_ON.to_string() } else { backend.as_str().to_string() };
         self.store.set_session_executes_on(&session.id, &executes_on).map_err(|e| fail_session(e.to_string()))?;
         let script_arg = [script.clone().into_os_string()];
-        let spec = crate::execution::AgentSpec {
-            program: &node,
-            args: &script_arg,
-            workspace: worktree,
-            read_only: self.agent_read_only_paths(&node, &script, m, acp_agent.as_ref(), &mcp_servers),
-            read_write: self.agent_state_paths(&m.provider),
-        };
+        let spec = crate::execution::AgentSpec { program: &node, args: &script_arg, workspace: worktree, read_only, read_write };
         let mut cmd = crate::execution::agent_command(backend, &spec).map_err(|e| fail_session(e.to_string()))?;
         cmd.current_dir(worktree)
             .stdin(Stdio::piped())
@@ -895,56 +894,93 @@ impl Core {
     }
 
     /// What an agent sandbox must be able to read: the engine (and its modules), Node, the provider binary, and the programs
-    /// an ACP agent or an authorized MCP server will start (by the directories of the absolute paths they name).
-    fn agent_read_only_paths(&self, node: &Path, script: &Path, m: &Mission, acp: Option<&Value>, mcp: &serde_json::Map<String, Value>) -> Vec<PathBuf> {
+    /// an ACP agent or an authorized MCP server will start. Programs and scripts are exposed by their directory (they load
+    /// siblings); any other file argument only as that file; a directory argument not at all (a data folder is not
+    /// something FORGE exposes silently). Every path must pass [`Core::narrow_enough`], or the agent does not start.
+    fn agent_read_only_paths(&self, node: &Path, script: &Path, worktree: &Path, acp: Option<&Value>, mcp: &serde_json::Map<String, Value>) -> Result<Vec<PathBuf>> {
         let mut out: Vec<PathBuf> = vec![];
-        let mut add_dir_of = |p: &Path| {
-            if p.is_absolute() {
-                if let Some(d) = p.parent() {
-                    let d = dunce::canonicalize(d).unwrap_or_else(|_| d.to_path_buf());
-                    if !out.iter().any(|o| d.starts_with(o)) {
-                        out.push(d);
-                    }
-                }
+        let mut add = |p: PathBuf, why: &str| -> Result<()> {
+            let p = dunce::canonicalize(&p).unwrap_or(p);
+            self.narrow_enough(&p, worktree).map_err(|e| ForgeError::Provider(format!("refusing to start a contained agent: {why} would expose {e}")))?;
+            if !out.iter().any(|o| p.starts_with(o)) {
+                out.retain(|o| !o.starts_with(&p));
+                out.push(p);
             }
+            Ok(())
         };
         // The engine's own package, and every node_modules Node may resolve its imports from (it walks all ancestors; a
         // workspace hoists dependencies to the repository root). Read-only: dependencies, not user data.
-        let engine_root = script.ancestors().find(|a| a.join("package.json").is_file()).unwrap_or_else(|| script.parent().unwrap_or(script));
-        add_dir_of(&engine_root.join("x"));
+        let engine_root = script.ancestors().skip(1).find(|a| a.join("package.json").is_file()).unwrap_or_else(|| script.parent().unwrap_or(script));
+        add(engine_root.to_path_buf(), "the engine package")?;
         for a in script.ancestors().skip(1) {
             if a.join("node_modules").is_dir() {
-                add_dir_of(&a.join("node_modules").join("x"));
+                add(a.join("node_modules"), "a node_modules folder")?;
             }
         }
-        add_dir_of(&node.parent().unwrap_or(node).join("x"));
+        add(node.parent().unwrap_or(node).to_path_buf(), "the Node runtime")?;
         for p in [self.cfg.claude.as_deref(), self.cfg.codex.as_deref()].into_iter().flatten() {
-            add_dir_of(p);
+            add(p.parent().unwrap_or(p).to_path_buf(), "the provider binary")?;
         }
-        let mut named: Vec<String> = vec![];
+        let mut programs: Vec<(String, Vec<String>)> = vec![];
         if let Some(a) = acp {
-            named.extend(a["command"].as_str().map(String::from));
-            named.extend(a["args"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)));
+            programs.push((a["command"].as_str().unwrap_or("").to_string(), a["args"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect()));
         }
         for cfg in mcp.values() {
-            named.extend(cfg["command"].as_str().map(String::from));
-            named.extend(cfg["args"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)));
+            programs.push((cfg["command"].as_str().unwrap_or("").to_string(), cfg["args"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect()));
         }
-        for n in named {
-            let p = Path::new(&n);
-            if p.is_absolute() && p.exists() {
-                add_dir_of(p);
+        const SCRIPTS: &[&str] = &["js", "mjs", "cjs", "ts", "py", "rb", "sh", "pl"];
+        for (command, args) in programs {
+            let c = Path::new(&command);
+            if c.is_absolute() && c.is_file() {
+                add(c.parent().unwrap_or(c).to_path_buf(), &format!("the program {command}"))?;
+            }
+            for a in args {
+                let p = Path::new(&a);
+                if !p.is_absolute() || !p.is_file() {
+                    continue;
+                }
+                if p.extension().and_then(|e| e.to_str()).is_some_and(|e| SCRIPTS.contains(&e)) {
+                    add(p.parent().unwrap_or(p).to_path_buf(), &format!("the script {a}"))?;
+                } else {
+                    add(p.to_path_buf(), &format!("the file {a}"))?;
+                }
             }
         }
-        let _ = m;
-        out
+        Ok(out)
+    }
+
+    /// A path that may be exposed to a contained agent: not the root or a top-level folder, not the user's home or one of
+    /// its ancestors, not FORGE's own data (or anything above or inside it), not an ancestor of the worktree.
+    fn narrow_enough(&self, p: &Path, worktree: &Path) -> std::result::Result<(), String> {
+        let canon = |q: &Path| dunce::canonicalize(q).unwrap_or_else(|_| q.to_path_buf());
+        let shown = p.display().to_string();
+        if !p.is_absolute() {
+            return Err(format!("{shown}, which is not an absolute path"));
+        }
+        if p.components().filter(|c| matches!(c, std::path::Component::Normal(_))).count() < 2 {
+            return Err(format!("{shown}, a top-level folder"));
+        }
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|h| canon(Path::new(&h))) {
+            if home.starts_with(p) {
+                return Err(format!("{shown}, your home folder or a folder above it"));
+            }
+        }
+        let forge = canon(&self.cfg.home);
+        if forge.starts_with(p) || p.starts_with(&forge) {
+            return Err(format!("{shown}, which holds FORGE's own data"));
+        }
+        if canon(worktree).starts_with(p) {
+            return Err(format!("{shown}, a folder above the worktree"));
+        }
+        Ok(())
     }
 
     /// The provider's own state, writable inside an agent sandbox: Claude Code's config dir (login, sessions), Codex's home.
-    fn agent_state_paths(&self, provider: &str) -> Vec<PathBuf> {
+    /// It also holds the provider's transcripts of the user's other projects; the agent can read those (documented).
+    fn agent_state_paths(&self, provider: &str, worktree: &Path) -> Result<Vec<PathBuf>> {
         let env = |k: &str| self.cfg.engine_env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).or_else(|| std::env::var(k).ok());
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        match provider {
+        let paths = match provider {
             "claude" | "claude-local" => match env("CLAUDE_CONFIG_DIR") {
                 Some(d) => vec![PathBuf::from(d)],
                 None => home.map(|h| vec![h.join(".claude"), h.join(".claude.json")]).unwrap_or_default(),
@@ -954,7 +990,18 @@ impl Core {
                 None => home.map(|h| vec![h.join(".codex")]).unwrap_or_default(),
             },
             _ => vec![],
-        }
+        };
+        paths
+            .into_iter()
+            .map(|p| {
+                let p = dunce::canonicalize(&p).unwrap_or(p);
+                self.narrow_enough(&p, worktree).map_err(|e| ForgeError::Provider(format!("refusing to start a contained agent: its provider state folder would expose {e}")))?;
+                if worktree.starts_with(&p) || p.starts_with(worktree) {
+                    return Err(ForgeError::Provider("refusing to start a contained agent: its provider state folder overlaps the worktree".into()));
+                }
+                Ok(p)
+            })
+            .collect()
     }
 
     /// FORGE policy for one request: the MCP gate first (only authorized servers/tools), then the general rules.
@@ -1176,6 +1223,10 @@ impl Core {
                 Ok(n) => report.expired_approvals += n,
                 Err(e) => failures.push(format!("approvals of session {}: {e}", s.id)),
             }
+        }
+        match self.store.expire_all_pending("FORGE restarted before this was answered") {
+            Ok(n) => report.expired_approvals += n,
+            Err(e) => failures.push(format!("pending approvals: {e}")),
         }
         for m in self.store.missions_in_states(&[MissionState::Preparing, MissionState::Running, MissionState::AwaitingApproval])? {
             match self.store.transition(&m.id, MissionState::Interrupted, "FORGE restarted while this mission was active") {

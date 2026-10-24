@@ -184,8 +184,16 @@ fn sync_conflict_copy(rel: &str) -> bool {
 
 /// A file the user marked read-only is theirs to protect: FORGE neither rewrites nor deletes it, even with vault write access.
 fn refuse_if_read_only(real: &Path) -> Result<()> {
+    // On Unix "read-only" for its owner is the owner's write bit; std's `readonly()` needs every write bit cleared.
+    #[cfg(unix)]
+    let protected = |m: &std::fs::Metadata| {
+        use std::os::unix::fs::PermissionsExt;
+        m.permissions().mode() & 0o200 == 0
+    };
+    #[cfg(not(unix))]
+    let protected = |m: &std::fs::Metadata| m.permissions().readonly();
     match std::fs::metadata(real) {
-        Ok(m) if m.permissions().readonly() => Err(ForgeError::InvalidState(format!(
+        Ok(m) if protected(&m) => Err(ForgeError::InvalidState(format!(
             "{} is marked read-only on disk; FORGE does not change or delete files you protected. Clear the read-only flag to allow it.",
             real.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
         ))),

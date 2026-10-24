@@ -67,6 +67,10 @@ pub struct CleanupResult {
     pub failures: Vec<String>,
 }
 
+const MAX_AGE_DAYS: u32 = 36_500;
+
+/// Files and bytes under `dir`, not following links. A folder holding a `.git` entry (an experiment's checkout) is not
+/// walked: it can be a whole repository with its dependencies, and Settings must open quickly.
 fn dir_stats(dir: &Path) -> (u64, u64) {
     let (mut files, mut bytes) = (0, 0);
     let mut stack = vec![dir.to_path_buf()];
@@ -75,7 +79,9 @@ fn dir_stats(dir: &Path) -> (u64, u64) {
         for e in rd.flatten() {
             let Ok(m) = std::fs::symlink_metadata(e.path()) else { continue };
             if m.is_dir() {
-                stack.push(e.path());
+                if !e.path().join(".git").exists() {
+                    stack.push(e.path());
+                }
             } else if m.is_file() {
                 files += 1;
                 bytes += m.len();
@@ -131,6 +137,8 @@ impl Core {
 
     /// What a clean-up of finished missions older than `older_than_days` would remove. Read-only.
     pub fn storage_cleanup_preview(&self, older_than_days: u32) -> Result<CleanupPlan> {
+        // A century is "everything"; beyond that the date arithmetic would overflow.
+        let older_than_days = older_than_days.min(MAX_AGE_DAYS);
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(older_than_days as i64)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let finished = self.store.missions_in_states(&[MissionState::Merged, MissionState::Rejected, MissionState::Cancelled])?;
         let runs = self.runs_dir();
@@ -183,6 +191,7 @@ impl Core {
 
     /// Apply a previewed clean-up. Refused if anything changed since the preview (the token no longer matches).
     pub fn storage_cleanup_apply(&self, older_than_days: u32, token: &str) -> Result<CleanupResult> {
+        let older_than_days = older_than_days.min(MAX_AGE_DAYS);
         let plan = self.storage_cleanup_preview(older_than_days)?;
         if plan.token != token {
             return Err(ForgeError::InvalidState("what would be removed changed since the preview; preview again and confirm what it lists".into()));
@@ -206,10 +215,37 @@ impl Core {
                 Err(e) => res.failures.push(format!("{name}: {e}")),
             }
         };
+        // One mission failing (a full disk is exactly when people clean up) does not stop the rest, and whatever happened
+        // is always audited below.
+        let mut done: Vec<&str> = vec![];
         for m in &plan.missions {
             for f in &m.files {
                 remove(f, &mut res);
             }
+            match self.forget_transcript(m) {
+                Ok(n) => {
+                    res.events_deleted += n;
+                    done.push(&m.id);
+                }
+                Err(e) => res.failures.push(format!("mission {}: {e}", m.id)),
+            }
+        }
+        for f in &plan.orphan_files {
+            remove(f, &mut res);
+        }
+        self.store.audit(
+            "user",
+            "storage.cleanup",
+            None,
+            &json!({"olderThanDays": older_than_days, "missions": done, "eventsDeleted": res.events_deleted, "filesDeleted": res.files_deleted, "bytesFreed": res.bytes_freed, "failures": res.failures}),
+        );
+        Ok(res)
+    }
+
+    /// Remove one finished mission's transcript (keeping retention markers), clear its dead log paths and leave a marker,
+    /// in one transaction.
+    fn forget_transcript(&self, m: &CleanupMission) -> Result<i64> {
+        {
             let mut c = self.store.c();
             let tx = c.transaction()?;
             let n = tx.execute(
@@ -228,17 +264,7 @@ impl Core {
                 )?;
             }
             tx.commit()?;
-            res.events_deleted += n;
+            Ok(n)
         }
-        for f in &plan.orphan_files {
-            remove(f, &mut res);
-        }
-        self.store.audit(
-            "user",
-            "storage.cleanup",
-            None,
-            &json!({"olderThanDays": older_than_days, "missions": plan.missions.iter().map(|m| &m.id).collect::<Vec<_>>(), "eventsDeleted": res.events_deleted, "filesDeleted": res.files_deleted, "bytesFreed": res.bytes_freed, "failures": res.failures}),
-        );
-        Ok(res)
     }
 }
