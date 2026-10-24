@@ -14,13 +14,17 @@ evidence and UX. Providers own the agent loop, tools and model access.
 │                                          ├ paths.rs      containment (pure)
 │                                          ├ git.rs        Git CLI: status, worktrees, diff
 │                                          ├ proc.rs       Job Objects, tree kill
-│                                          └ providers.rs  CLI detection, capability matrix
+│                                          ├ providers.rs  CLI detection, capability matrix
+│                                          ├ execution.rs  backends: trusted_local, linux_namespaces (checks and agents)
+│                                          ├ evidence.rs   scanner adapters → findings;  proof.rs  Proof Packs
+│                                          ├ knowledge/    memory, Obsidian vault;  codeintel/  tree-sitter index
+│                                          └ harness/      inventory, Doctor, journaled edits
 └───────────────────────────────┬────────────────────────────────────────────┘
                                 │ JSONL over stdio (protocol.ts)   one process per session
-                          ┌─────▼──────┐
-                          │ engine     │  Node. Adapter per provider.
+                          ┌─────▼──────┐   (inside bubblewrap when the project's agent backend is linux_namespaces)
+                          │ engine     │  Node. Adapter per provider:
                           │ (packages/engine)  claude.ts → Claude Agent SDK → user's `claude`
-                          └────────────┘  (codex.ts: planned, Codex app-server)
+                          └────────────┘  codex.ts → Codex app-server;  acp.ts → any ACP agent;  fake.ts → scripted test agent
 ```
 
 **Why a Node engine at all?** The supported programmatic Claude surface is the Claude Agent SDK (TypeScript); Codex's

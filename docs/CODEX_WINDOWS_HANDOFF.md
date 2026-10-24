@@ -1,149 +1,174 @@
 # Windows validation handoff (cloud/overhaul)
 
-For the person validating this branch on the physical Windows 11 PC, helped by Codex. Everything here was built and tested in a
-Linux cloud container and on GitHub's Windows CI runner. **Nothing on this branch has run on the physical PC yet.**
-Status labels and evidence: `docs/VALIDATION_MATRIX.md`.
+For the person validating this branch on the physical Windows 11 PC, helped by Codex. Everything here was built and
+tested in a Linux cloud container and on GitHub's `windows-2022` runner. **Nothing on this branch has run on the physical
+PC yet.** Status labels and evidence: `docs/VALIDATION_MATRIX.md`. Open risks: `docs/REMAINING_RISKS.md`.
 
 ## A. Where things are
 
 | Item | Value |
 |---|---|
 | Branch | `cloud/overhaul` |
-| Head SHA | `cd75d4c` at the time of writing; see the PR (the branch moves while CI fixes land; `git rev-parse HEAD` after checkout) |
-| PR | draft PR `cloud/overhaul` → `main` (https://github.com/somsom786/forge/pull/8) |
-| Base | `main` at `fdb16e7` |
-| Contains | PRs #1–#7 (`cloud/codex-hardening`, `harness-hardening`, `experiments-backend`, `mission-conflicts`, `unix-containment`, `product-ui`, `execution-backends`) plus the overhaul commits. Merging this PR supersedes them; do not merge them separately afterwards |
-| New dependencies | npm `@agentclientprotocol/sdk` 1.8.0 (Apache-2.0, exact pin); Rust: tree-sitter 0.27.1 + grammar crates for Rust, TypeScript, JavaScript, Python (all MIT; see OSS_ADOPTION.md). External programs, never bundled: bubblewrap (Linux), and optionally gitleaks / osv-scanner / trivy / playwright as user-chosen checks |
-| Migrations | 9 approval binding, 10 MCP authorization, 11 ACP agents, 12 structured evidence (forward-only; tested from every earlier version) |
+| Code to validate | **`6626706`**. Later commits on the branch change documentation only: `git diff --stat 6626706 HEAD -- . ':!docs' ':!README.md'` must print nothing. If it prints something, validate HEAD and say so in the report |
+| PR | draft PR `cloud/overhaul` → `main`: https://github.com/somsom786/forge/pull/8 |
+| Base | `main` at `fdb16e7` (database schema v6) |
+| Contains | PRs #1–#7 plus the overhaul commits. Merging PR 8 supersedes them; do not merge them separately |
+| Migrations | 7–15, forward-only. 1–6 are pinned to what `main` ships. A database written by a newer FORGE is refused |
+| New dependencies | npm: `@agentclientprotocol/sdk` 1.8.0 (Apache-2.0); dev-only `@playwright/test` 1.56.1 and `@axe-core/playwright` 4.13.0. Rust: tree-sitter 0.27.1 and grammars (MIT), `unicode-normalization` 0.1.26 (MIT/Apache-2.0 + Unicode-3.0). Never bundled: bubblewrap, gitleaks, osv-scanner, trivy, playwright (user-chosen checks). See `docs/OSS_ADOPTION.md` |
+| Installer contents | `forge-desktop.exe`, `engine\main.js` (includes the Claude Agent SDK JavaScript), `node\node.exe`, `THIRD_PARTY_NOTICES.txt` (new) |
 
-## B. What changed (summary)
+## B. What changed since the last physical validation
 
-1. **Approval binding**: every approval is bound to a digest of mission, session, provider, tool, exact input, worktree,
-   profile, policy revision and execution location; it expires after 30 minutes; approving re-runs policy on the original
-   request (a target swapped for a link meanwhile is denied).
-2. **Execution backends**: checks and experiments run on a per-project backend. `trusted_local` (unchanged, "not isolated")
-   and `linux_namespaces` (bubblewrap, Linux) are implemented; Windows Sandbox and isolated WSL are designed, not implemented.
-   On Windows only `trusted_local` is available.
-3. **MCP authorization**: `.mcp.json` alone does nothing; servers are reviewed, hash-pinned and authorized per project in
-   Harness Studio; missions get only stored definitions; unauthorized `mcp__` calls are denied without asking.
-4. **ACP agents**: register any Agent Client Protocol agent (Agents screen) and run missions with it; FORGE answers every
-   permission request and performs the file reads/writes the agent asks for through policy and approvals.
-5. **Proof Engine adapters**: a check can parse gitleaks / OSV-Scanner / Trivy / Playwright JSON into findings (Verification
-   view, Proof Pack).
-6. **Code intelligence**: tree-sitter symbol index, Code Map view, relevant-code section in context packages.
-7. **Fixes**: Codex "Not logged in" was shown as signed in; Unix process containment; 8.3 short-path handling.
-8. **Tooling**: `scripts/windows/*.ps1`, CI with SHA-pinned actions, Windows script job, Windows installer build artifact,
-   security workflow (audits, licences, gitleaks, OSV, SBOM).
+1. **Approvals** are bound to the exact request, its policy revision (`policy-2026-10-24.1`) and where it executes. They expire after 30 minutes, are re-checked at decision time, and are reused at most once.
+2. **Isolation:**
+   - Checks and experiments can run in `linux_namespaces` on Linux.
+   - On Linux, **agents** can be contained too ("Agents run: …").
+   - On Windows only `trusted_local` exists, and isolation is refused rather than faked.
+3. **MCP:** hash-pinned authorization per project; allow-lists are enforced by the core.
+4. **ACP agents:** official SDK; tested against the real `claude-agent-acp`.
+5. **Real Claude Code in tests:** the bundled binary talks to a scripted local model. No account is used.
+6. **Proof Engine:**
+   - Real scanner runs (gitleaks, OSV-Scanner) and real report formats (Trivy, Playwright).
+   - The Proof Pack summary strip and "Agent ran: …".
+7. **Memory:**
+   - Obsidian links resolve like Obsidian: file names, NFD names, case-insensitive. Slug collisions no longer cause wrong-page links.
+   - Read-only notes are never rewritten.
+   - Sync-conflict copies are flagged.
+8. **Code intelligence:** CommonJS symbols are extracted; evaluated on nine real repositories.
+9. **Harness Doctor:** explains which settings file wins and that deny/ask beat allow.
+10. **UI accessibility:** contrast, keyboard scrolling, palette labels and headings. Storage view and a previewed clean-up.
+11. **Data integrity:**
+    - Merges are journaled.
+    - Orphaned worktrees are adopted.
+    - One FORGE per data folder.
+    - Every pending approval expires at restart.
+    - **A worktree with a file in use is no longer half-deleted on Windows** (found by Windows CI this round).
+12. **Release:** third-party notices are generated and shipped; SBOMs come from the security workflow.
 
 ## C. Exact commands (PowerShell, from a fresh clone)
 
 ```powershell
-# 1. Get the branch
+# 1. Get the branch and record what you validate
 git clone https://github.com/somsom786/forge.git forge-validate
 cd forge-validate
 git checkout cloud/overhaul
-git rev-parse HEAD            # write this down for the report
+git rev-parse HEAD
+git diff --stat 6626706 HEAD -- . ':!docs' ':!README.md'   # expect no output
 
 # 2. Allow the scripts in this window only
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
-# 3. Everything automated (prereqs, npm ci, engine/UI/Rust tests), then the focused scripts
+# 3. Automated suites, then the focused scripts
 .\scripts\windows\verify-windows.ps1
 .\scripts\windows\test-provider-adapters.ps1
-.\scripts\windows\test-execution-backends.ps1          # run from an elevated window to also check Windows Sandbox
-.\scripts\windows\test-obsidian.ps1 -Interactive       # opens a temporary fixture vault in Obsidian, asks what you saw
-.\scripts\windows\test-release.ps1 -Launch             # builds the NSIS installer, installs to %TEMP%, launches, uninstalls
-#    (refuses if FORGE is already installed for this user; add -ReplaceExistingInstall only if that is acceptable)
+.\scripts\windows\test-execution-backends.ps1          # elevated window also checks Windows Sandbox availability
+.\scripts\windows\test-obsidian.ps1 -Interactive
+.\scripts\windows\test-release.ps1 -Launch             # builds the installer, installs to %TEMP%, launches, uninstalls
 
-# 4. Launch the app for manual checks (development build)
+# 4. The development app for the manual checks
 npm run dev
 ```
 
-Each script prints a table and writes `validation-results\<script>-<timestamp>.json` (read it with
-`Get-Content -Raw -Encoding UTF8 | ConvertFrom-Json`). Exit code 0 = all required checks passed, 1 = a FAIL, 2 = a required
-check BLOCKED. Scripts never run `#[ignore]` live tests and never start a provider mission.
+Each script prints a table and writes `validation-results\<script>-<timestamp>.json`. Exit codes: 0 means all required
+checks passed, 1 means a FAIL, 2 means a required check is BLOCKED. Scripts never run `#[ignore]` live tests or start a
+provider mission.
 
 ## D. Validation checklist
 
 Severity: **P0** blocks merging, **P1** must be fixed or documented before a release, **P2** nice to know.
 
-| # | Objective | Prerequisites | Command / action | Expected | Failure signs | Files | Fix location | Sev |
-|---|---|---|---|---|---|---|---|---|
-| D1 | Whole automated suite on the PC | Node 22, Rust MSVC, VS Build Tools, WebView2, Git | `verify-windows.ps1` | Overall PASS, every row `PASS — Physical Windows` | any FAIL row; open its `.log` | `validation-results\` | where the failing test lives | P0 |
-| D2 | Approval binding in the real window | a project; Claude Code signed in (spends a little quota: use a tiny task) or the Codex CLI | `npm run dev`, start a mission "create NOTE.md with one line", wait for the approval card | card shows "expires in 29m"; Approve writes the file; leaving a card 30 min (or test with a short TTL build) expires it and the agent says denied | approval does nothing; error "not the one you were shown" on a fresh card | `supervisor.rs` (`decide_approval_checked`), `ApprovalCard.tsx` | same | P0 |
-| D3 | Decision-time re-check with a **junction** (Windows TOCTOU) | D2 setup, admin not needed | while the card for `NOTE.md` is open: `cmd /c mklink /J <worktree>\linkdir C:\Users\Public` and change the request to a file under it (or ask the agent to write `linkdir\x.txt`), then Approve | approval refused with "Blocked by FORGE policy at decision time"; nothing written under `C:\Users\Public` | file appears outside the worktree | `policy.rs`, `paths.rs` | `paths::resolve_within` | P0 |
-| D4 | MCP authorization end to end | a repo with `.mcp.json` declaring a harmless stdio server (e.g. `npx -y @modelcontextprotocol/server-everything@<pinned version>`) | Harness Studio → `.mcp.json` → Review & authorize (allow-list one tool) → run a Claude mission asking to use that tool and another tool | the allow-listed tool asks for approval; the other is denied without asking; editing `.mcp.json` afterwards shows "changed since authorized" and the old definition still runs | server starts without authorization; denied tool reaches a prompt | `mcp.rs`, `supervisor/mcp.rs`, `adapters/claude.ts` | same | P0 |
-| D5 | ACP agent end to end | an ACP-capable agent installed (e.g. an ACP bridge for a CLI you already use); **register the real program** (`node.exe` + script path), `.cmd` shims are refused | Agents → Register agent; New mission with provider "ACP agent" | session.started shows the agent name and protocol 1; edits ask; writes land in the worktree | "script wrapper" error (expected for `.cmd`); agent asks to sign in (do it in the agent, not FORGE) | `adapters/acp.ts`, `acp.rs` | same | P1 |
-| D6 | Codex sign-in detection | Codex CLI | `codex logout` → Agents screen shows "not signed in"; `codex login` → "signed in" | matches reality | logged-out shown as signed in | `providers.rs::codex_signed_in` | same | P1 |
-| D7 | Proof Engine adapters with real tools | install gitleaks and/or osv-scanner (winget/scoop) | in a mission contract add a check with Report = gitleaks (suggested command), run it on a worktree containing a fake token like `ghp_` + 36 letters | Failed, findings list the file:line, no secret text shown; a clean tree passes; uninstalling the tool gives "tool not installed" | "report unreadable" with a working tool → the command line or output format differs; capture the stdout and add it as a fixture | `evidence.rs`, `fixtures/evidence/` | parser or `ADAPTERS` command | P1 |
-| D8 | Execution backend chooser | — | Projects → project → "Checks run: …" | only Trusted local selectable; Windows Sandbox / WSL say "not implemented"; checks show "Not isolated" | an unimplemented backend selectable | `execution.rs`, `ExecutionBackendPanel.tsx` | same | P1 |
-| D9 | Installer | — | `test-release.ps1 -Launch` | PASS; installed app starts, engine and node present, uninstall removes it | missing `engine\main.js` or `node\node.exe` | `tauri.bundle.conf.json`, `scripts/bundle.mjs` | same | P1 |
-| D10 | Upgrade over the previous installed build | an installer from `main` (older) | install old, create a project+mission, install new over it, open the app | data intact; migrations 9–12 applied silently | crash on start, "database" errors | `db.rs` | migrations | P1 |
-| D11 | Restart with a pending approval | D2 | close FORGE while a card is pending, reopen | mission "interrupted", approval expired, recovery toast | mission still "awaiting approval" forever | `supervisor.rs` recovery | same | P1 |
-| D12 | Obsidian | Obsidian installed | `test-obsidian.ps1 -Interactive` | the fixture note opens | "vault not found" persists after opening the folder as a vault | `knowledge/vault.rs` | `obsidian_uri` | P2 |
-| D13 | Code Map | a real repo | Projects → project → Code Map, search a known function | symbols with correct file:line | empty map for a TS/Rust repo | `codeintel/` | same | P2 |
-| D14 | New screens render in the real WebView2 window | — | look at: Harness Studio MCP dialog, Agents → ACP agents, Verification findings, Code Map | as in the browser preview | layout broken, console errors | `apps/desktop/src/components/*` | same | P2 |
+| # | Objective | Action | Expected | Failure signs | Where to fix | Sev |
+|---|---|---|---|---|---|---|
+| D1 | Whole automated suite on the PC (Node 22, Rust MSVC, VS Build Tools, WebView2, Git) | `verify-windows.ps1` | every row PASS — Physical Windows | any FAIL; open its `.log` | where the test lives | P0 |
+| D2 | Approval in the real window (Claude Code signed in; a tiny task) | `npm run dev`, mission "create NOTE.md with one line" | card shows the expiry; Approve writes the file; the Proof Pack header says "Agent ran: on the host, as the user (not isolated)" | approval does nothing; card refused as "not the one you were shown" | `supervisor.rs`, `ApprovalCard.tsx` | P0 |
+| D3 | Junction swapped in at decision time | automated: `windows::a_junction_swapped_in…` (PASS — Windows CI); repeat by hand during D2 with `mklink /J` | refused "at decision time"; nothing written outside | file appears outside the worktree | `paths.rs`, `policy.rs` | P0 |
+| D4 | MCP authorization end to end | Harness Studio → `.mcp.json` → authorize with one allow-listed tool → Claude mission using it and another tool | the allowed tool asks; the other is denied without asking; editing `.mcp.json` shows "changed since authorized" | server runs unauthorized | `mcp.rs`, `supervisor/mcp.rs` | P0 |
+| D5 | Discard and clean-up with a file open in an editor | open a worktree file in an editor that locks it (or `type con > file` in another window), then Discard | "files … are in use by another program … nothing was deleted"; after closing it, Discard works | half-deleted worktree; "not a git repository" on retry | `supervisor.rs` `remove_mission_worktree` | P0 |
+| D6 | Upgrade over the installed build from `main` | install the old installer, make a project and a mission with an approval pending, install this one over it | data intact; the pending approval expired; the mission is "interrupted"; Settings → Storage works | crash on start; "newer version of FORGE" (it must not appear here) | `db.rs`, `supervisor/tests/upgrade.rs` | P1 |
+| D7 | ACP agent end to end | register `claude-agent-acp` (real program: `node.exe` + script; `.cmd` shims are refused), run a mission | protocol 1; edits ask; writes land in the worktree | agent asks to sign in (do it in the agent) | `adapters/acp.ts` | P1 |
+| D8 | Codex sign-in detection and a tiny Codex mission | `codex logout` / `codex login`; one small mission | detection matches reality; approvals as with Claude | logged-out shown as signed in | `providers.rs`, `adapters/codex.ts` | P1 |
+| D9 | Real scanners (winget/scoop gitleaks, osv-scanner) | add a gitleaks check, plant `ghp_` + 36 letters, run | Failed with file:line, no secret text, tool version shown; a clean tree passes | "report unreadable" with a working tool | `evidence.rs` | P1 |
+| D10 | Installer | `test-release.ps1 -Launch` | starts; `engine\main.js`, `node\node.exe`, `THIRD_PARTY_NOTICES.txt` present; uninstall removes it | missing files | `tauri.bundle.conf.json`, `tools/package/*` | P1 |
+| D11 | Agent isolation offer on Windows | Projects → "Agents run: …" | only Trusted local selectable; others say why | an isolated option selectable | `ExecutionBackendPanel.tsx` | P1 |
+| D12 | Restart with a pending approval | close FORGE with a card pending, reopen | mission interrupted, approval expired | card still answerable | `supervisor.rs` `recover` | P1 |
+| D13 | Accessibility and layout in WebView2 at 1100×700 | Tab through each screen; Ctrl+K "Go to Knowledge"; Settings → Storage preview | the same results as the simulated e2e tests; no clipped text | low contrast, unreachable scroll areas | `apps/desktop/src` | P2 |
+| D14 | Obsidian | `test-obsidian.ps1 -Interactive`; also a vault with a note named with accents and one marked read-only | links resolve; read-only note never changed | wrong link targets; a read-only note rewritten | `knowledge/*` | P2 |
+| D15 | Harness Doctor with your real `~/.claude/settings.json` | Harness Studio → Doctor | precedence findings name the files; none points at the user file | crash or a misleading winner | `harness/doctor.rs` | P2 |
 
 ## E. Codex work queue
 
 **P0**
-1. Run D1; fix any FAIL. If a Rust test fails only on Windows, fix the code, not the test, unless the test's assumption is
-   Unix-only (then make it platform-correct and say why in the commit).
-2. D3 (junction TOCTOU) — add an automated `#[cfg(windows)]` test next to
-   `supervisor::tests::approvals::policy_is_rechecked_at_decision_time…` using `mklink /J` via `std::process::Command`.
-3. D2 and D4 in the real window.
+
+1. D1: fix any failure. If a test fails only on Windows, fix the code, unless the test's assumption is Unix-only; in that case make it platform-correct and say why.
+2. D2, D4, D5 in the real window.
 
 **P1**
-4. D5–D11. For D7, capture real tool stdout into `apps/desktop/src-tauri/fixtures/evidence/` (scrub anything secret) and
-   add tests; correct the suggested commands in `evidence::ADAPTERS` if needed.
-5. `README` / `docs/PROGRESS.md`: update levels for every item validated (A = verified on the PC by running it).
+
+3. D6–D12.
+4. Record the benchmark numbers on the PC: `FORGE_BENCH=1 cargo test --release --lib bench_ -- --nocapture --test-threads=1`. Put them next to the cloud numbers in `docs/PERFORMANCE.md`, labelled Physical Windows.
 
 **P2**
-6. D12–D14. Screenshots of the new screens into the PR (real, from the PC).
-7. Windows Sandbox backend prototype only if the owner asks (design in EXECUTION.md).
+
+5. D13–D15.
+6. Real screenshots of the main screens for the README, labelled as such.
+
+Out of scope unless the owner asks: Windows Sandbox / WSL backends (design in `docs/EXECUTION.md`); code signing;
+licence choice (`docs/LICENSING_DECISION.md`).
 
 ## F. Known limitations
 
-* **Security**: agents (Claude, Codex, ACP) run on the host; approved tool calls run with the user's privileges. ACP
-  permission requests are agent-initiated (a tool run without asking is not seen). Authorized MCP stdio servers run on the
-  host from mission start. Checks are isolated only on Linux (`linux_namespaces`).
-* **Windows**: no isolated execution backend; `.cmd`/`.bat` agent wrappers refused (register `node.exe` + script); symlink
-  tests may skip without the privilege.
-* **Providers**: no live mission run on this branch; ACP and MCP exercised only with scripted counterparts.
-* **Proof Engine**: scanner parsers tested on hand-written fixtures; Trivy needs network (fails on the sandbox backend).
-* **Packaging**: unsigned installer; upgrade path untested; the Claude Agent SDK is proprietary and bundled (redistribution
-  terms to check before any public release); FORGE has no licence (owner's decision).
-* **Process**: CI's Ubuntu job lifts AppArmor's user-namespace restriction on the runner; users on Ubuntu 24.04 need an
-  AppArmor profile for `bwrap` or the backend reports unavailable.
+- **Security:**
+  - On Windows agents run on the host, and approved actions run with your privileges.
+  - The webview is trusted by the core.
+  - Shell rules are heuristics.
+  - Authorized MCP stdio servers run as you.
+  - Edits to `CLAUDE.md`, `.claude/commands` and similar files are not flagged for review.
+- **Providers:** no live mission on this branch. Claude Code was tested with a scripted model, ACP with a real agent and a scripted model, and Codex with a scripted app-server only.
+- **Proof Engine:** Trivy and Playwright reports are parsed from real output, but the tools are not run in CI.
+- **Release:**
+  - The installer is unsigned and its upgrade path is untested.
+  - The bundled Claude Agent SDK is proprietary, with redistribution unconfirmed.
+  - FORGE has no licence.
+- **Linux note:** Ubuntu 24.04 restricts user namespaces for unconfined programs. CI lifts that restriction on its runner; users need an AppArmor profile for `bwrap`, or the backend reports itself unavailable.
 
 ## G. Prompt to paste into Codex
 
 ```text
 You are validating the FORGE branch `cloud/overhaul` on this Windows 11 PC. Read docs/CODEX_WINDOWS_HANDOFF.md,
-docs/VALIDATION_MATRIX.md, docs/SECURITY.md and scripts/windows/README.md first.
+docs/VALIDATION_MATRIX.md, docs/REMAINING_RISKS.md, docs/SECURITY.md and scripts/windows/README.md first.
 
 Rules:
 - Work on a new branch `codex/windows-validation` created from `cloud/overhaul`. Never push to main, never force-push,
   never merge PRs.
 - Never read or print credentials (~/.codex/auth.json, Claude tokens, env tokens). Never use API-key billing.
 - Do not run Rust tests marked #[ignore] and do not start live provider missions yourself; when a checklist item needs a
-  live mission (D2, D4, D5), stop and ask me to perform it, then record what I report.
+  live mission (D2, D4, D7, D8), stop and ask me to perform it, then record what I report.
 - Never mark something verified unless you ran it on this PC. Use exactly the labels in VALIDATION_MATRIX.md.
 
 Do, in order:
-1. Section C steps 1-3. Paste each script's summary table into a new file docs/WINDOWS_VALIDATION_REPORT.md with the commit SHA.
-2. For each FAIL: diagnose from the .log under validation-results\, fix the root cause with the smallest change, re-run the
-   failing script, and record the before/after in the report.
-3. Work the queue in section E (P0 first). Add the Windows junction test for D3.
-4. Update docs/VALIDATION_MATRIX.md (Physical Windows column) and docs/PROGRESS.md levels only for what you ran here.
-5. Commit with clear messages, push `codex/windows-validation`, and open a PR into `cloud/overhaul` describing exactly what
+1. Section C. Put each script's summary table into a new file docs/WINDOWS_VALIDATION_REPORT.md with the commit SHA.
+2. For each FAIL: diagnose from the .log under validation-results\, fix the root cause with the smallest change, re-run,
+   and record before/after in the report.
+3. Work the queue in section E, P0 first.
+4. Update docs/VALIDATION_MATRIX.md (Physical Windows column) only for what you ran here.
+5. Commit with clear messages, push `codex/windows-validation`, and open a PR into `cloud/overhaul` saying exactly what
    was run, what passed, what failed and what is still not run.
 ```
 
-Optional independent review questions (ask Codex in read-only mode, one at a time, with the named files attached):
-1. `supervisor.rs` `decide_approval_checked` + `policy.rs` + `paths.rs`: is there any Windows path spelling or reparse-point
-   case that passes `resolve_within` at decision time but writes outside the worktree?
-2. `packages/engine/src/adapters/acp.ts`: can an ACP agent obtain a write outside the worktree, or standing permission, via
-   option kinds, multiple locations, relative paths or `fs/write_text_file` races?
-3. `mcp.rs` + `supervisor/mcp.rs`: can a repository influence what MCP server actually runs after authorization?
-4. `evidence.rs`: can a crafted tool output make a failing scan look like a pass?
+## H. Review queue for GPT-6 Astra (independent analysis; read-only, one question at a time)
+
+These questions benefit from a reviewer outside this cloud session. They are not blocking; answer them when convenient.
+
+1. `apps/desktop/src-tauri/src/paths.rs` (`resolve_within`), `policy.rs` (`evaluate`) and `supervisor.rs`
+   (`decide_approval_checked`): is there any Windows spelling or reparse point that passes `resolve_within` at decision
+   time but writes outside the worktree? Consider 8.3 names, `\\?\`, ADS, mount points, hard links, case and Unicode
+   normalisation.
+2. `execution.rs` (`agent_command`) and `supervisor.rs` (`agent_read_only_paths`, `narrow_enough`, `agent_state_paths`):
+   can a contained agent reach a host file it should not through the bind list? Consider `node_modules` ancestors, symlinks
+   inside bound directories, and `/proc`.
+3. `packages/engine/src/adapters/acp.ts`: can an ACP agent obtain a write outside the worktree, or standing permission,
+   through option kinds, multiple locations, relative paths, or `fs/write_text_file` races?
+4. `supervisor/storage.rs`: can the clean-up delete anything the preview did not list? Consider runs created between
+   preview and apply, and clock changes.
+5. `knowledge/retrieve.rs` and `knowledge/store.rs`: can a vault note become injected into an agent prompt without a
+   person verifying exactly that content?
