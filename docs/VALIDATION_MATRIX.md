@@ -35,7 +35,7 @@ A Linux pass is never a Windows pass. **Simulated** marks tests whose counterpar
 | Code-intelligence evaluation | `scripts/codeintel-eval.sh` | on demand |
 | Security | `.github/workflows/security.yml`: npm audit, cargo-audit, cargo-deny, gitleaks (full history), OSV-Scanner, SBOMs, third-party notices | every push |
 
-**CI evidence.** CI was green on both runners at `4eb671a`, `e07f9d3` and `7188f8f`. At `96ad0ff` Windows CI failed one new test, which found the worktree defect fixed in `6626706`. The physical-Windows validation of this branch is **NOT RUN** (`docs/CODEX_WINDOWS_HANDOFF.md`).
+**CI evidence.** CI was green on both runners, including the installer build, at `4eb671a`, `e07f9d3`, `7188f8f` and `6e430ac` (the same code as `6626706`). At `96ad0ff` Windows CI failed one new test, which found the worktree defect fixed in `6626706`. The physical-Windows validation of this branch is **NOT RUN** (`docs/CODEX_WINDOWS_HANDOFF.md`).
 
 ## Features
 
@@ -58,7 +58,7 @@ A Linux pass is never a Windows pass. **Simulated** marks tests whose counterpar
 | Code intelligence | `codeintel::tests`, `eval_oss` (on demand) | PASS — Linux; evaluated on 9 real repositories | PASS — Windows CI (unit) | NOT RUN | Declarations only |
 | Harness Studio (Doctor incl. precedence, edits, rollback, dry-runs) | `harness::*` | PASS — Linux | PASS — Windows CI | NOT RUN | Live test ignored |
 | Storage usage and clean-up (previewed, token-confirmed, audited) | `storage::*` | PASS — Linux | PASS — Windows CI | NOT RUN | |
-| Worktree removal with a file in use (refused before deleting; half-deleted worktree finished after confirmation) | `windows::discarding_while_a_file_is_locked…`, `integrity::a_worktree_an_earlier_removal…` | PASS — Linux | FAIL at `96ad0ff` (found the bug); fix `6626706` pending | NOT RUN | |
+| Worktree removal with a file in use (refused before deleting; half-deleted worktree finished after confirmation) | `windows::discarding_while_a_file_is_locked…`, `integrity::a_worktree_an_earlier_removal…` | PASS — Linux | PASS — Windows CI (failed at `96ad0ff`, which found the bug; fixed in `6626706`, green at `6e430ac`) | NOT RUN | |
 | Upgrade from the released schema (v6 with data) to v15; shipped migrations pinned; newer database refused | `upgrade::*`, `db::tests` | PASS — Linux | PASS — Windows CI | NOT RUN | Installer upgrade not tested |
 | UI end-to-end (**simulated**: every screen, mission tabs, palette, dialogs, storage; WCAG A/AA via axe at 1100×700) | `apps/desktop/e2e` | PASS — Linux (6 tests, mutation-checked) | n/a | NOT RUN | Says nothing about WebView2 or real data |
 | Stress volumes (`docs/PERFORMANCE.md`) | `bench_*` (on demand) | PASS — Linux | NOT RUN | NOT RUN | Cloud numbers only |
@@ -87,7 +87,7 @@ A Linux pass is never a Windows pass. **Simulated** marks tests whose counterpar
 | 14 | Injection through memory or docs | `service_tests::hostile_note…`, `vault_fixture_tests` wrong-page links | PASS — Linux | PASS — Windows CI | Repository text still steers the model |
 | 15 | Malicious provider events | `normalize.test.ts`, `regressions::an_unreadable_engine_line…`, store tests | PASS — Linux | PASS — Windows CI | — |
 | 16 | Partial writes and crash recovery | harness, knowledge, checks, merges, upgrade | PASS — Linux | PASS — Windows CI | No SQLite power-loss test |
-| 17 | Unsafe worktree clean-up | `discard_refuses…`, `integrity::*`, `windows::discarding_while…` | PASS — Linux | fix pending (see above) | — |
+| 17 | Unsafe worktree clean-up | `discard_refuses…`, `integrity::*`, `windows::discarding_while…` | PASS — Linux | PASS — Windows CI | — |
 | 18 | Upgrade and migration | `upgrade::*`, `db::tests` | PASS — Linux | PASS — Windows CI | Installer upgrade not tested |
 
 ## Not run anywhere
