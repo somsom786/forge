@@ -149,3 +149,27 @@ fn a_finished_mission_cannot_be_discarded_so_nothing_is_deleted_first() {
     assert!(f.core.discard_mission(&m.id, true).is_err());
     assert!(wt.exists(), "nothing was deleted before the refusal");
 }
+
+/// Found by the Windows CI test: `git worktree remove` deleted part of a worktree (its `.git` link first) and then
+/// failed on a file another program held open, after which every retry failed with "not a git repository". A
+/// half-removed worktree can now be finished, but only once the user confirms the loss.
+#[test]
+fn a_worktree_an_earlier_removal_left_half_deleted_can_be_finished_after_confirmation() {
+    let f = fixture();
+    let m = new_mission(&f, "make a scripted note", PermissionProfile::AcceptEdits);
+    f.core.start_mission(&m.id, None).unwrap();
+    wait_until("review", || state(&f, &m.id) == "awaiting_review");
+    wait_until("finalised", || f.core.live_session_count() == 0);
+    let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
+    // What git leaves behind on Windows: the .git link is gone, some files are not.
+    std::fs::remove_file(wt.join(".git")).unwrap();
+    assert!(wt.join("FORGE_TEST.md").exists());
+    let err = f.core.discard_mission(&m.id, false).unwrap_err().to_string();
+    assert!(err.contains("would permanently delete"), "uncommitted files can no longer be counted, so confirmation is required: {err}");
+    assert_eq!(state(&f, &m.id), "awaiting_review");
+    f.core.discard_mission(&m.id, true).unwrap();
+    assert_eq!(state(&f, &m.id), "cancelled");
+    assert!(!wt.exists());
+    let listed = git::run(f.repo.path(), &["worktree", "list", "--porcelain"]).unwrap();
+    assert!(!listed.contains(&*wt.file_name().unwrap().to_string_lossy()), "the registration was pruned: {listed}");
+}

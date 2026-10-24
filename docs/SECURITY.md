@@ -200,7 +200,7 @@ Not changed, documented: on Linux/macOS the engine kills its direct provider chi
 covers descendants unless one calls `setsid` (SECURITY limit, proc.rs). Moving agents into their own group would take them *out*
 of that group, which is worse.
 
-Policy revision bumped to `policy-2026-10-23.2` (approvals requested under the old revision are never reused).
+Policy revision bumped to `policy-2026-10-23.2`, then `policy-2026-10-24.1` (Glob/Grep patterns that reach outside the worktree now ask, high risk). Approvals requested under an older revision are never reused.
 
 ## Execution backends (Stage B; docs/EXECUTION.md)
 

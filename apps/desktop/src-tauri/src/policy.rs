@@ -159,7 +159,7 @@ fn short(s: &str, n: usize) -> String {
 
 /// Revision of the rules in this file. Every approval records the revision it was requested under; an approval requested under
 /// another revision is never reused. **Bump it whenever `evaluate` changes what it allows, denies or asks.**
-pub const REVISION: &str = "policy-2026-10-23.2";
+pub const REVISION: &str = "policy-2026-10-24.1";
 
 pub fn evaluate(tool: &str, input: &Value, worktree: &Path, profile: PermissionProfile) -> Decision {
     if WRITE_TOOLS.contains(&tool) {
@@ -197,6 +197,18 @@ pub fn evaluate(tool: &str, input: &Value, worktree: &Path, profile: PermissionP
         // `Read` always names a file; one that does not (e.g. a translated ACP request) is asked about, not allowed.
         if tool == "Read" && path_arg(tool, input).is_none() {
             return Decision::Ask { risk: Risk::Medium, summary: "Read (no file named)".into(), warnings: vec!["The request does not say which file it reads".into()] };
+        }
+        // A search pattern can reach outside on its own: `Glob {pattern: "/home/me/**"}` or `"../../**"` with no path.
+        let pattern = input.get(if tool == "Glob" { "pattern" } else { "glob" }).and_then(Value::as_str).unwrap_or("");
+        let b = pattern.as_bytes();
+        let pattern_escapes = matches!(tool, "Glob" | "Grep")
+            && (pattern.starts_with(['/', '\\', '~']) || (b.len() > 1 && b[1] == b':') || pattern.split(['/', '\\']).any(|c| c == ".."));
+        if pattern_escapes {
+            return Decision::Ask {
+                risk: Risk::High,
+                summary: format!("{tool} with a pattern outside the worktree: {}", short(pattern, 120)),
+                warnings: vec!["The search pattern names a location outside this mission's worktree".into()],
+            };
         }
         return match path_arg(tool, input) {
             Some(p) if paths::resolve_within(worktree, Path::new(&p)).is_err() => Decision::Ask {
@@ -362,6 +374,12 @@ mod tests {
         // A Read that names no file is asked about, never silently allowed (Glob/Grep default to the worktree).
         assert!(matches!(evaluate("Read", &json!({}), d.path(), PermissionProfile::AcceptEdits), Decision::Ask { .. }));
         assert_eq!(evaluate("Grep", &json!({"pattern": "x"}), d.path(), PermissionProfile::Default), Decision::Allow);
+        // Final review: a pattern alone can reach outside the worktree.
+        for (tool, input) in [("Glob", json!({"pattern": "/home/me/**/*.pem"})), ("Glob", json!({"pattern": "../../**"})), ("Glob", json!({"pattern": "C:\\Users\\me\\**"})), ("Glob", json!({"pattern": "~/.ssh/*"})), ("Grep", json!({"pattern": "key", "glob": "../**/*.env"}))] {
+            assert!(matches!(evaluate(tool, &input, d.path(), PermissionProfile::AcceptEdits), Decision::Ask { risk: Risk::High, .. }), "{tool} {input}");
+        }
+        assert_eq!(evaluate("Glob", &json!({"pattern": "src/**/*.rs"}), d.path(), PermissionProfile::Default), Decision::Allow);
+        assert_eq!(evaluate("Grep", &json!({"pattern": "/api/v1", "glob": "*.ts"}), d.path(), PermissionProfile::Default), Decision::Allow, "a regex that looks like a path is not a location");
     }
 
     /// Security review F4: names a case-insensitive file system opens as a protected file must be treated as that file.

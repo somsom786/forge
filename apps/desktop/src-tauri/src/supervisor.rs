@@ -1296,14 +1296,13 @@ impl Core {
         }
         let project = self.store.get_project(&m.project_id)?;
         let root = Path::new(&project.root_path);
-        let safety = self.worktree_safety(mission_id)?;
+        let safety = self.removal_safety(mission_id)?;
         if (safety.dirty_files > 0 || safety.unmerged_commits > 0 || safety.ignored_entries > 0) && !confirm_loss {
             return Err(ForgeError::InvalidState(loss_message("discarding", &safety, m.branch.as_deref())));
         }
         if let Some(wt) = &m.worktree_path {
-            self.removable_worktree(root, Path::new(wt), m.branch.as_deref())?;
             // Without confirmation git itself refuses to remove a dirty tree; with it, the user accepted the stated loss.
-            git::worktree_remove(root, Path::new(wt), confirm_loss)?;
+            self.remove_mission_worktree(root, Path::new(wt), m.branch.as_deref(), confirm_loss)?;
         }
         if let Some(b) = &m.branch {
             if let Err(e) = git::delete_branch(root, b, safety.unmerged_commits > 0) {
@@ -1331,6 +1330,12 @@ impl Core {
         if !wt.exists() && std::fs::symlink_metadata(wt).is_err() {
             return Ok(()); // already gone; git worktree prune handles the registration
         }
+        let real = self.inside_worktrees_folder(wt)?;
+        git::verify_worktree(root, &real, branch)
+    }
+
+    /// The real path of `wt` if it is a folder (not a link) inside FORGE's worktrees folder; otherwise refused.
+    fn inside_worktrees_folder(&self, wt: &Path) -> Result<PathBuf> {
         if std::fs::symlink_metadata(wt).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
             return Err(ForgeError::PathRejected(format!("{} is a link, not a worktree; FORGE will not delete through it", wt.display())));
         }
@@ -1339,7 +1344,64 @@ impl Core {
         if !crate::paths::is_within(&home, &real) || real == home {
             return Err(ForgeError::PathRejected(format!("{} is not inside FORGE's worktrees folder; FORGE will not delete it", real.display())));
         }
-        git::verify_worktree(root, &real, branch)
+        Ok(real)
+    }
+
+    /// A worktree folder that a previous removal could only partly delete: it still exists but is no longer a git worktree
+    /// (git deletes the `.git` link early, then stops at a file another program holds open on Windows).
+    pub(crate) fn half_removed(wt: &Path) -> bool {
+        wt.is_dir() && std::fs::symlink_metadata(wt.join(".git")).is_err()
+    }
+
+    /// What removing a mission's worktree would lose. For a half-removed worktree only the branch can still be measured,
+    /// so uncommitted files count as unknown and confirmation is always required.
+    pub(crate) fn removal_safety(&self, mission_id: &str) -> Result<git::WorktreeSafety> {
+        let m = self.store.get_mission(mission_id)?;
+        match m.worktree_path.as_deref().map(Path::new).filter(|w| Self::half_removed(w)) {
+            Some(_) => {
+                let project = self.store.get_project(&m.project_id)?;
+                let base = m.base_commit.as_deref().unwrap_or("HEAD");
+                let mut s = git::worktree_safety(Path::new(&project.root_path), None, m.branch.as_deref(), base)?;
+                s.exists = true;
+                s.dirty_files = s.dirty_files.max(1);
+                Ok(s)
+            }
+            None => self.worktree_safety(mission_id),
+        }
+    }
+
+    /// Remove a mission's worktree. Refuses before deleting anything when a file in it is in use by another program, and
+    /// finishes a worktree an earlier attempt could only partly remove (only after the user confirmed the loss).
+    pub(crate) fn remove_mission_worktree(&self, root: &Path, wt: &Path, branch: Option<&str>, confirm_loss: bool) -> Result<()> {
+        if Self::half_removed(wt) {
+            if !confirm_loss {
+                return Err(ForgeError::InvalidState(format!("an earlier attempt removed part of {}; confirm to finish removing what is left", wt.display())));
+            }
+            let real = self.inside_worktrees_folder(wt)?;
+            std::fs::remove_dir_all(&real).map_err(|e| ForgeError::Other(format!("could not finish removing {}: {e}. Close any program using files in it and try again.", real.display())))?;
+            let _ = git::run(root, &["worktree", "prune"]);
+            return Ok(());
+        }
+        self.removable_worktree(root, wt, branch)?;
+        Self::ensure_not_in_use(wt)?;
+        git::worktree_remove(root, wt, confirm_loss)
+    }
+
+    /// On Windows a folder cannot be renamed while a program holds a file in it open, and git would delete part of the
+    /// worktree before failing on that file. Renaming it aside and back first turns that into a clean refusal. (On Unix
+    /// the rename always succeeds and nothing changes.)
+    fn ensure_not_in_use(wt: &Path) -> Result<()> {
+        if !wt.exists() {
+            return Ok(());
+        }
+        let probe = wt.with_file_name(format!("{}.forge-in-use-check", wt.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        match std::fs::rename(wt, &probe) {
+            Ok(()) => std::fs::rename(&probe, wt).map_err(|e| ForgeError::Other(format!("FORGE moved {} to {} to check it was not in use and could not move it back: {e}", wt.display(), probe.display()))),
+            Err(e) => Err(ForgeError::InvalidState(format!(
+                "files in {} are in use by another program (an editor, a terminal, an antivirus scan): {e}. Close it and try again; nothing was deleted.",
+                wt.display()
+            ))),
+        }
     }
 }
 

@@ -196,6 +196,9 @@ jobs:
             mv "apps/desktop/src-tauri/sbom-cargo-$target.cdx.json" sbom/
           done
           ls -l sbom
+      - name: Third-party notices (what the Windows installer ships; licences outside the allow-list are listed first)
+        run: node tools/package/notices.mjs --target x86_64-pc-windows-msvc --out sbom/THIRD_PARTY_NOTICES.txt --summary sbom/notices-summary.json
+
       - name: Upload SBOMs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

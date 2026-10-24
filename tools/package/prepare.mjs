@@ -17,4 +17,6 @@ copyFileSync(join(repo, 'packages', 'engine', 'bundle', 'main.js'), join(staged,
 // The Node that is running this script is the one we ship (the engine bundle targets Node >= 20).
 const exe = process.platform === 'win32' ? 'node.exe' : 'node';
 copyFileSync(process.execPath, join(staged, 'node', exe));
+// Licence notices for everything above and the app itself, shipped with the installer.
+execFileSync(process.execPath, [join(repo, 'tools', 'package', 'notices.mjs'), '--out', join(staged, 'THIRD_PARTY_NOTICES.txt'), '--summary', join(staged, 'notices-summary.json')], { stdio: 'inherit' });
 console.log(`staged engine bundle and ${process.version} (${(statSync(join(staged, 'node', exe)).size / 1048576).toFixed(0)} MiB) in ${staged}`);

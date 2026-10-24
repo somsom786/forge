@@ -340,3 +340,23 @@ fn checks_run_on_the_projects_execution_backend_and_record_it() {
     f.core.project_set_execution_backend(&f.project.id, "trusted_local").unwrap();
     assert_eq!(run_check(&f, &m.id, "steal").backend, "trusted_local");
 }
+
+/// Final review (D5): a check runner that dies without recording a result used to keep the mission's check slot ("a check
+/// is already running") and leave the run "running" until FORGE restarted.
+#[test]
+fn a_check_runner_that_dies_releases_its_slot_and_marks_the_run_unknown() {
+    let f = fixture();
+    let m = mission_in_review(&f, "make a note");
+    f.core.set_contract(&m.id, contract(false)).unwrap();
+    let run = f.core.start_check(&m.id, "exists").unwrap();
+    wait_until("finished", || f.core.store.get_run(&run.id).unwrap().state != crate::contract::RunState::Running);
+    // Simulate the runner dying on a second run: a slot is held and its run row says running.
+    let second = run_check(&f, &m.id, "exists");
+    f.core.store.c().execute("UPDATE verification_run SET state='running' WHERE id=?1", [&second.id]).unwrap();
+    lock(&f.core.checks).insert(m.id.clone(), Arc::new(AtomicBool::new(false)));
+    assert!(f.core.start_check(&m.id, "exists").unwrap_err().to_string().contains("already running"));
+    f.core.release_check_slot_as_if_the_runner_died(&m.id, &second.id);
+    assert_eq!(f.core.store.get_run(&second.id).unwrap().state, crate::contract::RunState::Error);
+    let again = run_check(&f, &m.id, "exists");
+    assert_eq!(again.state, crate::contract::RunState::Passed, "the slot is free again");
+}

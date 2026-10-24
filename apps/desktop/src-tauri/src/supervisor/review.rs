@@ -208,6 +208,9 @@ impl Core {
         let log = self.cfg.home.join("runs").join(format!("{run_id}.log"));
         let stdout = self.cfg.home.join("runs").join(format!("{run_id}.stdout"));
         std::thread::spawn(move || {
+            // Whatever happens in here (including a panic), the mission's check slot is released and the run is not left
+            // "running" for ever.
+            let mut slot = CheckSlot { core: core.clone(), mission: mission.clone(), run_id: run_id.clone(), finished: false };
             let capture = spec.adapter.as_ref().map(|_| stdout.as_path());
             // Which version produced the report is part of the evidence; probed on the same backend, briefly.
             let tool_version = spec.adapter.as_deref().and_then(crate::evidence::adapter).and_then(|a| {
@@ -235,9 +238,14 @@ impl Core {
                 Ok(done) => core.emit(UiEvent::Verification { run: done }),
                 Err(e) => core.notice("error", format!("could not record the result of check {}: {e}", spec.id)),
             }
-            lock(&core.checks).remove(&mission);
+            slot.finished = true;
         });
         Ok(run)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_check_slot_as_if_the_runner_died(self: &Arc<Self>, mission_id: &str, run_id: &str) {
+        drop(CheckSlot { core: self.clone(), mission: mission_id.into(), run_id: run_id.into(), finished: false });
     }
 
     pub fn cancel_check(&self, mission_id: &str) -> Result<()> {
@@ -435,7 +443,7 @@ Branch: {}", m.title, m.id, branch);
         } else {
             self.removable_worktree(&root, &wt, Some(&branch))
         };
-        match removable.and_then(|_| git::worktree_remove(&root, &wt, false)) {
+        match removable.and_then(|_| self.remove_mission_worktree(&root, &wt, Some(&branch), false)) {
             Ok(()) => {
                 let identical = git::run_raw(&root, &["diff", "--quiet", "HEAD", &branch]).map(|o| o.status.success()).unwrap_or(false);
                 if !squash || identical {
@@ -462,13 +470,12 @@ Branch: {}", m.title, m.id, branch);
         }
         let project = self.store.get_project(&m.project_id)?;
         let root = Path::new(&project.root_path);
-        let safety = self.worktree_safety(mission_id)?;
+        let safety = self.removal_safety(mission_id)?;
         if (safety.dirty_files > 0 || safety.unmerged_commits > 0 || safety.ignored_entries > 0) && !confirm_loss {
             return Err(ForgeError::InvalidState(super::loss_message("cleaning up", &safety, m.branch.as_deref())));
         }
         if let Some(wt) = &m.worktree_path {
-            self.removable_worktree(root, Path::new(wt), m.branch.as_deref())?;
-            git::worktree_remove(root, Path::new(wt), confirm_loss)?;
+            self.remove_mission_worktree(root, Path::new(wt), m.branch.as_deref(), confirm_loss)?;
         }
         if let Some(b) = &m.branch {
             if let Err(e) = git::delete_branch(root, b, safety.unmerged_commits > 0) {
@@ -516,5 +523,26 @@ Branch: {}", m.title, m.id, branch);
         self.store.audit("user", "proofpack.generate", Some(mission_id), &json!({"sha256": content_sha}));
         self.emit(UiEvent::ProofPack { mission_id: mission_id.to_string() });
         Ok(row)
+    }
+}
+
+/// Releases a mission's check slot when the runner thread ends, however it ends. A runner that did not record a result
+/// (it panicked) leaves the run marked as an error instead of "running".
+struct CheckSlot {
+    core: Arc<Core>,
+    mission: String,
+    run_id: String,
+    finished: bool,
+}
+
+impl Drop for CheckSlot {
+    fn drop(&mut self) {
+        if !self.finished {
+            let msg = "The check runner stopped unexpectedly; this result is unknown. Run the check again.";
+            if let Ok(done) = self.core.store.finish_run(&self.run_id, RunState::Error, None, 0, "", false, msg, false, None) {
+                self.core.emit(UiEvent::Verification { run: done });
+            }
+        }
+        lock(&self.core.checks).remove(&self.mission);
     }
 }
