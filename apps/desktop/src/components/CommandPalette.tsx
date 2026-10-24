@@ -1,5 +1,5 @@
 import { Command } from 'cmdk';
-import { Wrench, BookOpen, FolderGit2, FolderPlus, LayoutDashboard, ListChecks, Plus, Settings, Target } from 'lucide-react';
+import { Wrench, Bot, BookOpen, FlaskConical, FolderGit2, FolderPlus, LayoutDashboard, ListChecks, Plus, Settings, Target } from 'lucide-react';
 import { addProjectViaDialog } from '../lib/actions';
 import { missionLabel } from '../lib/format';
 import { useStore } from '../lib/store';
@@ -46,22 +46,28 @@ export function CommandPalette() {
           </Command.Item>
         </Command.Group>
         <Command.Group heading="Navigate" className="text-[11px] uppercase tracking-wide text-faint [&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:py-1.5">
-          <Command.Item className={item} value="go command center inbox" onSelect={run(() => navigate({ name: 'center' }))}>
+          <Command.Item className={item} value="go to command center inbox" onSelect={run(() => navigate({ name: 'center' }))}>
             <LayoutDashboard className="size-4" aria-hidden /> Command Center
           </Command.Item>
-          <Command.Item className={item} value="go projects" onSelect={run(() => navigate({ name: 'projects' }))}>
+          <Command.Item className={item} value="go to projects" onSelect={run(() => navigate({ name: 'projects' }))}>
             <FolderGit2 className="size-4" aria-hidden /> Projects
           </Command.Item>
-          <Command.Item className={item} value="go missions" onSelect={run(() => navigate({ name: 'missions' }))}>
+          <Command.Item className={item} value="go to missions" onSelect={run(() => navigate({ name: 'missions' }))}>
             <ListChecks className="size-4" aria-hidden /> Missions
           </Command.Item>
-          <Command.Item className={item} value="go knowledge memory" onSelect={run(() => navigate({ name: 'knowledge' }))}>
+          <Command.Item className={item} value="go to knowledge memory" onSelect={run(() => navigate({ name: 'knowledge' }))}>
             <BookOpen className="size-4" aria-hidden /> Go to Knowledge
           </Command.Item>
-          <Command.Item className={item} value="go harness studio" onSelect={run(() => navigate({ name: 'harness' }))}>
+          <Command.Item className={item} value="go to harness studio" onSelect={run(() => navigate({ name: 'harness' }))}>
             <Wrench className="size-4" aria-hidden /> Harness Studio
           </Command.Item>
-          <Command.Item className={item} value="go settings" onSelect={run(() => navigate({ name: 'settings' }))}>
+          <Command.Item className={item} value="go to agents providers usage sessions" onSelect={run(() => navigate({ name: 'agents' }))}>
+            <Bot className="size-4" aria-hidden /> Agents
+          </Command.Item>
+          <Command.Item className={item} value="go to experiments benchmark compare" onSelect={run(() => navigate({ name: 'experiments' }))}>
+            <FlaskConical className="size-4" aria-hidden /> Experiments
+          </Command.Item>
+          <Command.Item className={item} value="go to settings" onSelect={run(() => navigate({ name: 'settings' }))}>
             <Settings className="size-4" aria-hidden /> Settings
           </Command.Item>
         </Command.Group>

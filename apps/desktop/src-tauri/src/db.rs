@@ -4,7 +4,7 @@ use crate::error::Result;
 use rusqlite::Connection;
 use std::path::Path;
 
-const MIGRATIONS: &[&str] = &[
+pub(crate) const MIGRATIONS: &[&str] = &[
     // v1 — core orchestration
     r#"
     CREATE TABLE project (
@@ -305,6 +305,127 @@ const MIGRATIONS: &[&str] = &[
     CREATE UNIQUE INDEX harness_rollback_once ON harness_change(rolls_back_id)
         WHERE rolls_back_id IS NOT NULL AND state IN ('started', 'applied');
     "#,
+    // v7 - experiments (Phase 6): a baseline and variants at exact commits, one command measured N times per revision
+    r#"
+    CREATE TABLE experiment (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES project(id),
+        name TEXT NOT NULL,
+        objective TEXT,
+        command TEXT NOT NULL,
+        correctness_command TEXT,
+        metric_json TEXT NOT NULL,
+        repetitions INTEGER NOT NULL,
+        warmup INTEGER NOT NULL,
+        timeout_secs INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        env_json TEXT,
+        report_json TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT
+    );
+    CREATE INDEX experiment_project ON experiment(project_id, created_at DESC);
+    CREATE TABLE experiment_variant (
+        id TEXT PRIMARY KEY,
+        experiment_id TEXT NOT NULL REFERENCES experiment(id),
+        position INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        is_baseline INTEGER NOT NULL,
+        git_ref TEXT NOT NULL,
+        commit_sha TEXT NOT NULL,
+        UNIQUE (experiment_id, position),
+        UNIQUE (experiment_id, label)
+    );
+    CREATE TABLE experiment_result (
+        id TEXT PRIMARY KEY,
+        experiment_id TEXT NOT NULL REFERENCES experiment(id),
+        variant_id TEXT NOT NULL REFERENCES experiment_variant(id),
+        attempt INTEGER NOT NULL,
+        phase TEXT NOT NULL,
+        iteration INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        exit_code INTEGER,
+        duration_ms INTEGER NOT NULL,
+        metric_value REAL,
+        worktree_changed INTEGER NOT NULL,
+        output_tail TEXT NOT NULL,
+        log_path TEXT,
+        started_at TEXT NOT NULL
+    );
+    CREATE INDEX experiment_result_attempt ON experiment_result(experiment_id, attempt, variant_id);
+    "#,
+    // v8 - execution backends: where a project's checks and experiments run, and where each run actually ran.
+    // Existing projects keep running exactly as before ('trusted_local'); nothing is silently re-routed.
+    r#"
+    ALTER TABLE project ADD COLUMN execution_backend TEXT NOT NULL DEFAULT 'trusted_local';
+    ALTER TABLE verification_run ADD COLUMN backend TEXT NOT NULL DEFAULT 'trusted_local';
+    ALTER TABLE experiment_result ADD COLUMN backend TEXT NOT NULL DEFAULT 'trusted_local';
+    "#,
+    // v9 - approval binding: what exactly a human approves (digest of mission, session, provider, tool, canonical input,
+    // worktree, permission profile, policy revision, where it executes) and until when. Older rows keep NULLs: they belong
+    // to sessions that have ended and can no longer be decided.
+    r#"
+    ALTER TABLE approval_request ADD COLUMN binding_sha256 TEXT;
+    ALTER TABLE approval_request ADD COLUMN policy_rev TEXT;
+    ALTER TABLE approval_request ADD COLUMN executes_on TEXT;
+    ALTER TABLE approval_request ADD COLUMN expires_at TEXT;
+    "#,
+    // v10 - MCP authorization: the exact server definitions a user allowed for a project's missions.
+    r#"
+    CREATE TABLE mcp_authorization (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES project(id),
+        name TEXT NOT NULL,
+        definition_json TEXT NOT NULL,
+        definition_sha256 TEXT NOT NULL,
+        tool_allowlist_json TEXT NOT NULL DEFAULT '[]',
+        authorized_at TEXT NOT NULL,
+        revoked_at TEXT
+    );
+    CREATE UNIQUE INDEX mcp_authorization_active ON mcp_authorization(project_id, name) WHERE revoked_at IS NULL;
+    "#,
+    // v11 - ACP agents the user registered (command pinned to an absolute path).
+    r#"
+    CREATE TABLE acp_agent (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        command TEXT NOT NULL,
+        args_json TEXT NOT NULL DEFAULT '[]',
+        added_at TEXT NOT NULL,
+        removed_at TEXT
+    );
+    CREATE UNIQUE INDEX acp_agent_active ON acp_agent(name) WHERE removed_at IS NULL;
+    "#,
+    // v12 - structured evidence from verification adapters (crate::evidence), JSON; NULL for plain checks.
+    r#"
+    ALTER TABLE verification_run ADD COLUMN evidence_json TEXT;
+    "#,
+    // v13 - a durable record of each merge FORGE starts, written before git runs, so a crash between git and the database
+    // can be reconciled from the real repository (and squash merges know which branch commit they contained).
+    r#"
+    CREATE TABLE mission_merge (
+        mission_id TEXT PRIMARY KEY REFERENCES mission(id),
+        target_oid TEXT NOT NULL,
+        branch_oid TEXT NOT NULL,
+        predicted_tree TEXT NOT NULL,
+        squash INTEGER NOT NULL,
+        message TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        commit_oid TEXT,
+        finished_at TEXT
+    );
+    "#,
+    // v14 - where a project's agent sessions run (trusted_local = on the host, as before).
+    r#"
+    ALTER TABLE project ADD COLUMN agent_backend TEXT NOT NULL DEFAULT 'trusted_local';
+    "#,
+    // v15 - where each agent session ran. Sessions recorded before this could only run on the host.
+    r#"
+    ALTER TABLE agent_session ADD COLUMN executes_on TEXT NOT NULL DEFAULT 'agent_host';
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {
@@ -334,6 +455,14 @@ fn configure(conn: &Connection) -> Result<()> {
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    // A newer FORGE wrote this database: this build does not know what its newer columns mean (for example that a
+    // project's agents must run isolated) and would silently ignore them. Refuse instead of running on it.
+    if current as usize > MIGRATIONS.len() {
+        return Err(crate::error::ForgeError::InvalidState(format!(
+            "this FORGE data folder was written by a newer version of FORGE (database version {current}, this build knows {}); install that version or newer",
+            MIGRATIONS.len()
+        )));
+    }
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
         let tx = conn.unchecked_transaction()?;
         tx.execute_batch(sql)?;
@@ -353,6 +482,61 @@ mod tests {
         migrate(&c).unwrap();
         let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v as usize, MIGRATIONS.len());
+    }
+
+    #[test]
+    fn a_database_from_a_newer_forge_is_refused_not_silently_misread() {
+        let c = open_in_memory().unwrap();
+        c.pragma_update(None, "user_version", (MIGRATIONS.len() + 1) as i64).unwrap();
+        assert!(migrate(&c).unwrap_err().to_string().contains("newer version of FORGE"));
+    }
+
+    #[test]
+    fn migrations_apply_from_scratch_and_forward_from_every_earlier_version() {
+        let tables = |c: &Connection| -> Vec<String> {
+            let mut s = c.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").unwrap();
+            s.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<Vec<String>>>().unwrap()
+        };
+        let fresh = open_in_memory().unwrap();
+        let want = tables(&fresh);
+        for t in ["experiment", "experiment_variant", "experiment_result"] {
+            assert!(want.iter().any(|x| x == t), "{t} missing from a fresh database: {want:?}");
+        }
+        // A database created by any earlier release (user_version k) upgrades to exactly the same schema, keeping its data.
+        for k in 0..MIGRATIONS.len() {
+            let c = Connection::open_in_memory().unwrap();
+            configure(&c).unwrap();
+            for (i, sql) in MIGRATIONS.iter().enumerate().take(k) {
+                c.execute_batch(sql).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            if k >= 1 {
+                c.execute("INSERT INTO project(id, name, root_path, default_branch, created_at) VALUES ('p','p','/p','main','t')", []).unwrap();
+            }
+            migrate(&c).unwrap();
+            assert_eq!(tables(&c), want, "upgrading from v{k}");
+            let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+            assert_eq!(v as usize, MIGRATIONS.len());
+            if k >= 1 {
+                let n: i64 = c.query_row("SELECT count(*) FROM project", [], |r| r.get(0)).unwrap();
+                assert_eq!(n, 1, "data survives the upgrade from v{k}");
+            }
+        }
+        // Columns match between a fresh and an upgraded database.
+        let cols = |c: &Connection, t: &str| -> Vec<String> {
+            let mut s = c.prepare(&format!("PRAGMA table_info({t})")).unwrap();
+            s.query_map([], |r| r.get::<_, String>(1)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        let up = Connection::open_in_memory().unwrap();
+        configure(&up).unwrap();
+        for (i, sql) in MIGRATIONS.iter().enumerate().take(6) {
+            up.execute_batch(sql).unwrap();
+            up.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+        }
+        migrate(&up).unwrap();
+        for t in ["experiment", "experiment_variant", "experiment_result"] {
+            assert_eq!(cols(&up, t), cols(&fresh, t), "{t}");
+        }
     }
 
     #[test]

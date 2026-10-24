@@ -5,10 +5,11 @@ import { errMsg } from '../lib/format';
 import { groupInventory } from '../lib/harness';
 import { shortHash } from '../lib/knowledge';
 import { useStore } from '../lib/store';
-import type { DoctorFinding, HarnessInventory, HarnessItem } from '../lib/types';
+import type { DoctorFinding, HarnessInventory, HarnessItem, McpAuthorizationStatus } from '../lib/types';
 import { FileEditor } from '../components/harness/FileEditor';
 import { HistoryPanel } from '../components/harness/HistoryPanel';
 import { HooksTab } from '../components/harness/HooksTab';
+import { McpServerCard } from '../components/harness/McpServerCard';
 import { NewFileDialog } from '../components/harness/NewFileDialog';
 import { SplitLayout } from '../components/Splitter';
 import { Badge, Callout, EmptyState, PageHeader } from '../components/ui';
@@ -125,7 +126,7 @@ export function HarnessStudio() {
             )}
             {groups.map((g) => (
               <section key={g.kind} aria-label={g.label}>
-                <h3 className="sticky top-0 z-[1] m-0 border-b border-line bg-panel px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted">{g.label} ({g.items.length})</h3>
+                <h2 className="sticky top-0 z-[1] m-0 border-b border-line bg-panel px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted">{g.label} ({g.items.length})</h2>
                 {g.items.map((it) => (
                   <button key={it.id} onClick={() => select(it.id)} aria-current={selected === it.id} className={`block w-full border-b border-line px-3 py-1.5 text-left ${selected === it.id ? 'bg-accent-dim' : 'hover:bg-hover'}`}>
                     <div className="flex items-center gap-1.5">
@@ -168,6 +169,14 @@ export function HarnessStudio() {
 function Detail({ projectId, item, inv, tab, setTab, reload }: { projectId: string; item: HarnessItem; inv: HarnessInventory; tab: DetailTab; setTab: (t: DetailTab) => void; reload: () => void }) {
   const tabs: { v: DetailTab; label: string }[] = [{ v: 'file', label: 'File' }, ...(item.kind === 'settings' ? [{ v: 'hooks' as const, label: 'Hooks' }] : []), { v: 'history', label: 'History' }];
   const servers = inv.mcpServers.filter((s) => s.sourceItem === item.id);
+  const hasProjectServers = servers.some((s) => s.scope === 'project');
+  const [auths, setAuths] = useState<McpAuthorizationStatus[]>([]);
+  useEffect(() => {
+    if (!hasProjectServers) return;
+    let live = true;
+    api.mcpAuthorizations(projectId).then((a) => { if (live) setAuths(a); }).catch(() => { if (live) setAuths([]); });
+    return () => { live = false; };
+  }, [projectId, hasProjectServers, inv]);
   const editable = item.editable && item.rel !== null;
   const active = tabs.some((t) => t.v === tab) ? tab : 'file';
   return (
@@ -188,11 +197,7 @@ function Detail({ projectId, item, inv, tab, setTab, reload }: { projectId: stri
         <section aria-label="MCP servers">
           <h3 className="m-0 mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">MCP servers</h3>
           <ul className="m-0 list-none space-y-1 p-0">{servers.map((s) => (
-            <li key={s.name} className="rounded border border-line p-2 text-[12px]">
-              <span className="font-medium">{s.name}</span> <Badge>{s.transport}</Badge>
-              <div className="mono break-all text-muted">{s.command ?? s.url ?? ''}</div>
-              <div className="text-faint">runs in FORGE missions: {s.runsInForgeMissions ? 'yes' : 'no'}</div>
-            </li>
+            <McpServerCard key={s.name} projectId={projectId} server={s} status={s.scope === 'project' ? auths.find((a) => a.authorization.name === s.name) : undefined} onChanged={reload} />
           ))}</ul>
         </section>
       )}

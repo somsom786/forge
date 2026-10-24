@@ -58,6 +58,11 @@ export function sanitizedEnv(
       env[k] = local.model;
     }
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
+    // A configured HTTP(S) proxy must not swallow loopback traffic: the local endpoint is on this machine.
+    for (const k of ['NO_PROXY', 'no_proxy']) {
+      const cur = (env[k] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+      env[k] = [...new Set([...cur, '127.0.0.1', 'localhost', '::1'])].join(',');
+    }
   }
   return env;
 }
@@ -104,6 +109,8 @@ export function buildQueryOptions(
     // reproducible and a user's global allow-rules / bypass defaults cannot widen what FORGE has approved.
     settingSources: ['project'],
     ...LOCKDOWN,
+    // Only what the user authorized (stored definitions from the core); strictMcpConfig stays on so .mcp.json is ignored.
+    mcpServers: { ...(s.mcpServers ?? {}) },
     includePartialMessages: true,
     persistSession: true,
     executable: 'node',

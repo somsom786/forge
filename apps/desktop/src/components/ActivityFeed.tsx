@@ -35,7 +35,7 @@ function RichText({ text }: { text: string }) {
         return (
           <div key={i} className="my-1.5 overflow-hidden rounded-md border border-line bg-bg">
             {lang && <div className="border-b border-line px-2 py-0.5 text-[11px] text-faint">{lang}</div>}
-            <pre className="overflow-x-auto p-2 text-[12px] leading-[1.5]">{code.replace(/\n$/, '')}</pre>
+            <pre className="overflow-x-auto p-2 text-[12px] leading-[1.5]" tabIndex={0} aria-label="Code">{code.replace(/\n$/, '')}</pre>
           </div>
         );
       })}
@@ -245,6 +245,7 @@ function EventRow({ ev, approvals, onFocusApprovals, onSave }: { ev: ActivityEve
                 </Badge>
               )}
               {chip.kind === 'scripted' && <Badge tone="idle">Scripted test agent · no provider billing</Badge>}
+              {chip.kind === 'agent' && <Badge tone="idle" title="FORGE removed API keys from its environment; how it bills depends on how you signed it in">ACP agent · its own sign-in</Badge>}
               {chip.kind === 'unreported' && <span className="text-muted">credential source not reported</span>}
             </div>
             {chip.kind === 'api-warning' && (

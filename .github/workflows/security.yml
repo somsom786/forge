@@ -1,0 +1,208 @@
+# Supply-chain and secret checks. Each check is its own job so one result never hides another.
+#
+# Fail the build:  npm audit of production dependencies (high/critical), cargo-audit vulnerabilities, cargo-deny licences
+#                  and sources, gitleaks secrets (full git history).
+# Informational:   npm audit including dev dependencies, cargo-audit warnings (unmaintained/unsound), osv-scanner.
+# Artifacts:       CycloneDX SBOMs for npm (production dependencies) and Cargo (Windows and Linux targets).
+#
+# Tools are pinned: cargo tools by exact version with --locked; downloaded binaries by version and SHA-256 (taken from the
+# release's own checksums file). Every action is pinned to a full commit SHA. No secrets are used by any job.
+name: Security
+
+on:
+  push:
+    branches: [main, 'cloud/**']
+  pull_request:
+  schedule:
+    - cron: '17 5 * * 1' # Mondays: new advisories show up without a push
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_AUDIT_VERSION: 0.22.2
+  CARGO_DENY_VERSION: 0.20.2
+  CARGO_CYCLONEDX_VERSION: 0.5.9
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb # gitleaks_8.30.1_linux_x64.tar.gz
+  OSV_SCANNER_VERSION: 2.7.0
+  OSV_SCANNER_SHA256: 160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b # osv-scanner_linux_amd64
+
+jobs:
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Production dependencies, high or critical (fails the build)
+        run: npm audit --omit=dev --audit-level=high
+      - name: All dependencies including dev (informational)
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
+  cargo-audit:
+    name: cargo audit (RustSec advisories)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-23
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: apps/desktop/src-tauri
+          cache-targets: false
+          key: cargo-audit-${{ env.CARGO_AUDIT_VERSION }}
+      - name: Install cargo-audit (pinned)
+        run: cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION"
+      - name: Vulnerabilities fail the build; unmaintained/unsound warnings are printed only
+        run: cargo audit --file apps/desktop/src-tauri/Cargo.lock
+
+  cargo-deny:
+    name: cargo deny (licences, sources)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-23
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: apps/desktop/src-tauri
+          cache-targets: false
+          key: cargo-deny-${{ env.CARGO_DENY_VERSION }}
+      - name: Install cargo-deny (pinned)
+        run: cargo install cargo-deny --locked --version "$CARGO_DENY_VERSION"
+      - name: Licences and sources (config apps/desktop/src-tauri/deny.toml)
+        working-directory: apps/desktop/src-tauri
+        run: |
+          # Human-readable report first (its exit code is decided below).
+          cargo deny --locked check licenses sources || true
+          cargo deny --locked --format json check licenses sources 2> "$RUNNER_TEMP/deny.jsonl" || true
+          # FORGE itself has no licence yet (docs/BASELINE.md section 5) and its manifest has no `publish = false`, so
+          # cargo-deny reports the root crate `forge-desktop` as unlicensed. Exactly that finding is accepted; any other
+          # error, or output without a summary (cargo-deny did not run), fails. Remove this once FORGE has a licence.
+          python3 - "$RUNNER_TEMP/deny.jsonl" <<'EOF'
+          import json, sys
+          errors, summary = [], False
+          for line in open(sys.argv[1], encoding="utf-8"):
+              line = line.strip()
+              if not line.startswith("{"):
+                  continue
+              d = json.loads(line)
+              if d.get("type") == "summary":
+                  summary = True
+              if d.get("type") != "diagnostic" or d["fields"].get("severity") != "error":
+                  continue
+              f = d["fields"]
+              krates = [g.get("Krate", {}).get("name") for g in f.get("graphs", [])]
+              if f.get("code") == "unlicensed" and krates == ["forge-desktop"]:
+                  print("accepted: " + f.get("message", "") + " (FORGE has no licence yet)")
+                  continue
+              errors.append(f"{f.get('code')}: {f.get('message')} {krates}")
+          if not summary:
+              errors.append("no summary in cargo-deny output (did it run?)")
+          for e in errors:
+              print("::error::cargo-deny " + e)
+          sys.exit(1 if errors else 0)
+          EOF
+
+  gitleaks:
+    name: gitleaks (secrets in the full git history)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Download gitleaks (pinned version, SHA-256 verified)
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$dir"
+          curl -sSfL -o "$dir/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $dir/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf "$dir/gitleaks.tar.gz" -C "$dir" gitleaks
+          "$dir/gitleaks" version
+      - name: Scan (findings fail the build; secrets are redacted in the log)
+        run: |
+          "$RUNNER_TEMP/gitleaks/gitleaks" git --config .gitleaks.toml --redact --verbose --no-banner --exit-code 1 .
+
+  osv-scanner:
+    name: osv-scanner (informational)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Download osv-scanner (pinned version, SHA-256 verified)
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/osv-scanner"
+          mkdir -p "$dir"
+          curl -sSfL -o "$dir/osv-scanner" \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  $dir/osv-scanner" | sha256sum -c -
+          chmod +x "$dir/osv-scanner"
+          "$dir/osv-scanner" --version
+      - name: Scan package-lock.json and Cargo.lock (overlaps npm audit / cargo audit, so it does not fail the build)
+        continue-on-error: true
+        run: |
+          "$RUNNER_TEMP/osv-scanner/osv-scanner" scan source \
+            --lockfile package-lock.json \
+            --lockfile apps/desktop/src-tauri/Cargo.lock
+
+  sbom:
+    name: SBOM (CycloneDX, npm + Cargo)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-23
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: apps/desktop/src-tauri
+          cache-targets: false
+          key: cargo-cyclonedx-${{ env.CARGO_CYCLONEDX_VERSION }}
+      - name: npm SBOM (production dependencies, from package-lock.json)
+        # --omit optional: the lockfile alone cannot resolve the bundled dependencies of optional platform packages
+        # (e.g. @tailwindcss/oxide-wasm32-wasi), which makes npm sbom fail; those are build-time platform binaries.
+        run: |
+          mkdir -p sbom
+          npm sbom --sbom-format cyclonedx --omit dev --omit optional --package-lock-only > sbom/sbom-npm.cdx.json
+      - name: Install cargo-cyclonedx (pinned)
+        run: cargo install cargo-cyclonedx --locked --version "$CARGO_CYCLONEDX_VERSION"
+      - name: Cargo SBOMs (Windows = the product; Linux = CI)
+        run: |
+          for target in x86_64-pc-windows-msvc x86_64-unknown-linux-gnu; do
+            cargo cyclonedx --manifest-path apps/desktop/src-tauri/Cargo.toml --format json --spec-version 1.5 \
+              --target "$target" --override-filename "sbom-cargo-$target.cdx"
+            mv "apps/desktop/src-tauri/sbom-cargo-$target.cdx.json" sbom/
+          done
+          ls -l sbom
+      - name: Third-party notices (what the Windows installer ships; licences outside the allow-list are listed first)
+        run: node tools/package/notices.mjs --target x86_64-pc-windows-msvc --out sbom/THIRD_PARTY_NOTICES.txt --summary sbom/notices-summary.json
+
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom/
+          retention-days: 30
+          if-no-files-found: error

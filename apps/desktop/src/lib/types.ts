@@ -6,7 +6,7 @@ export type MissionState =
   | 'approved' | 'merged' | 'rejected' | 'failed' | 'cancelled' | 'interrupted';
 
 export type PermissionProfile = 'default' | 'accept_edits';
-export type ProviderId = 'claude' | 'claude-local' | 'codex' | 'fake';
+export type ProviderId = 'claude' | 'claude-local' | 'codex' | 'acp' | 'fake';
 export type Risk = 'low' | 'medium' | 'high';
 
 export interface Project {
@@ -15,6 +15,10 @@ export interface Project {
   rootPath: string;
   defaultBranch: string;
   createdAt: string;
+  /** Where this project's checks and experiments run. */
+  executionBackend: ExecutionBackendId;
+  /** Where this project's agents (and every command they run) execute. */
+  agentBackend: ExecutionBackendId;
 }
 
 export interface Mission {
@@ -106,6 +110,12 @@ export interface Approval {
   decisionNote: string | null;
   createdAt: string;
   decidedAt: string | null;
+  /** Digest of everything this decision is about; sent back when deciding so a different request can never be approved. */
+  bindingSha256: string | null;
+  policyRev: string | null;
+  executesOn: string | null;
+  /** After this the request can no longer be approved (the agent is told it was denied). */
+  expiresAt: string | null;
 }
 
 export interface MissionDetail {
@@ -142,7 +152,13 @@ export interface RepoStatus {
 }
 
 export interface ChangedFile { path: string; added: number | null; removed: number | null; binary: boolean }
-export interface WorktreeSafety { exists: boolean; dirtyFiles: number; unmergedCommits: number }
+export interface WorktreeSafety {
+  exists: boolean;
+  dirtyFiles: number;
+  unmergedCommits: number;
+  /** Ignored files/folders (build output, a local .env) that removing the worktree would delete. */
+  ignoredEntries?: number;
+}
 export interface MissionChanges { files: ChangedFile[]; safety: WorktreeSafety }
 export interface MissionDiff { diff: string; truncated: boolean }
 
@@ -220,6 +236,42 @@ export interface CheckSpec {
   timeoutSecs: number;
   /** A required check not passing on the current changes needs a recorded override reason to approve. */
   required: boolean;
+  /** Verification adapter that reads the tool's JSON report from stdout into findings (see `verificationAdapters`). */
+  adapter?: string | null;
+}
+
+export type EvidenceOutcome = 'passed' | 'findings' | 'tool_missing' | 'tool_error' | 'incomplete';
+export type FindingSeverity = 'info' | 'low' | 'medium' | 'high' | 'critical' | 'unknown';
+
+export interface Finding {
+  ruleId: string;
+  severity: FindingSeverity;
+  title: string;
+  location: string | null;
+  package: string | null;
+  fixedIn: string | null;
+  blocking: boolean;
+}
+
+/** Structured evidence from a verification adapter. Secret values are never part of it. */
+export interface Evidence {
+  adapter: string;
+  outcome: EvidenceOutcome;
+  summary: string;
+  totalFindings: number;
+  blockingFindings: number;
+  bySeverity: Record<string, number>;
+  findings: Finding[];
+  findingsTruncated: boolean;
+  /** First line of the tool's version output, probed on the same backend just before the run. */
+  toolVersion?: string | null;
+}
+
+export interface VerificationAdapterInfo {
+  id: string;
+  label: string;
+  command: string;
+  kind: CheckKind;
 }
 
 export interface Criterion {
@@ -266,6 +318,9 @@ export interface VerificationRun {
   outputTail: string;
   outputTruncated: boolean;
   logPath: string | null;
+  /** The execution backend the command ran on. */
+  backend: ExecutionBackendId;
+  evidence?: Evidence | null;
 }
 
 /** Derived from evidence only; an agent claiming "done" changes nothing. */
@@ -509,6 +564,8 @@ export interface ContextPackage {
   text: string;
   sha256: string;
   pathHints: string[];
+  /** "Relevant code" pointers; their labelled block is part of `text`, after the knowledge block. */
+  code: RelevantCode;
 }
 /** The package a mission actually received (persisted at its first turn). */
 export interface ContextPackageRow {
@@ -516,7 +573,8 @@ export interface ContextPackageRow {
   missionId: string;
   createdAt: string;
   query: string;
-  params: { budgetChars?: number; pathHints?: string[] };
+  /** `relevantCode` is absent in packages recorded before code intelligence existed. */
+  params: { budgetChars?: number; pathHints?: string[]; relevantCode?: RelevantCode };
   items: ContextItem[];
   omitted: ContextOmitted[];
   injectedText: string;
@@ -571,6 +629,54 @@ export interface McpServerDef {
   sourceItem: string;
   scope: string;
   runsInForgeMissions: boolean;
+}
+
+/** An Agent Client Protocol agent the user registered. Missions name it in their `model` field. */
+export interface AcpAgent {
+  id: string;
+  name: string;
+  /** Absolute path pinned at registration. */
+  command: string;
+  args: string[];
+  addedAt: string;
+  removedAt: string | null;
+}
+
+/** A server definition as FORGE pins it: env *names* only, never values. */
+export interface McpDefinition {
+  name: string;
+  transport: 'stdio' | 'http' | string;
+  command: string | null;
+  args: string[];
+  url: string | null;
+  envNames: string[];
+}
+
+export interface McpAuthorization {
+  id: string;
+  projectId: string;
+  name: string;
+  definition: McpDefinition;
+  definitionSha256: string;
+  /** Empty: every tool of the server may be asked for. */
+  toolAllowlist: string[];
+  authorizedAt: string;
+  revokedAt: string | null;
+}
+
+export interface McpPreview {
+  definition: McpDefinition;
+  /** Echo back to authorize: proves the user saw this exact definition. */
+  definitionSha256: string;
+  summary: string[];
+  authorized: McpAuthorization | null;
+}
+
+export interface McpAuthorizationStatus {
+  authorization: McpAuthorization;
+  /** `.mcp.json` now differs (missions still get the authorized definition). */
+  changedSinceAuthorization: boolean;
+  summary: string[];
 }
 
 export interface HarnessInventory {
@@ -638,6 +744,26 @@ export interface HarnessChange {
   rolledBackBy: string | null;
 }
 
+/** Disk used by a project's Harness Studio backups. Protected backups (unresolved changes, the newest `keepPerFile` undo steps
+ *  per file, and any change that can be rolled back right now) are never pruned. */
+export interface HarnessBackupUsage {
+  keepPerFile: number;
+  files: number;
+  bytes: number;
+  protectedFiles: number;
+  protectedBytes: number;
+  prunableFiles: number;
+  prunableBytes: number;
+  /** Backup files no journal entry refers to (an interrupted save). */
+  orphanFiles: number;
+}
+
+export interface HarnessPruneReport {
+  removedFiles: number;
+  removedBytes: number;
+  after: HarnessBackupUsage;
+}
+
 export interface HarnessApplyArgs {
   projectId: string;
   rel: string;
@@ -692,3 +818,328 @@ export interface HookDryRun {
   /** Environment variables withheld because their names look like secrets. */
   scrubbedEnv: string[];
 }
+
+// ---- Experiments (Phase 6; backend only, no screen yet) ----
+
+export type ExperimentMetric =
+  /** Wall-clock duration of the command (ms); lower is better. */
+  | { kind: 'duration' }
+  /** A number the command prints as `FORGE_METRIC <name>=<number>` (the last such line counts). */
+  | { kind: 'output'; name: string; direction: 'lower' | 'higher' };
+
+export interface NewExperiment {
+  name: string;
+  objective?: string | null;
+  command: string;
+  /** Must exit 0 in a revision's worktree before its measurements count. */
+  correctnessCommand?: string | null;
+  metric: ExperimentMetric;
+  repetitions: number;
+  warmup?: number;
+  timeoutSecs: number;
+  baselineRef: string;
+  /** Each variant is a ref (branch, tag, commit) or a mission whose current work FORGE snapshots when the experiment is created. */
+  variants: { label: string; gitRef: string; missionId?: string | null }[];
+}
+
+export interface ExperimentStats {
+  n: number;
+  median: number;
+  min: number;
+  max: number;
+  /** Median absolute deviation. */
+  mad: number;
+}
+
+export type ExperimentVerdict = 'baseline' | 'better' | 'worse' | 'no_clear_difference' | 'insufficient_runs' | 'invalid';
+
+export interface ExperimentVariantReport {
+  variantId: string;
+  label: string;
+  isBaseline: boolean;
+  commit: string;
+  stats: ExperimentStats | null;
+  failedRuns: number;
+  correctness: boolean | null;
+  worktreeChanged: boolean;
+  /** Relative change of the median against the baseline (-0.27 = 27 % lower). */
+  changeVsBaseline: number | null;
+  verdict: ExperimentVerdict;
+  reasons: string[];
+}
+
+export interface ExperimentReport {
+  metric: ExperimentMetric;
+  direction: 'lower' | 'higher';
+  minRunsForVerdict: number;
+  variants: ExperimentVariantReport[];
+  /** Variant id; only set when a variant beat the baseline in every measured run with enough runs on both sides. */
+  winner: string | null;
+  conclusion: 'winner' | 'no_winner' | 'inconclusive';
+  explanation: string;
+}
+
+export interface Experiment {
+  id: string;
+  projectId: string;
+  name: string;
+  objective: string | null;
+  command: string;
+  correctnessCommand: string | null;
+  metric: ExperimentMetric;
+  repetitions: number;
+  warmup: number;
+  timeoutSecs: number;
+  state: 'draft' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  attempt: number;
+  env: Record<string, unknown> | null;
+  report: ExperimentReport | null;
+  lastError: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface ExperimentVariant {
+  id: string;
+  experimentId: string;
+  position: number;
+  label: string;
+  isBaseline: boolean;
+  gitRef: string;
+  /** The exact commit measured by every attempt. */
+  commitSha: string;
+}
+
+export interface ExperimentResult {
+  id: string;
+  experimentId: string;
+  variantId: string;
+  attempt: number;
+  phase: 'correctness' | 'warmup' | 'measure';
+  iteration: number;
+  state: 'passed' | 'failed' | 'error' | 'timeout' | 'cancelled' | 'no_metric';
+  exitCode: number | null;
+  durationMs: number;
+  metricValue: number | null;
+  worktreeChanged: boolean;
+  outputTail: string;
+  logPath: string | null;
+  startedAt: string;
+  backend: ExecutionBackendId;
+}
+
+export interface ExperimentDetail {
+  experiment: Experiment;
+  variants: ExperimentVariant[];
+  /** Runs of the latest attempt. */
+  results: ExperimentResult[];
+}
+
+// ---- Conflicts between missions (Phase 5; backend only, no screen yet) ----
+
+export interface ConflictPrediction {
+  outcome: 'clean' | 'conflicts' | 'unknown';
+  conflictedFiles: string[];
+  /** Why no prediction could be made (outcome 'unknown'). */
+  error: string | null;
+}
+
+export interface MissionPairConflict {
+  a: string;
+  b: string;
+  /** Paths both missions changed (relative to their own bases). */
+  overlappingFiles: string[];
+  /** Whether landing both would conflict, predicted with `git merge-tree` on their current states. */
+  prediction: ConflictPrediction;
+}
+
+export interface MissionBaseDrift {
+  missionId: string;
+  baseRef: string;
+  baseCommit: string;
+  /** Where the base branch points now; null if it no longer exists. */
+  baseHead: string | null;
+  commitsBehind: number;
+  overlappingFiles: string[];
+  /** Merging the mission into the current base; null when the base has not moved. */
+  prediction: ConflictPrediction | null;
+}
+
+export interface ConflictReport {
+  projectId: string;
+  generatedAt: string;
+  missions: { missionId: string; title: string; state: string; baseRef: string; baseCommit: string; changedFiles: string[] }[];
+  pairs: MissionPairConflict[];
+  drift: MissionBaseDrift[];
+  skipped: { missionId: string; reason: string }[];
+}
+
+// ---- Execution backends ----
+
+export type ExecutionBackendId = 'trusted_local' | 'linux_namespaces' | 'windows_sandbox' | 'isolated_wsl';
+
+export interface BackendProperty {
+  level: 'none' | 'partial' | 'enforced';
+  detail: string;
+}
+
+export interface ExecutionBackendInfo {
+  id: ExecutionBackendId;
+  label: string;
+  implemented: boolean;
+  available: boolean;
+  unavailableReason: string | null;
+  capabilities: {
+    operatingSystems: string[];
+    filesystemIsolation: BackendProperty;
+    processIsolation: BackendProperty;
+    networkControl: BackendProperty;
+    resourceLimits: BackendProperty;
+    workspaceMapping: BackendProperty;
+    credentialExposure: BackendProperty;
+    persistentState: BackendProperty;
+    interactiveTerminal: boolean;
+    concurrentInstances: boolean;
+  };
+}
+
+// ---- Agents overview ----
+
+export interface AgentSessionRow {
+  session: AgentSession;
+  missionTitle: string;
+  projectId: string;
+}
+
+/** Provider-reported figures for sessions FORGE launched; not a bill, and nothing from sessions outside FORGE. */
+export interface ProviderUsage {
+  provider: string;
+  sessions: number;
+  live: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  turns: number;
+  costUsdEstimate: number | null;
+  sessionsWithUsage: number;
+}
+
+export interface AgentsOverview {
+  since: string;
+  days: number;
+  sessions: AgentSessionRow[];
+  usage: ProviderUsage[];
+}
+
+// ---- Code intelligence ----
+
+export type SymbolKind = 'function' | 'method' | 'struct' | 'class' | 'enum' | 'trait' | 'interface' | 'type' | 'const' | 'module';
+
+export interface CodeSymbol {
+  name: string;
+  kind: SymbolKind;
+  /** Repository-relative, '/'-separated. */
+  file: string;
+  /** 1-based, inclusive. */
+  startLine: number;
+  endLine: number;
+  /** The declaration up to its body, on one line (truncated). */
+  signature: string;
+  /** Enclosing class / impl type / trait / module; null at top level. */
+  container: string | null;
+}
+export interface SymbolHit { symbol: CodeSymbol; score: number }
+
+export interface IndexedFile {
+  path: string;
+  /** null = a language FORGE does not parse (listed, not read). */
+  language: string | null;
+  bytes: number;
+  symbols: number;
+  parseErrors: boolean;
+  /** Why a file in a supported language was not parsed. */
+  skipped: string | null;
+}
+export interface SymbolBrief { name: string; kind: SymbolKind; file: string; line: number }
+export interface DirSummary {
+  /** '' is the repository root. */
+  path: string;
+  /** Files directly in this directory. */
+  files: IndexedFile[];
+  totalFiles: number;
+  totalSymbols: number;
+  languages: Record<string, number>;
+  topSymbols: SymbolBrief[];
+}
+export interface CodeIndexSkipped { tooLarge: number; binary: number; unreadable: number; excludedDirs: number; symlinks: number; parseFailed: number; overFileLimit: number }
+export interface CodeMap {
+  head: string | null;
+  dirty: boolean;
+  builtAt: string;
+  builtMs: number;
+  filesListed: number;
+  filesParsed: number;
+  symbolCount: number;
+  languages: Record<string, number>;
+  skipped: CodeIndexSkipped;
+  /** Set when a limit stopped indexing early: the map is partial. */
+  truncated: string | null;
+  limits: { maxFileBytes: number; maxFiles: number };
+  dirs: DirSummary[];
+}
+
+export interface CodeRef {
+  name: string;
+  kind: SymbolKind;
+  file: string;
+  startLine: number;
+  endLine: number;
+  signature: string;
+  container: string | null;
+  score: number;
+  /** Why it was chosen, in plain words. */
+  reasons: string[];
+}
+/** The "Relevant code" section of a context package. */
+export interface RelevantCode {
+  items: CodeRef[];
+  omitted: number;
+  terms: string[];
+  budgetBytes: number;
+  usedBytes: number;
+  indexHead: string | null;
+  indexDirty: boolean;
+  indexTruncated: string | null;
+  /** Why there is no section (e.g. the code index was unavailable). */
+  note: string | null;
+}
+
+// ---- storage (Settings → Storage) ------------------------------------------------------------------
+
+export interface StorageUsage {
+  databaseBytes: number;
+  events: number;
+  runFiles: number;
+  runBytes: number;
+  proofFiles: number;
+  proofBytes: number;
+  experimentBytes: number;
+  worktrees: number;
+  untrackedWorktrees: string[];
+}
+
+export interface CleanupMission { id: string; title: string; state: string; updatedAt: string; events: number; files: string[]; bytes: number }
+
+export interface CleanupPlan {
+  olderThanDays: number;
+  missions: CleanupMission[];
+  orphanFiles: string[];
+  events: number;
+  files: number;
+  bytes: number;
+  token: string;
+}
+
+export interface CleanupResult { eventsDeleted: number; filesDeleted: number; bytesFreed: number; failures: string[] }

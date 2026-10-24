@@ -1,0 +1,35 @@
+# cargo-deny configuration for the FORGE Rust core (run by .github/workflows/security.yml).
+#
+#   cargo deny --locked check licenses sources        (from apps/desktop/src-tauri)
+#
+# Advisories are checked by cargo-audit in the same workflow; bans (duplicate versions) are not enforced.
+
+[graph]
+# Windows is the product platform; Linux is where CI and the Linux sandbox tests run. Platform-only dependencies of both
+# (windows-sys, win32job / gtk, webkit2gtk) are included.
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+
+[licenses]
+# Exactly the licences present in Cargo.lock for these targets (checked with cargo-deny 0.20.2 on 2026-10-23).
+# Crates offering a choice ("MIT OR Apache-2.0", "Unlicense OR MIT", "MIT OR Apache-2.0 OR LGPL-2.1-or-later", ...) are
+# accepted through MIT or Apache-2.0. See docs/OSS_ADOPTION.md for the inventory and the MPL-2.0 obligations.
+# Adding a licence here is a decision: record it in docs/OSS_ADOPTION.md.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",  # target-lexicon
+    "BSD-3-Clause",   # alloc-no-stdlib, alloc-stdlib, brotli (with MIT)
+    "MPL-2.0",        # cssparser, cssparser-macros, dtoa-short, selectors, option-ext (via Tauri/wry); file-level copyleft
+    "Unicode-3.0",    # ICU crates via url/idna
+    "Zlib",           # foldhash
+]
+confidence-threshold = 0.93
+
+# FORGE itself (forge-desktop) has no licence yet (docs/BASELINE.md section 5), so cargo-deny reports it as unlicensed.
+# The security workflow accepts exactly that one finding. Once the owner picks a licence, set `license` in Cargo.toml (or
+# `publish = false` and [licenses.private] ignore = true) and drop the exception in security.yml.
+
+[sources]
+# Only crates.io; no git dependencies or other registries.
+unknown-registry = "deny"
+unknown-git = "deny"

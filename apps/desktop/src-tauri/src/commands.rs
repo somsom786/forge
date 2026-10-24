@@ -69,6 +69,7 @@ pub async fn providers_detect(core: CoreState<'_>) -> Result<Vec<ProviderInfo>> 
             providers::detect_claude(c.cfg.claude.as_ref()),
             providers::detect_claude_local(c.cfg.claude.as_ref(), &c.cfg.ollama_url),
             providers::detect_codex(c.cfg.codex.clone()),
+            crate::acp::provider_info(&c.acp_agents()?),
         ];
         if c.cfg.allow_fake {
             v.push(ProviderInfo {
@@ -298,8 +299,9 @@ pub async fn approvals_pending(core: CoreState<'_>, mission_id: Option<String>) 
 }
 
 #[tauri::command]
-pub async fn approval_decide(core: CoreState<'_>, approval_id: String, approved: bool, note: Option<String>) -> Result<Approval> {
-    blocking(&core, move |c| c.decide_approval(&approval_id, approved, note.as_deref())).await
+pub async fn approval_decide(core: CoreState<'_>, approval_id: String, approved: bool, note: Option<String>, binding: Option<String>) -> Result<Approval> {
+    // The card the user decided on carries the binding it showed; a request that is not that one is refused.
+    blocking(&core, move |c| c.decide_approval_checked(&approval_id, approved, note.as_deref(), binding.as_deref())).await
 }
 
 // ---- Phase 2: contracts, verification, review, merge, proof ---------------------------------
@@ -509,7 +511,7 @@ pub async fn mission_memory_set(core: CoreState<'_>, mission_id: String, use_mem
 // ---- Phase 4: Harness Studio ----------------------------------------------------------------------------------
 
 use crate::harness::{doctor::Finding, edit::{FileRead, Preview}, hooks::{DryRun, HookTemplate}, inventory::Inventory, store::HarnessChange};
-use crate::supervisor::{HookSpec, RollbackPreview};
+use crate::supervisor::{BackupUsage, HookSpec, PruneReport, RollbackPreview};
 
 #[tauri::command]
 pub async fn harness_inventory(core: CoreState<'_>, project_id: String) -> Result<Inventory> {
@@ -569,6 +571,18 @@ pub async fn harness_rollback(core: CoreState<'_>, change_id: String) -> Result<
     blocking(&core, move |c| c.harness_rollback(&change_id)).await
 }
 
+/// Disk used by this project's Harness Studio backups and what pruning with `keep_per_file` undo steps would free. Read-only.
+#[tauri::command]
+pub async fn harness_backup_usage(core: CoreState<'_>, project_id: String, keep_per_file: Option<usize>) -> Result<BackupUsage> {
+    blocking(&core, move |c| c.harness_backup_usage(&project_id, keep_per_file)).await
+}
+
+/// Remove backups that are no longer needed for crash recovery, the newest undo steps, or a rollback possible right now.
+#[tauri::command]
+pub async fn harness_prune_backups(core: CoreState<'_>, project_id: String, keep_per_file: usize) -> Result<PruneReport> {
+    blocking(&core, move |c| c.harness_prune_backups(&project_id, keep_per_file)).await
+}
+
 #[tauri::command]
 pub async fn harness_mark_reviewed(core: CoreState<'_>, project_id: String, rel: String) -> Result<()> {
     blocking(&core, move |c| c.harness_mark_reviewed(&project_id, &rel)).await
@@ -608,4 +622,157 @@ pub async fn harness_hook_preview_remove(core: CoreState<'_>, project_id: String
 #[tauri::command]
 pub async fn harness_hook_dry_run(core: CoreState<'_>, project_id: String, event: String, command: String) -> Result<DryRun> {
     blocking(&core, move |c| c.harness_hook_dry_run(&project_id, &event, &command)).await
+}
+
+// ---- Phase 6: Experiments ---------------------------------------------------------------------------------------
+
+use crate::experiment::NewExperiment;
+use crate::store_experiment::Experiment;
+use crate::supervisor::ExperimentDetail;
+
+/// Define an experiment: every revision is resolved to an exact commit now. Nothing runs.
+#[tauri::command]
+pub async fn experiment_create(core: CoreState<'_>, project_id: String, spec: NewExperiment) -> Result<Experiment> {
+    blocking(&core, move |c| c.experiment_create(&project_id, spec)).await
+}
+
+#[tauri::command]
+pub async fn experiment_list(core: CoreState<'_>, project_id: String) -> Result<Vec<Experiment>> {
+    blocking(&core, move |c| c.experiment_list(&project_id)).await
+}
+
+#[tauri::command]
+pub async fn experiment_get(core: CoreState<'_>, experiment_id: String) -> Result<ExperimentDetail> {
+    blocking(&core, move |c| c.experiment_get(&experiment_id)).await
+}
+
+/// Runs the user's command against every revision (explicit user action; executes repository code). Returns when the attempt ends.
+#[tauri::command]
+pub async fn experiment_run(core: CoreState<'_>, experiment_id: String) -> Result<ExperimentDetail> {
+    blocking(&core, move |c| c.experiment_run(&experiment_id)).await
+}
+
+#[tauri::command]
+pub async fn experiment_cancel(core: CoreState<'_>, experiment_id: String) -> Result<()> {
+    blocking(&core, move |c| c.experiment_cancel(&experiment_id)).await
+}
+
+// ---- Phase 5: conflicts between missions ---------------------------------------------------------------------------
+
+use crate::supervisor::ConflictReport;
+
+/// File overlap, predicted textual conflicts and base drift across the project's active missions. Read-only.
+#[tauri::command]
+pub async fn mission_conflicts(core: CoreState<'_>, project_id: String) -> Result<ConflictReport> {
+    blocking(&core, move |c| c.mission_conflicts(&project_id)).await
+}
+
+// ---- Execution backends ------------------------------------------------------------------------------------------
+
+/// Every backend with what it enforces and whether it can run on this machine (probed, not assumed).
+#[tauri::command]
+pub async fn execution_backends(core: CoreState<'_>) -> Result<Vec<crate::execution::BackendInfo>> {
+    blocking(&core, move |c| Ok(c.execution_backends())).await
+}
+
+#[tauri::command]
+pub async fn project_set_execution_backend(core: CoreState<'_>, project_id: String, backend: String) -> Result<Project> {
+    blocking(&core, move |c| c.project_set_execution_backend(&project_id, &backend)).await
+}
+
+#[tauri::command]
+pub async fn storage_usage(core: CoreState<'_>) -> Result<crate::supervisor::storage::StorageUsage> {
+    blocking(&core, move |c| c.storage_usage()).await
+}
+
+#[tauri::command]
+pub async fn storage_cleanup_preview(core: CoreState<'_>, older_than_days: u32) -> Result<crate::supervisor::storage::CleanupPlan> {
+    blocking(&core, move |c| c.storage_cleanup_preview(older_than_days)).await
+}
+
+#[tauri::command]
+pub async fn storage_cleanup_apply(core: CoreState<'_>, older_than_days: u32, token: String) -> Result<crate::supervisor::storage::CleanupResult> {
+    blocking(&core, move |c| c.storage_cleanup_apply(older_than_days, &token)).await
+}
+
+#[tauri::command]
+pub async fn project_set_agent_backend(core: CoreState<'_>, project_id: String, backend: String) -> Result<Project> {
+    blocking(&core, move |c| c.project_set_agent_backend(&project_id, &backend)).await
+}
+
+// ---- Agents overview -------------------------------------------------------------------------------------------------
+
+use crate::supervisor::AgentsOverview;
+
+/// Recent agent sessions (and anything running), with provider-reported usage per provider. Read-only.
+#[tauri::command]
+pub async fn agents_overview(core: CoreState<'_>, days: u32) -> Result<AgentsOverview> {
+    blocking(&core, move |c| c.agents_overview(days)).await
+}
+
+// ---- MCP authorization -----------------------------------------------------------------------------------------------
+
+use crate::mcp::McpAuthorization;
+use crate::supervisor::{McpAuthorizationStatus, McpPreview};
+
+#[tauri::command]
+pub async fn mcp_preview(core: CoreState<'_>, project_id: String, name: String) -> Result<McpPreview> {
+    blocking(&core, move |c| c.mcp_preview(&project_id, &name)).await
+}
+
+#[tauri::command]
+pub async fn mcp_authorize(core: CoreState<'_>, project_id: String, name: String, definition_sha256: String, tool_allowlist: Vec<String>) -> Result<McpAuthorization> {
+    blocking(&core, move |c| c.mcp_authorize(&project_id, &name, &definition_sha256, &tool_allowlist)).await
+}
+
+#[tauri::command]
+pub async fn mcp_revoke(core: CoreState<'_>, authorization_id: String) -> Result<McpAuthorization> {
+    blocking(&core, move |c| c.mcp_revoke(&authorization_id)).await
+}
+
+#[tauri::command]
+pub async fn mcp_authorizations(core: CoreState<'_>, project_id: String) -> Result<Vec<McpAuthorizationStatus>> {
+    blocking(&core, move |c| c.mcp_authorizations(&project_id)).await
+}
+
+// ---- ACP agents ------------------------------------------------------------------------------------------------------
+
+use crate::acp::AcpAgent;
+
+#[tauri::command]
+pub async fn acp_agents(core: CoreState<'_>) -> Result<Vec<AcpAgent>> {
+    blocking(&core, |c| c.acp_agents()).await
+}
+
+/// Registers a program FORGE will start for ACP missions. Explicit user action only.
+#[tauri::command]
+pub async fn acp_agent_register(core: CoreState<'_>, name: String, command: String, args: Vec<String>) -> Result<AcpAgent> {
+    blocking(&core, move |c| c.acp_agent_register(&name, &command, &args)).await
+}
+
+#[tauri::command]
+pub async fn acp_agent_remove(core: CoreState<'_>, id: String) -> Result<AcpAgent> {
+    blocking(&core, move |c| c.acp_agent_remove(&id)).await
+}
+
+/// The verification adapters this build understands (id, label, suggested command, kind).
+#[tauri::command]
+pub fn verification_adapters() -> serde_json::Value {
+    crate::evidence::adapters_json()
+}
+
+// ---- Code intelligence -----------------------------------------------------------------------------------------------
+
+use crate::codeintel::{CodeMap, SymbolHit};
+
+/// Per-directory summary of the project's symbol index (built on demand, cached in memory per HEAD + working tree).
+#[tauri::command]
+pub async fn code_map(core: CoreState<'_>, project_id: String) -> Result<CodeMap> {
+    blocking(&core, move |c| c.code_map(&project_id)).await
+}
+
+/// Symbols by name, or every symbol of `file` when `query` is empty.
+#[tauri::command]
+pub async fn code_symbols(core: CoreState<'_>, project_id: String, query: String, file: Option<String>, limit: usize) -> Result<Vec<SymbolHit>> {
+    blocking(&core, move |c| c.code_symbols(&project_id, &query, file.as_deref(), limit)).await
 }

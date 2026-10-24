@@ -141,8 +141,8 @@ export async function openInEditor(id: string) {
   await guarded(api.openWorktreeInEditor(id), 'Could not open editor');
 }
 
-export async function decideApproval(id: string, approved: boolean, note?: string) {
-  const a = await guarded(api.approvalDecide(id, approved, note?.trim() ? note.trim() : undefined), 'Could not record decision');
+export async function decideApproval(id: string, approved: boolean, note?: string, binding?: string | null) {
+  const a = await guarded(api.approvalDecide(id, approved, note?.trim() ? note.trim() : undefined, binding), 'Could not record decision');
   if (a) st().setApprovals([a]);
   return a;
 }

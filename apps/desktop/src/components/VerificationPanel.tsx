@@ -3,9 +3,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Play, RefreshCw, Square } from 'lucide-react';
 import { api } from '../lib/api';
 import { cancelCheck, runCheck, setVerdict } from '../lib/actions';
+import { backendShort } from '../lib/execution';
+import { OUTCOME_LABEL, OUTCOME_TONE, SEVERITY_TONE, severityLine, sortFindings } from '../lib/evidence';
 import { errMsg, formatDuration } from '../lib/format';
 import { useStore } from '../lib/store';
-import type { CheckReport, CriterionReport, Mission, VerificationReport } from '../lib/types';
+import type { CheckReport, CriterionReport, Evidence, Mission, VerificationReport } from '../lib/types';
 import { statusDetail, statusLabel, statusTone, touchedInputsChip } from '../lib/verification';
 import { EvidenceGraph } from './EvidenceGraph';
 import { Badge, Callout } from './ui';
@@ -123,11 +125,13 @@ function CheckRow({ c, missionId, anyRunning, canRun }: { c: CheckReport; missio
               <Badge tone={RUN_TONE[r.state]}>{r.state}</Badge>
               {r.exitCode !== null && <span className="mono text-[11.5px] text-muted">exit {r.exitCode}</span>}
               {r.durationMs !== null && <span className="text-[11.5px] text-muted">{formatDuration(r.durationMs)}</span>}
+              <span title={`Ran on: ${r.backend}`}><Badge tone={backendShort(r.backend).tone}>{backendShort(r.backend).label}</Badge></span>
             </>
           ) : (
             <span className="text-muted">never run</span>
           )}
         </div>
+        {r?.evidence && <EvidenceView e={r.evidence} />}
         {stale && <div className="text-[11.5px] text-warn">ran against earlier changes — re-run</div>}
         {touched && <div className="mt-0.5"><span className="badge border-warn/30 bg-warn-dim text-warn" title={touched.tooltip}>{touched.text}</span></div>}
         {r?.mutated && (
@@ -268,6 +272,39 @@ function FileGroup({ title, tone, files }: { title: string; tone: 'bad' | 'warn'
     <div className={`rounded-md border px-3 py-2 ${tone === 'bad' ? 'border-bad/40 bg-bad-dim/50' : 'border-warn/40 bg-warn-dim/50'}`}>
       <div className="mb-1 font-medium">{title} ({files.length})</div>
       <ul className="m-0 list-none p-0">{files.map((f) => <li key={f} className="mono text-[12px]">{f}</li>)}</ul>
+    </div>
+  );
+}
+
+/** Findings a verification adapter read from the tool's report. */
+function EvidenceView({ e }: { e: Evidence }) {
+  const [all, setAll] = useState(false);
+  const findings = sortFindings(e.findings);
+  const shown = all ? findings : findings.slice(0, 5);
+  return (
+    <div className="mt-1.5 rounded border border-line p-2 text-[12px]">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="mono text-muted">{e.adapter}{e.toolVersion ? ` ${e.toolVersion}` : ''}</span>
+        <Badge tone={OUTCOME_TONE[e.outcome]}>{OUTCOME_LABEL[e.outcome]}</Badge>
+        {severityLine(e) && <span className="text-muted">{severityLine(e)}</span>}
+      </div>
+      <div className="text-muted">{e.summary}</div>
+      {shown.length > 0 && (
+        <ul className="m-0 mt-1 list-none space-y-0.5 p-0">
+          {shown.map((f, i) => (
+            <li key={i} className="flex flex-wrap items-baseline gap-x-2">
+              <Badge tone={SEVERITY_TONE[f.severity]}>{f.severity}</Badge>
+              {!f.blocking && <span className="text-[10.5px] text-faint">not blocking</span>}
+              <span className="mono">{f.ruleId}</span>
+              <span className="break-words">{f.title}</span>
+              {f.location && <span className="mono break-all text-muted">{f.location}</span>}
+              {f.package && <span className="mono text-muted">{f.package}{f.fixedIn ? ` → ${f.fixedIn}` : ''}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {findings.length > 5 && <button className="btn btn-sm btn-ghost mt-1" onClick={() => setAll(!all)}>{all ? 'Show fewer' : `Show all ${findings.length}`}</button>}
+      {e.findingsTruncated && <div className="text-faint">{e.totalFindings} findings in total; FORGE keeps the first {e.findings.length}.</div>}
     </div>
   );
 }

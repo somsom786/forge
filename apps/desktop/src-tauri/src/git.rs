@@ -31,16 +31,13 @@ const REDIRECTING_ENV: &[&str] = &[
     "GIT_PAGER",
 ];
 
-/// An empty directory used as `core.hooksPath`, so no repository hook (pre-commit, post-checkout, index hooks...) ever
-/// runs as a side effect of something FORGE does. FORGE's own checks are the verification step.
-fn empty_hooks_dir() -> String {
-    static D: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    D.get_or_init(|| {
-        let p = std::env::temp_dir().join("forge-empty-hooks");
-        let _ = std::fs::create_dir_all(&p);
-        p.to_string_lossy().replace('\\', "/")
-    })
-    .clone()
+/// `core.hooksPath` for every git command FORGE runs, so no repository hook (pre-commit, post-checkout,
+/// reference-transaction...) ever runs as a side effect of something FORGE does. FORGE's own checks are the verification step.
+///
+/// It names the null device, which is not a directory, so git finds no hook in it and nobody can put one there. (It used to
+/// be a shared directory under the temp dir: another local user, or an approved agent command, could plant hooks in it.)
+pub(crate) fn empty_hooks_dir() -> String {
+    if cfg!(windows) { "NUL".into() } else { "/dev/null".into() }
 }
 
 fn base_command(dir: &Path) -> Result<Command> {
@@ -280,6 +277,10 @@ pub struct WorktreeSafety {
     pub dirty_files: u32,
     /// Commits on the mission branch (or the worktree HEAD) that are not in the base.
     pub unmerged_commits: u32,
+    /// Ignored files/directories in the worktree (a hand-copied `.env`, build output). `git worktree remove` deletes them
+    /// silently, so they count as potential loss too.
+    #[serde(default)]
+    pub ignored_entries: u32,
 }
 
 fn count_range(dir: &Path, range: &str) -> u32 {
@@ -297,18 +298,22 @@ pub fn worktree_safety(repo: &Path, worktree: Option<&Path>, branch: Option<&str
         }
     }
     let Some(wt) = worktree.filter(|w| w.exists()) else {
-        return Ok(WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: unmerged });
+        return Ok(WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: unmerged, ignored_entries: 0 });
     };
     let st = status(wt)?;
     unmerged = unmerged.max(count_range(wt, &format!("{base_commit}..HEAD")));
-    Ok(WorktreeSafety { exists: true, dirty_files: st.files.len() as u32, unmerged_commits: unmerged })
+    let ignored = run(wt, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"]).map(|o| o.lines().filter(|l| !l.trim().is_empty()).count() as u32).unwrap_or(0);
+    Ok(WorktreeSafety { exists: true, dirty_files: st.files.len() as u32, unmerged_commits: unmerged, ignored_entries: ignored })
 }
 
 /// Prove that `worktree` is the registered worktree of `repo` for `expected_branch` before acting on it.
 /// Defends against a replaced directory/junction or a tampered `.git` file redirecting git elsewhere.
 pub fn verify_worktree(repo: &Path, worktree: &Path, expected_branch: Option<&str>) -> Result<()> {
     let top = toplevel(worktree)?;
-    if !crate::paths::is_within(&top, worktree) || !crate::paths::is_within(worktree, &top) {
+    // Compare real paths: git reports the long form, while the stored path may be spelled with an 8.3 alias.
+    let top = dunce::canonicalize(&top).unwrap_or(top);
+    let real_wt = dunce::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    if !crate::paths::is_within(&top, &real_wt) || !crate::paths::is_within(&real_wt, &top) {
         return Err(ForgeError::Git(format!("{} is not the root of its own working tree (found {})", worktree.display(), top.display())));
     }
     let common = run(worktree, &["rev-parse", "--git-common-dir"])?;

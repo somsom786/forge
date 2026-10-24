@@ -238,6 +238,8 @@ pub fn build_pack(i: PackInput) -> (Value, String) {
         "sessions": i.sessions.iter().map(|s| json!({
             "id": s.id, "providerSessionId": s.provider_session_id, "state": s.state, "startedAt": s.started_at,
             "endedAt": s.ended_at, "endReason": s.end_reason, "usage": s.usage,
+            // Where it ran, only for a session that actually started (a session refused at launch ran nowhere).
+            "ranOn": s.pid.map(|_| s.executes_on.clone()),
             "usageNote": "token and cost figures are provider-reported estimates, not billing",
         })).collect::<Vec<_>>(),
         "changes": {
@@ -251,7 +253,10 @@ pub fn build_pack(i: PackInput) -> (Value, String) {
             "latest": c.latest.as_ref().map(|r| json!({
                 "runId": r.id, "state": r.state, "exitCode": r.exit_code, "durationMs": r.duration_ms,
                 "ranAgainst": r.fingerprint, "mutatedWorktree": r.mutated, "startedAt": r.started_at, "logPath": r.log_path,
+                "backend": r.backend,
+                "evidence": r.evidence,
             })),
+            "adapter": c.spec.adapter,
         })).collect::<Vec<_>>(),
         "permissions": {
             "total": i.approvals.len(), "policyDenials": policy_denials,
@@ -285,6 +290,14 @@ fn status_label(s: &Value) -> String {
     }
 }
 
+/// Where an agent session ran, in words.
+fn agent_place(executes_on: &str) -> String {
+    match executes_on {
+        "agent_host" => "on the host, as the user (not isolated)".to_string(),
+        other => crate::execution::Backend::parse(other).map(|b| b.label().to_string()).unwrap_or_else(|_| other.to_string()),
+    }
+}
+
 fn cell(s: &str) -> String {
     s.replace('|', "\\|").replace('\n', " ")
 }
@@ -303,6 +316,18 @@ pub fn render_markdown(c: &Value) -> String {
         m["model"].as_str().unwrap_or(""),
         c["generatedAt"].as_str().unwrap_or("")
     ));
+    let ran: Vec<String> = {
+        let mut v: Vec<String> = vec![];
+        for p in c["sessions"].as_array().into_iter().flatten().filter_map(|s| s["ranOn"].as_str()).map(agent_place) {
+            if !v.contains(&p) {
+                v.push(p);
+            }
+        }
+        v
+    };
+    if !ran.is_empty() {
+        o.push_str(&format!("Agent ran: {}\n\n", ran.join("; ")));
+    }
     o.push_str("> This records evidence, not a guarantee. A passing check is evidence for the criterion it is linked to; it does not prove correctness. Token and cost figures are provider estimates.\n\n");
     o.push_str(&format!("## Objective\n\n{}\n\n", m["objective"].as_str().unwrap_or("")));
 
@@ -334,22 +359,55 @@ pub fn render_markdown(c: &Value) -> String {
     if checks.is_empty() {
         o.push_str("_No checks were defined._\n\n");
     } else {
-        o.push_str("| Check | Command | Result | Fresh |\n|---|---|---|---|\n");
+        o.push_str("| Check | Command | Result | Ran in | Fresh |\n|---|---|---|---|---|\n");
         for k in checks {
             let res = match k["latest"].as_object() {
                 None => "never run".to_string(),
                 Some(l) => format!("{} (exit {}, {} ms){}", l["state"].as_str().unwrap_or("?"), l["exitCode"], l["durationMs"], if l["mutatedWorktree"] == true { ", modified worktree" } else { "" }),
             };
             o.push_str(&format!(
-                "| {}{} | `{}` | {} | {} |\n",
+                "| {}{} | `{}` | {} | {} | {} |\n",
                 cell(k["name"].as_str().unwrap_or("")),
                 if k["required"] == true { " (required)" } else { "" },
                 cell(k["command"].as_str().unwrap_or("")),
                 cell(&res),
+                match k["latest"]["backend"].as_str() {
+                    Some(b) => crate::execution::Backend::parse(b).map(|b| b.label()).unwrap_or(b),
+                    None => "—",
+                },
                 if k["fresh"] == true { "yes" } else { "no" }
             ));
         }
         o.push('\n');
+        // Structured findings from verification adapters (secret scans, dependency audits, end-to-end tests).
+        for k in c["checks"].as_array().cloned().unwrap_or_default() {
+            let ev = &k["latest"]["evidence"];
+            if !ev.is_object() {
+                continue;
+            }
+            o.push_str(&format!("### {} — {} ({})
+
+", cell(k["name"].as_str().unwrap_or("")), ev["adapter"].as_str().unwrap_or(""), cell(ev["summary"].as_str().unwrap_or(""))));
+            let findings = ev["findings"].as_array().cloned().unwrap_or_default();
+            if !findings.is_empty() {
+                o.push_str("| Severity | Blocking | Rule | Title | Location | Package |\n|---|---|---|---|---|---|\n");
+                for f in &findings {
+                    o.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} |\n",
+                        f["severity"].as_str().unwrap_or(""),
+                        if f["blocking"] == true { "yes" } else { "no" },
+                        cell(f["ruleId"].as_str().unwrap_or("")),
+                        cell(f["title"].as_str().unwrap_or("")),
+                        cell(f["location"].as_str().unwrap_or("")),
+                        cell(f["package"].as_str().unwrap_or("")),
+                    ));
+                }
+                if ev["findingsTruncated"] == true {
+                    o.push_str(&format!("\n_{} findings in total; the first {} are listed._\n", ev["totalFindings"], findings.len()));
+                }
+                o.push('\n');
+            }
+        }
     }
 
     o.push_str("## Changes\n\n");
@@ -411,8 +469,8 @@ mod tests {
             version: 1,
             in_scope: vec!["src/".into()],
             checks: vec![
-                CheckSpec { id: "t".into(), name: "Tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true },
-                CheckSpec { id: "l".into(), name: "Lint".into(), command: "npm run lint".into(), kind: CheckKind::Lint, timeout_secs: 60, required: false },
+                CheckSpec { id: "t".into(), name: "Tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true, adapter: None },
+                CheckSpec { id: "l".into(), name: "Lint".into(), command: "npm run lint".into(), kind: CheckKind::Lint, timeout_secs: 60, required: false, adapter: None },
             ],
             criteria: vec![
                 Criterion { id: "exp".into(), text: "Reset tokens expire".into(), verified_by: vec!["t".into()], manual: false, scope_rule: false },
@@ -425,7 +483,7 @@ mod tests {
     }
 
     fn vrun(check: &str, state: RunState, fp: &str, mutated: bool) -> VerificationRun {
-        VerificationRun { id: format!("{check}-run-123456"), mission_id: "m".into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state, exit_code: Some(0), started_at: "t".into(), ended_at: None, duration_ms: Some(10), fingerprint: fp.into(), head_commit: None, mutated, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: contract().checks.iter().find(|c| c.id == check).map(|c| c.revision()).unwrap_or_default() }
+        VerificationRun { id: format!("{check}-run-123456"), mission_id: "m".into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state, exit_code: Some(0), started_at: "t".into(), ended_at: None, duration_ms: Some(10), fingerprint: fp.into(), head_commit: None, mutated, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: contract().checks.iter().find(|c| c.id == check).map(|c| c.revision()).unwrap_or_default(), backend: "trusted_local".into(), evidence: None }
     }
 
     fn report(runs: Vec<VerificationRun>, verdicts: Vec<ManualVerdictRow>, files: &[&str], pending: usize, running: bool) -> VerificationReport {

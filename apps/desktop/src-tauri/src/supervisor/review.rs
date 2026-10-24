@@ -99,6 +99,10 @@ impl Core {
         contract.version = CONTRACT_VERSION;
         contract.validate()?;
         self.store.set_contract(mission_id, &contract)?;
+        // An approval is a statement about these success criteria; changing them voids it.
+        if m.state == MissionState::Approved.as_str() {
+            self.set_state(mission_id, MissionState::AwaitingReview, "the success criteria changed after approval")?;
+        }
         self.store.audit("user", "contract.set", Some(mission_id), &json!({"criteria": contract.criteria.len(), "checks": contract.checks.len()}));
         let m = self.store.get_mission(mission_id)?;
         self.emit(UiEvent::Mission { mission: m.clone() });
@@ -138,12 +142,15 @@ impl Core {
         if self.mission_busy(mission_id) {
             return Err(ForgeError::InvalidState("stop the agent first: running checks while it edits files would make the evidence meaningless".into()));
         }
-        let (m, _p, wt, base) = self.workspace(mission_id)?;
+        let (m, project, wt, base) = self.workspace(mission_id)?;
         if MissionState::parse(&m.state).is_some_and(|s| s.is_terminal()) {
             return Err(ForgeError::InvalidState("this mission is finished".into()));
         }
         let contract = self.store.get_contract(mission_id)?;
         let spec = contract.checks.iter().find(|c| c.id == check_id).cloned().ok_or_else(|| ForgeError::NotFound(format!("check \"{check_id}\" is not in this mission's contract")))?;
+        // The project's execution backend, refused (not downgraded) if it cannot run here.
+        let backend = crate::execution::Backend::parse(&project.execution_backend)?;
+        crate::execution::require(backend)?;
 
         let cancel = Arc::new(AtomicBool::new(false));
         {
@@ -180,6 +187,8 @@ impl Core {
                 output_truncated: false,
                 log_path: None,
                 spec_rev: spec.revision(),
+                backend: backend.as_str().into(),
+                evidence: None,
             };
             self.store.insert_run(&run)?;
             Ok(run)
@@ -191,24 +200,52 @@ impl Core {
                 return Err(e);
             }
         };
-        self.store.audit("user", "check.run", Some(mission_id), &json!({"check": spec.id, "command": spec.command}));
+        self.store.audit("user", "check.run", Some(mission_id), &json!({"check": spec.id, "command": spec.command, "backend": backend.as_str()}));
         self.emit(UiEvent::Verification { run: run.clone() });
 
         let core = self.clone();
         let (run_id, pre, mission) = (run.id.clone(), run.fingerprint.clone(), mission_id.to_string());
         let log = self.cfg.home.join("runs").join(format!("{run_id}.log"));
+        let stdout = self.cfg.home.join("runs").join(format!("{run_id}.stdout"));
         std::thread::spawn(move || {
-            let outcome = verify::run_check(&spec.command, &wt, Duration::from_secs(spec.timeout_secs), Some(&log), cancel);
+            // Whatever happens in here (including a panic), the mission's check slot is released and the run is not left
+            // "running" for ever.
+            let mut slot = CheckSlot { core: core.clone(), mission: mission.clone(), run_id: run_id.clone(), finished: false };
+            let capture = spec.adapter.as_ref().map(|_| stdout.as_path());
+            // Which version produced the report is part of the evidence; probed on the same backend, briefly.
+            let tool_version = spec.adapter.as_deref().and_then(crate::evidence::adapter).and_then(|a| {
+                let v = verify::run_check_in(backend, a.version_command, &wt, Duration::from_secs(30), None, Arc::new(AtomicBool::new(false)));
+                (v.state == RunState::Passed).then(|| v.output_tail.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(120).collect::<String>()).filter(|s| !s.is_empty())
+            });
+            let mut outcome = verify::run_check_capture(backend, &spec.command, &wt, Duration::from_secs(spec.timeout_secs), Some(&log), capture, cancel);
+            // An adapter turns the tool's report into findings, and its verdict replaces the exit-code verdict.
+            let evidence = spec.adapter.as_deref().map(|a| {
+                let text = std::fs::read_to_string(&stdout).unwrap_or_default();
+                let (mut ev, state) = crate::evidence::evaluate(a, outcome.state, outcome.exit_code, &text, &outcome.output_tail);
+                outcome.state = state;
+                ev.tool_version = tool_version.clone();
+                ev
+            });
             let post = git::fingerprint(&wt, &base).unwrap_or_else(|_| "unknown".into());
             let mutated = post != pre;
             let log_s = outcome.log_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+            if let Some(ev) = &evidence {
+                if let Err(e) = core.store.set_run_evidence(&run_id, ev) {
+                    core.notice("error", format!("could not record the findings of check {}: {e}", spec.id));
+                }
+            }
             match core.store.finish_run(&run_id, outcome.state, outcome.exit_code, outcome.duration_ms as i64, &pre, mutated, &outcome.output_tail, outcome.output_truncated, log_s.as_deref()) {
                 Ok(done) => core.emit(UiEvent::Verification { run: done }),
                 Err(e) => core.notice("error", format!("could not record the result of check {}: {e}", spec.id)),
             }
-            lock(&core.checks).remove(&mission);
+            slot.finished = true;
         });
         Ok(run)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_check_slot_as_if_the_runner_died(self: &Arc<Self>, mission_id: &str, run_id: &str) {
+        drop(CheckSlot { core: self.clone(), mission: mission_id.into(), run_id: run_id.into(), finished: false });
     }
 
     pub fn cancel_check(&self, mission_id: &str) -> Result<()> {
@@ -306,6 +343,13 @@ impl Core {
         let branch = m.branch.clone().ok_or_else(|| ForgeError::InvalidState("mission has no branch".into()))?;
         let target = m.base_ref.clone().ok_or_else(|| ForgeError::InvalidState("mission has no base branch".into()))?;
 
+        // A merge started earlier may have reached git but not the database (crash, power loss). Finish it from the facts in
+        // the repository instead of attempting a second merge (a squash would fail with "nothing to commit" forever).
+        if let Some(commit) = self.reconcile_merge(mission_id, &root)? {
+            let squashed = self.store.merge_record(mission_id)?.is_some_and(|r| r.squash);
+            return Ok(self.complete_merge(mission_id, &root, &wt, &branch, &target, commit, squashed, vec!["this merge had already reached git before FORGE stopped; it was completed now".into()]));
+        }
+
         // What was approved must be exactly what is merged. One read yields both the fingerprint and the reviewed tree.
         let (fp, tree) = git::fingerprint_and_tree(&wt, &base)?;
         let approved = self.store.review_decisions(mission_id)?.into_iter().rev().find(|d| d.decision == "approve");
@@ -331,11 +375,57 @@ Branch: {}", m.title, m.id, branch);
             )));
         }
         let predicted_tree = prediction.tree.ok_or_else(|| ForgeError::Git("git did not report the merged tree".into()))?;
-        let commit = merge::merge(&root, &branch_oid, &message, squash, &target_oid, &predicted_tree)?;
+        // Durable intent first: after this, any outcome of the git step can be recognised and finished on restart.
+        self.store.begin_merge(&crate::store_review::MergeRecord {
+            mission_id: mission_id.into(),
+            target_oid: target_oid.clone(),
+            branch_oid: branch_oid.clone(),
+            predicted_tree: predicted_tree.clone(),
+            squash,
+            message: message.clone(),
+            commit_oid: None,
+            finished_at: None,
+        })?;
+        let commit = match merge::merge(&root, &branch_oid, &message, squash, &target_oid, &predicted_tree) {
+            Ok(c) => c,
+            Err(e) => {
+                // Only forget the intent if git provably changed nothing.
+                if merge::oid(&root, "HEAD").ok().as_deref() == Some(target_oid.as_str()) && !merge::squash_pending(&root, &target_oid, &predicted_tree) {
+                    let _ = self.store.abandon_merge(mission_id);
+                }
+                return Err(e);
+            }
+        };
         self.store.audit("user", "mission.merge", Some(mission_id), &json!({"commit": commit, "squash": squash, "target": target}));
-        self.set_state(mission_id, MissionState::Merged, "merged into the main checkout")?;
+        Ok(self.complete_merge(mission_id, &root, &wt, &branch, &target, commit, squash, vec![]))
+    }
 
-        let mut notes = vec![];
+    /// If an unfinished merge of this mission is recorded, look at the repository: the merge commit landed (return it), a
+    /// squash was interrupted before its commit (finish it and return it), or nothing happened (forget the intent).
+    pub(super) fn reconcile_merge(&self, mission_id: &str, root: &Path) -> Result<Option<String>> {
+        let Some(rec) = self.store.merge_record(mission_id)?.filter(|r| r.finished_at.is_none()) else { return Ok(None) };
+        if let Some(commit) = merge::landed(root, &rec.target_oid, &rec.predicted_tree)? {
+            self.store.audit("system", "mission.merge.reconciled", Some(mission_id), &json!({"commit": commit, "how": "landed"}));
+            return Ok(Some(commit));
+        }
+        if rec.squash && merge::squash_pending(root, &rec.target_oid, &rec.predicted_tree) {
+            let commit = merge::finish_squash(root, &rec.message, &rec.predicted_tree)?;
+            self.store.audit("system", "mission.merge.reconciled", Some(mission_id), &json!({"commit": commit, "how": "squash finished"}));
+            return Ok(Some(commit));
+        }
+        self.store.abandon_merge(mission_id)?;
+        Ok(None)
+    }
+
+    /// Database side of a merge that is in git: record it, move the mission to Merged, seal the evidence, clean up.
+    #[allow(clippy::too_many_arguments)]
+    fn complete_merge(&self, mission_id: &str, root: &Path, wt: &Path, branch: &str, target: &str, commit: String, squash: bool, mut notes: Vec<String>) -> MergeOutcome {
+        if let Err(e) = self.store.finish_merge(mission_id, &commit).and_then(|_| self.set_state(mission_id, MissionState::Merged, "merged into the main checkout").map(|_| ())) {
+            notes.push(format!("the merge is in git ({}) but FORGE could not record it yet: {e}; it will be reconciled on the next start", &commit[..10.min(commit.len())]));
+            return MergeOutcome { commit, branch: branch.into(), target: target.into(), squashed: squash, cleaned_up: false, notes };
+        }
+        let (root, wt, branch, target) = (root.to_path_buf(), wt.to_path_buf(), branch.to_string(), target.to_string());
+
         // Seal the evidence while the worktree still exists.
         if let Err(e) = self.generate_proof_pack(mission_id) {
             notes.push(format!("the Proof Pack could not be generated: {e}"));
@@ -345,7 +435,15 @@ Branch: {}", m.title, m.id, branch);
             notes.push(format!("the mission record could not be saved to memory: {e}"));
         }
         let mut cleaned = false;
-        match git::worktree_remove(&root, &wt, false) {
+        // Ignored files (a local .env, build output) would be deleted silently by `git worktree remove`: keep the worktree
+        // and let the user clean it up knowingly.
+        let ignored = self.worktree_safety(mission_id).map(|s| s.ignored_entries).unwrap_or(0);
+        let removable = if ignored > 0 {
+            Err(ForgeError::InvalidState(format!("it holds {ignored} ignored file(s) or folder(s) (build output, local settings); use Clean up when you no longer need them")))
+        } else {
+            self.removable_worktree(&root, &wt, Some(&branch))
+        };
+        match removable.and_then(|_| self.remove_mission_worktree(&root, &wt, Some(&branch), false)) {
             Ok(()) => {
                 let identical = git::run_raw(&root, &["diff", "--quiet", "HEAD", &branch]).map(|o| o.status.success()).unwrap_or(false);
                 if !squash || identical {
@@ -359,7 +457,7 @@ Branch: {}", m.title, m.id, branch);
             }
             Err(e) => notes.push(format!("the worktree was kept: {e}")),
         }
-        Ok(MergeOutcome { commit, branch, target, squashed: squash, cleaned_up: cleaned, notes })
+        MergeOutcome { commit, branch, target, squashed: squash, cleaned_up: cleaned, notes }
     }
 
     /// Remove the worktree and branch of a *finished* mission (rejected, merged, cancelled). Same loss protection as
@@ -372,15 +470,12 @@ Branch: {}", m.title, m.id, branch);
         }
         let project = self.store.get_project(&m.project_id)?;
         let root = Path::new(&project.root_path);
-        let safety = self.worktree_safety(mission_id)?;
-        if (safety.dirty_files > 0 || safety.unmerged_commits > 0) && !confirm_loss {
-            return Err(ForgeError::InvalidState(format!(
-                "cleaning up would permanently delete {} uncommitted file change(s) and {} unmerged commit(s) on branch {}",
-                safety.dirty_files, safety.unmerged_commits, m.branch.as_deref().unwrap_or("?")
-            )));
+        let safety = self.removal_safety(mission_id)?;
+        if (safety.dirty_files > 0 || safety.unmerged_commits > 0 || safety.ignored_entries > 0) && !confirm_loss {
+            return Err(ForgeError::InvalidState(super::loss_message("cleaning up", &safety, m.branch.as_deref())));
         }
         if let Some(wt) = &m.worktree_path {
-            git::worktree_remove(root, Path::new(wt), confirm_loss)?;
+            self.remove_mission_worktree(root, Path::new(wt), m.branch.as_deref(), confirm_loss)?;
         }
         if let Some(b) = &m.branch {
             if let Err(e) = git::delete_branch(root, b, safety.unmerged_commits > 0) {
@@ -428,5 +523,26 @@ Branch: {}", m.title, m.id, branch);
         self.store.audit("user", "proofpack.generate", Some(mission_id), &json!({"sha256": content_sha}));
         self.emit(UiEvent::ProofPack { mission_id: mission_id.to_string() });
         Ok(row)
+    }
+}
+
+/// Releases a mission's check slot when the runner thread ends, however it ends. A runner that did not record a result
+/// (it panicked) leaves the run marked as an error instead of "running".
+struct CheckSlot {
+    core: Arc<Core>,
+    mission: String,
+    run_id: String,
+    finished: bool,
+}
+
+impl Drop for CheckSlot {
+    fn drop(&mut self) {
+        if !self.finished {
+            let msg = "The check runner stopped unexpectedly; this result is unknown. Run the check again.";
+            if let Ok(done) = self.core.store.finish_run(&self.run_id, RunState::Error, None, 0, "", false, msg, false, None) {
+                self.core.emit(UiEvent::Verification { run: done });
+            }
+        }
+        lock(&self.core.checks).remove(&self.mission);
     }
 }

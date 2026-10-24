@@ -119,8 +119,8 @@ pub fn run(inv: &Inventory, root: &Path) -> Vec<Finding> {
         out.push(f("info", "hooks_not_run_in_missions", None, "Project hooks run in your own Claude Code sessions, but FORGE missions deliberately do not run them (a repository must not execute code on session start). Use FORGE's own approval policy for mission-time guardrails.".to_string(), None));
     }
 
-    // 3. permissions
-    for i in inv.items.iter().filter(|i| i.kind == "settings") {
+    // 3. permissions (the project's own files: the user's global settings are theirs, and not shown or edited here)
+    for i in inv.items.iter().filter(|i| i.kind == "settings" && i.scope != "user") {
         for a in i.details["allow"].as_array().cloned().unwrap_or_default().iter().filter_map(|v| v.as_str()) {
             let broad = matches!(a, "*" | "Bash" | "Bash(*)" | "Write" | "Edit" | "WebFetch") || a.starts_with("Bash(*") || a == "mcp__*";
             if broad {
@@ -227,6 +227,8 @@ pub fn run(inv: &Inventory, root: &Path) -> Vec<Finding> {
     }
 
     // 7. provider compatibility
+    precedence(inv, &mut out);
+
     let has = |rel: &str| inv.items.iter().any(|i| i.rel.as_deref() == Some(rel));
     if has("AGENTS.md") && !has("CLAUDE.md") && !has(".claude/CLAUDE.md") {
         out.push(f("info", "agents_md_only", None, "AGENTS.md exists but there is no CLAUDE.md: Claude Code does not read AGENTS.md, so FORGE missions on Claude will not see it".to_string(), Some("Add a CLAUDE.md that imports it (a line containing @AGENTS.md).")));
@@ -238,6 +240,54 @@ pub fn run(inv: &Inventory, root: &Path) -> Vec<Finding> {
         _ => 2,
     });
     cap_per_kind(out)
+}
+
+/// Claude Code reads settings from several files; for a plain value the most specific wins (local > project > user, and
+/// managed policy above all, which FORGE does not read). For permission rules, a deny anywhere beats an allow anywhere,
+/// and ask beats allow. These findings say which value a person's own Claude Code sessions will actually get. FORGE
+/// missions use none of it (their permissions come from FORGE policy), and each message says so.
+fn precedence(inv: &Inventory, out: &mut Vec<Finding>) {
+    const ORDER: [&str; 3] = ["local", "project", "user"];
+    let settings: Vec<&HarnessItem> = ORDER.iter().filter_map(|sc| inv.items.iter().find(|i| i.kind == "settings" && i.scope == *sc)).collect();
+    if settings.len() < 2 {
+        return;
+    }
+    let note = "Managed policy and command-line flags can still override it. FORGE missions ignore these settings and use FORGE policy.";
+    let file = |i: &HarnessItem| if i.scope == "user" { "~/.claude/settings.json (user)".to_string() } else { format!("{} ({})", i.name, i.scope) };
+    // A finding points at a project file the UI can open, never at the user's global file.
+    fn subject_of<'a>(preferred: &'a HarnessItem, settings: &[&'a HarnessItem]) -> Option<&'a str> {
+        if preferred.scope != "user" {
+            Some(preferred.id.as_str())
+        } else {
+            settings.iter().find(|i| i.scope != "user").map(|i| i.id.as_str())
+        }
+    }
+    for (key, label) in [("defaultMode", "permission mode"), ("model", "model")] {
+        let set: Vec<(&HarnessItem, String)> = settings.iter().filter_map(|i| i.details.get(key).filter(|v| !v.is_null()).map(|v| (*i, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))).collect();
+        let distinct: HashSet<&String> = set.iter().map(|(_, v)| v).collect();
+        if distinct.len() > 1 {
+            let (winner, win) = &set[0];
+            let all = set.iter().map(|(i, v)| format!("{}: `{v}`", file(i))).collect::<Vec<_>>().join(", ");
+            out.push(f("info", "setting_overridden", subject_of(winner, &settings), format!("The {label} is set differently in more than one settings file ({all}); among these files `{win}` from {} applies, because local beats project beats user. {note}", file(winner)), Some("Keep the value in one place, or make the override deliberate (local settings are personal and usually not committed).")));
+        }
+    }
+    let rules = |i: &HarnessItem, list: &str| -> Vec<String> { i.details.get(list).and_then(serde_json::Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default() };
+    let mut reported = HashSet::new();
+    for a in &settings {
+        for rule in rules(a, "allow") {
+            for (other, list, outcome) in settings.iter().flat_map(|b| [(b, "deny", "denied"), (b, "ask", "asked about")]) {
+                if rules(other, list).contains(&rule) && reported.insert((rule.clone(), list)) {
+                    out.push(f(
+                        "warning",
+                        "permission_conflict",
+                        subject_of(if a.scope != "user" { a } else { other }, &settings),
+                        format!("`{rule}` is allowed in {} but listed under {list} in {}: it is {outcome}, because {list} beats allow wherever it appears. {note}", file(a), file(other)),
+                        Some("Remove the rule from one of the lists so the file says what actually happens."),
+                    ));
+                }
+            }
+        }
+    }
 }
 
 /// No single kind of finding may flood the screen (or memory): keep the first `PER_KIND_CAP` and say how many were left out.
@@ -293,6 +343,36 @@ mod tests {
         }
         assert_eq!(fs[0].severity, "problem", "problems sort first");
         assert!(!fs.iter().any(|x| x.kind == "hook_command_not_found" && x.message.contains("`echo`")), "shell builtins are not 'missing'");
+    }
+
+    #[test]
+    fn explains_which_setting_wins_across_scopes_and_that_deny_beats_allow() {
+        let d = project(&[
+            (".claude/settings.json", r#"{"model":"opus","permissions":{"allow":["Bash(npm publish)","Bash(git push)"],"defaultMode":"acceptEdits"}}"#),
+            (".claude/settings.local.json", r#"{"model":"sonnet","permissions":{"ask":["Bash(git push)"]}}"#),
+        ]);
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude/settings.json"), r#"{"model":"haiku","permissions":{"deny":["Bash(npm publish)"],"defaultMode":"default"}}"#).unwrap();
+        let fs = run(&scan(d.path(), Some(home.path())), d.path());
+        let over: Vec<&Finding> = fs.iter().filter(|x| x.kind == "setting_overridden").collect();
+        assert!(over.iter().any(|x| x.message.contains("`sonnet` from .claude/settings.local.json (local) applies")), "{over:?}");
+        assert!(over.iter().any(|x| x.message.contains("`acceptEdits` from .claude/settings.json (project) applies")), "{over:?}");
+        let conflicts: Vec<&Finding> = fs.iter().filter(|x| x.kind == "permission_conflict").collect();
+        assert!(conflicts.iter().any(|x| x.message.contains("`Bash(npm publish)`") && x.message.contains("denied") && x.message.contains("~/.claude/settings.json (user)")), "{conflicts:?}");
+        assert!(conflicts.iter().any(|x| x.message.contains("`Bash(git push)`") && x.message.contains("asked about")), "{conflicts:?}");
+        assert!(fs.iter().filter(|x| x.kind == "setting_overridden" || x.kind == "permission_conflict").all(|x| x.message.contains("FORGE missions ignore") && x.message.contains("command-line flags can still override")));
+        assert!(fs.iter().all(|x| !x.subject.as_deref().is_some_and(|s| s.starts_with("settings:user:"))), "findings point at files the UI can open");
+        // The user's global file alone is not the project's problem: no permission findings about it.
+        let bare = project(&[("README.md", "x")]);
+        let uh = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(uh.path().join(".claude")).unwrap();
+        std::fs::write(uh.path().join(".claude/settings.json"), r#"{"permissions":{"allow":["Bash"],"defaultMode":"bypassPermissions"}}"#).unwrap();
+        let k = run(&scan(bare.path(), Some(uh.path())), bare.path());
+        assert!(!k.iter().any(|x| x.kind == "bypass_permissions" || x.kind == "broad_permission"), "{k:?}");
+        // A single settings file has nothing to compare.
+        let single = project(&[(".claude/settings.json", r#"{"model":"opus","permissions":{"allow":["Read"],"deny":["Read"]}}"#)]);
+        assert!(!run(&scan(single.path(), None), single.path()).iter().any(|x| x.kind == "setting_overridden"));
     }
 
     #[test]

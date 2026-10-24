@@ -24,6 +24,7 @@ const contracts: Record<string, Contract> = {
       { id: 'lint', name: 'Lint', command: 'npm run lint', kind: 'lint', timeoutSecs: 120, required: false },
       { id: 'typecheck', name: 'Typecheck', command: 'npm run typecheck', kind: 'typecheck', timeoutSecs: 180, required: true },
       { id: 'build', name: 'Build', command: 'npm run build', kind: 'build', timeoutSecs: 300, required: false },
+      { id: 'deps', name: 'Dependency vulnerabilities', command: 'osv-scanner scan source --format json -r .', kind: 'security', timeoutSecs: 600, required: true, adapter: 'osv-scanner' },
     ],
     criteria: [
       { id: 'tz', text: 'Date parsing gives the same result in every timezone', verifiedBy: ['unit'], manual: false, scopeRule: false },
@@ -43,7 +44,7 @@ function vrun(checkId: string, name: string, command: string, state: Verificatio
   return {
     id: `vr-${checkId}-${fingerprint}`, missionId: 'm2', checkId, name, command, kind: 'test', state, exitCode,
     startedAt: ctxRef.iso(20), endedAt: ctxRef.iso(19), durationMs: 41_000, fingerprint, headCommit: null, mutated: false,
-    outputTail: out, outputTruncated: false, logPath: null, ...extra,
+    outputTail: out, outputTruncated: false, logPath: null, backend: 'trusted_local', ...extra,
   };
 }
 
@@ -53,6 +54,16 @@ function allRuns(): VerificationRun[] {
     vrun('unit', 'Unit tests', 'npm test', 'passed', 0, CUR, ' PASS  src/date/parse.test.ts\n  parseDate\n    ok parses a date as UTC midnight\n    ok round-trips through formatDate\n\nTests: 2 passed, 2 total\n'),
     vrun('lint', 'Lint', 'npm run lint', 'passed', 0, 'old00000aaaa', 'eslint . --max-warnings 0\n(no problems)\n', { startedAt: ctxRef.iso(80), endedAt: ctxRef.iso(79) }),
     vrun('typecheck', 'Typecheck', 'npm run typecheck', 'failed', 2, CUR, "src/util/new-name.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\n\nFound 1 error.\n", { mutated: true }),
+    vrun('deps', 'Dependency vulnerabilities', 'osv-scanner scan source --format json -r .', 'failed', 1, CUR, 'Scanning dir .\nScanned package-lock.json file and found 412 packages\n', {
+      evidence: {
+        adapter: 'osv-scanner', outcome: 'findings', summary: '3 blocking finding(s)', totalFindings: 3, blockingFindings: 3, bySeverity: { high: 1, medium: 1, unknown: 1 }, findingsTruncated: false,
+        findings: [
+          { ruleId: 'GHSA-35jh-r3h4-6jhm', severity: 'high', title: 'Command Injection in lodash', location: 'package-lock.json', package: 'lodash@4.17.20', fixedIn: null, blocking: true },
+          { ruleId: 'OSV-2026-1', severity: 'unknown', title: 'No severity published', location: 'package-lock.json', package: 'mystery@0.0.1', fixedIn: null, blocking: true },
+          { ruleId: 'GHSA-29mw-wpgm-hmr9', severity: 'medium', title: 'ReDoS in lodash', location: 'package-lock.json', package: 'lodash@4.17.20', fixedIn: null, blocking: true },
+        ],
+      },
+    }),
   ];
   return runs;
 }
@@ -129,6 +140,13 @@ export function handleP2(cmd: string, args: any, ctx: P2Ctx): Promise<any> | und
         { id: 'tests', name: 'Tests', command: 'npm test', kind: 'test', timeoutSecs: 300, required: true },
         { id: 'typecheck', name: 'Typecheck', command: 'npm run typecheck', kind: 'typecheck', timeoutSecs: 180, required: false },
         { id: 'lint', name: 'Lint', command: 'npm run lint', kind: 'lint', timeoutSecs: 120, required: false },
+      ]);
+    case 'verification_adapters':
+      return done([
+        { id: 'gitleaks', label: 'Secret scan (gitleaks)', command: 'gitleaks dir . --redact --no-banner --report-format json --report-path -', kind: 'security' },
+        { id: 'osv-scanner', label: 'Dependency vulnerabilities (OSV-Scanner)', command: 'osv-scanner scan source --format json -r .', kind: 'security' },
+        { id: 'trivy', label: 'Vulnerabilities, secrets, misconfiguration (Trivy)', command: 'trivy fs --quiet --format json --scanners vuln,secret,misconfig .', kind: 'security' },
+        { id: 'playwright', label: 'End-to-end tests (Playwright)', command: 'npx playwright test --reporter=json', kind: 'test' },
       ]);
     case 'verification_report':
       return done(reportFor(args.missionId));

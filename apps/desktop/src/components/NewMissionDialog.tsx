@@ -15,6 +15,7 @@ import { defaultModel, modelRequired, modelSatisfied } from '../lib/provider';
 import { Kbd } from './ui';
 
 export function providerAvailability(p: ProviderInfo): { ok: boolean; reason: string | null } {
+  if (p.id === 'acp' && p.models.length === 0) return { ok: false, reason: 'No ACP agent is registered. Register one on the Agents screen first.' };
   if (!p.adapterAvailable) return { ok: false, reason: `${p.name} has no adapter in this build yet, so missions cannot use it.` };
   if (!p.installed) return { ok: false, reason: `${p.name} is not available: ${p.notes.length ? p.notes.join(' ') : 'not found on this machine.'}` };
   if (p.signedIn === false) return { ok: false, reason: `${p.name} is installed but not signed in. Sign in with its CLI first.` };
@@ -23,6 +24,7 @@ export function providerAvailability(p: ProviderInfo): { ok: boolean; reason: st
 
 export function billingNote(p: ProviderInfo): string {
   if (p.id === 'claude-local') return 'Runs on this machine: no provider billing.';
+  if (p.id === 'acp') return 'Each ACP agent signs in on its own. FORGE removes API keys from its environment but cannot tell how it bills.';
   const m = (p.authMethod ?? '').toLowerCase();
   if (!p.authMethod) return 'Auth method not reported. FORGE cannot confirm how usage is billed.';
   if (m.includes('claude.ai') || m.includes('subscription') || m.includes('chatgpt') || m.includes('oauth')) {
@@ -244,7 +246,7 @@ export function NewMissionDialog() {
             <div>
               {hasList ? (
                 <>
-                  <label className="label" htmlFor="nm-model">Model{modelRequired(selected) ? ' (required)' : ''}</label>
+                  <label className="label" htmlFor="nm-model">{selected?.id === 'acp' ? 'ACP agent' : 'Model'}{modelRequired(selected) ? ' (required)' : ''}</label>
                   <select id="nm-model" className="input mono" value={model} onChange={(e) => setModel(e.target.value)}>
                     {!modelRequired(selected) && <option value="">Provider default</option>}
                     {selected!.models.map((m) => (
@@ -265,12 +267,12 @@ export function NewMissionDialog() {
                 <span className="font-medium">Use verified project knowledge</span>
               </label>
               <div className="mt-1 text-[12px] text-muted">
-                {!useMemory ? 'Memory will be off for this mission.' : !objective.trim() ? 'Write an objective to see which notes match.' : pkgError ? `Preview unavailable: ${pkgError}` : pkg ? previewSummary(pkg.items) : 'Checking…'}
+                {!useMemory ? 'Memory will be off for this mission.' : !objective.trim() ? 'Write an objective to see which notes match.' : pkgError ? `Preview unavailable: ${pkgError}` : pkg ? `${previewSummary(pkg.items)}${pkg.code?.items.length ? `; plus ${pkg.code.items.length} relevant-code pointer${pkg.code.items.length === 1 ? '' : 's'}` : ''}` : 'Checking…'}
               </div>
               {pkg && useMemory && (
                 <>
                   <button type="button" className="btn btn-sm btn-ghost mt-1" aria-expanded={showPkg} onClick={() => setShowPkg(!showPkg)}>See what would be sent</button>
-                  {showPkg && <div className="mt-2"><ContextView ctx={{ items: pkg.items, omitted: pkg.omitted, charBudget: pkg.charBudget, text: pkg.text, sha256: pkg.sha256 }} /></div>}
+                  {showPkg && <div className="mt-2"><ContextView ctx={{ items: pkg.items, omitted: pkg.omitted, charBudget: pkg.charBudget, text: pkg.text, sha256: pkg.sha256, code: pkg.code }} /></div>}
                 </>
               )}
             </div>

@@ -26,6 +26,19 @@ export function relTime(iso: string | null | undefined, now: number = Date.now()
   return new Date(t).toLocaleDateString();
 }
 
+/** Time left until `iso`: "in 29m", "in 45s", or "now" once it has passed. */
+export function timeUntil(iso: string | null | undefined, now: number = Date.now()): string {
+  if (!iso) return '—';
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return '—';
+  const s = Math.round((t - now) / 1000);
+  if (s <= 0) return 'now';
+  if (s < 60) return `in ${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `in ${m}m`;
+  return `in ${Math.floor(m / 60)}h`;
+}
+
 /** Accepts an ISO string, epoch milliseconds, or epoch seconds. */
 export function localTime(v: string | number | null | undefined): string {
   if (v === null || v === undefined || v === '') return '—';
@@ -95,7 +108,7 @@ export function missionLabel(m: Pick<Mission, 'title' | 'id'>): string {
 }
 
 export function providerLabel(id: string): string {
-  return id === 'claude' ? 'Claude Code' : id === 'claude-local' ? 'Claude Code (local model)' : id === 'codex' ? 'Codex' : id === 'fake' ? 'Scripted test agent' : id;
+  return id === 'claude' ? 'Claude Code' : id === 'claude-local' ? 'Claude Code (local model)' : id === 'codex' ? 'Codex' : id === 'acp' ? 'ACP agent' : id === 'fake' ? 'Scripted test agent' : id;
 }
 
 /** Utilization may arrive as a 0..1 fraction or already as a percentage. */

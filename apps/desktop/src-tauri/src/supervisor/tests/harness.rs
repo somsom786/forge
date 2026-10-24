@@ -364,3 +364,72 @@ fn live_harness_hook_and_instruction_written_by_forge_take_effect_in_real_claude
     assert!(ev["prompt"].as_str().unwrap().contains("codeword"));
     assert!(reply.to_lowercase().contains("quokka-7"), "the instruction FORGE wrote did not reach the model: {reply}");
 }
+
+#[test]
+fn pruning_backups_keeps_recent_undo_steps_unresolved_changes_and_any_possible_rollback() {
+    let f = fixture();
+    let pid = f.project.id.clone();
+    let backups = f._home.path().join("harness-backups").join(&pid);
+
+    // CLAUDE.md: five edits (five backups). The newest can be rolled back right now.
+    std::fs::write(root(&f).join("CLAUDE.md"), "v0\n").unwrap();
+    let edits: Vec<_> = (1..=5).map(|i| save(&f, "CLAUDE.md", &format!("v{i}\n")).unwrap()).collect();
+    // AGENTS.md: two edits, the second rolled back (its backup is no longer needed; the rollback's own backup is).
+    std::fs::write(root(&f).join("AGENTS.md"), "a0\n").unwrap();
+    let a1 = save(&f, "AGENTS.md", "a1\n").unwrap();
+    let a2 = save(&f, "AGENTS.md", "a2\n").unwrap();
+    let ra2 = f.core.harness_rollback(&a2.id).unwrap();
+    // An unresolved change (a crash mid-save) with a backup, a backup no journal entry refers to, and a foreign file.
+    std::fs::write(backups.join("unresolved.bak"), "keep me\n").unwrap();
+    let started = f
+        .core
+        .store
+        .h_change_begin(crate::harness::store::NewChange { project_id: &pid, rel: "GEMINI.md", kind: "edit", before: Some(&sha256_hex(b"keep me\n")), after: Some("x"), backup: Some(&format!("harness-backups/{pid}/unresolved.bak")), rolls_back: None, note: None })
+        .unwrap();
+    std::fs::write(backups.join("orphan.bak"), "left by an interrupted save\n").unwrap();
+    std::fs::write(backups.join("notes.txt"), "not a backup\n").unwrap();
+
+    let u = f.core.harness_backup_usage(&pid, Some(2)).unwrap();
+    assert_eq!((u.files, u.protected_files, u.prunable_files, u.orphan_files), (10, 5, 5, 1), "{u:?}");
+    assert_eq!(u.bytes, u.protected_bytes + u.prunable_bytes);
+    // Usage is read-only.
+    assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 11);
+
+    let r = f.core.harness_prune_backups(&pid, 2).unwrap();
+    assert_eq!(r.removed_files, 5, "{r:?}");
+    assert_eq!((r.after.files, r.after.prunable_files), (5, 0), "{r:?}");
+    assert!(backups.join("unresolved.bak").exists() && backups.join("notes.txt").exists() && !backups.join("orphan.bak").exists());
+    assert_eq!(f.core.store.h_change_get(&started.id).unwrap().backup_path.as_deref(), Some(format!("harness-backups/{pid}/unresolved.bak").as_str()));
+    assert_eq!(f.core.store.h_change_get(&a2.id).unwrap().backup_path, None, "a rolled-back change's backup is prunable");
+    assert!(f.core.store.h_change_get(&ra2.id).unwrap().backup_path.is_some() && f.core.store.h_change_get(&a1.id).unwrap().backup_path.is_some());
+    assert!(f.core.store.audit_count("harness.prune_backups").unwrap() == 1);
+
+    // A pruned change says why it cannot be rolled back; the kept undo steps still work.
+    for old in &edits[..3] {
+        assert!(f.core.store.h_change_get(&old.id).unwrap().backup_path.is_none());
+    }
+    f.core.harness_rollback(&edits[4].id).unwrap();
+    assert_eq!(disk(&f, "CLAUDE.md").unwrap(), "v4\n");
+    f.core.harness_rollback(&edits[3].id).unwrap();
+    assert_eq!(disk(&f, "CLAUDE.md").unwrap(), "v3\n");
+    let err = f.core.harness_rollback(&edits[2].id).unwrap_err();
+    assert!(err.to_string().contains("no backup"), "{err}");
+    assert_eq!(disk(&f, "CLAUDE.md").unwrap(), "v3\n");
+}
+
+#[test]
+fn a_possible_rollback_is_protected_even_when_no_history_is_kept() {
+    let f = fixture();
+    let pid = f.project.id.clone();
+    std::fs::write(root(&f).join("CLAUDE.md"), "v0\n").unwrap();
+    save(&f, "CLAUDE.md", "v1\n").unwrap();
+    let last = save(&f, "CLAUDE.md", "v2\n").unwrap();
+    let r = f.core.harness_prune_backups(&pid, 0).unwrap();
+    assert_eq!((r.removed_files, r.after.protected_files), (1, 1), "{r:?}");
+    assert!(f.core.store.h_change_get(&last.id).unwrap().backup_path.is_some());
+    // Once the file changes outside FORGE that rollback is no longer possible, so the backup stops being protected.
+    std::fs::write(root(&f).join("CLAUDE.md"), "edited by hand\n").unwrap();
+    assert_eq!(f.core.harness_backup_usage(&pid, Some(0)).unwrap().prunable_files, 1);
+    // ...unless history is kept for it.
+    assert_eq!(f.core.harness_backup_usage(&pid, Some(1)).unwrap().prunable_files, 0);
+}

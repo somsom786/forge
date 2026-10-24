@@ -2,6 +2,7 @@
 // Marker for the production-bundle check: FORGE_DEVPREVIEW_MARKER_7f3a91
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type {
+  McpAuthorization, McpDefinition,
   DoctorFinding, HarnessChange, HarnessFile, HarnessInventory, HarnessItem, HarnessPreview, HookDef, HookDryRun, HookTemplate, RollbackPreview,
 } from './types';
 
@@ -40,7 +41,7 @@ const inventory = (): HarnessInventory => ({
   ],
   hooks: hooks(),
   mcpServers: [{ name: 'docs', transport: 'stdio', command: 'npx docs-mcp', url: null, sourceItem: 'i5', scope: 'project', runsInForgeMissions: false }],
-  notes: ['FORGE missions read CLAUDE.md and rules from the project. Settings, hooks and MCP servers are not loaded by FORGE missions.', 'User-level files are shown for reference and never edited by FORGE.'],
+  notes: ['FORGE missions read CLAUDE.md and rules from the project. Settings and hooks are not loaded by FORGE missions; a .mcp.json server runs only after you authorize it.', 'User-level files are shown for reference and never edited by FORGE.'],
   truncated: false,
 });
 
@@ -64,6 +65,9 @@ function preview(rel: string, text: string, extra: Partial<HarnessPreview> = {})
   };
 }
 
+const mcpDef: McpDefinition = { name: 'docs', transport: 'stdio', command: 'npx', args: ['docs-mcp'], url: null, envNames: [] };
+let mcpAuth: McpAuthorization | null = null;
+
 const templates: HookTemplate[] = [
   { id: 'block-rm', name: 'Block destructive rm', description: 'Denies Bash commands that contain rm -rf.', event: 'PreToolUse', matcher: 'Bash', timeoutSecs: 10, requires: 'bash, grep', params: [{ key: 'pattern', label: 'Pattern to block', default: 'rm -rf' }] },
 ];
@@ -71,7 +75,26 @@ const templates: HookTemplate[] = [
 export function handleP4(cmd: string, args: any): Promise<any> | undefined {
   const done = (v: any) => Promise.resolve(v);
   switch (cmd) {
-    case 'harness_inventory': return done(inventory());
+    case 'execution_backends': {
+      const p = (level: string, detail: string) => ({ level, detail });
+      const caps = (l: string, d: string) => ({ operatingSystems: ['linux'], filesystemIsolation: p(l, d), processIsolation: p(l, d), networkControl: p(l, d), resourceLimits: p(l === 'enforced' ? 'partial' : l === 'none' && d.startsWith('Not') ? 'none' : 'partial', l === 'none' && d.startsWith('Not') ? d : 'Time limit and output caps only.'), workspaceMapping: p(d.startsWith('Not') ? 'none' : 'enforced', d.startsWith('Not') ? d : 'Runs in the worktree.'), credentialExposure: p(l, d), persistentState: p(l, d), interactiveTerminal: false, concurrentInstances: true });
+      return done([
+        { id: 'trusted_local', label: 'Trusted local (not isolated)', implemented: true, available: true, unavailableReason: null, capabilities: caps('none', 'Runs as you: everything your account can reach.') },
+        { id: 'linux_namespaces', label: 'Isolated: Linux namespaces (bubblewrap)', implemented: true, available: false, unavailableReason: 'Linux only. On Windows this backend is the planned inner layer of the isolated-WSL backend.', capabilities: caps('enforced', 'Enforced by namespaces.') },
+        { id: 'windows_sandbox', label: 'Isolated: Windows Sandbox', implemented: false, available: false, unavailableReason: 'Not implemented in this build. See docs/EXECUTION.md for the design.', capabilities: caps('none', 'Not implemented.') },
+        { id: 'isolated_wsl', label: 'Isolated: dedicated WSL distribution', implemented: false, available: false, unavailableReason: 'Not implemented in this build. See docs/EXECUTION.md for the design.', capabilities: caps('none', 'Not implemented.') },
+      ]);
+    }
+    case 'project_set_execution_backend': return Promise.reject('"Isolated: Windows Sandbox" cannot be used on this machine: Not implemented in this build.');
+    case 'storage_usage': return done({ databaseBytes: 48_300_000, events: 182_455, runFiles: 412, runBytes: 96_500_000, proofFiles: 37, proofBytes: 1_900_000, experimentBytes: 12_400_000, worktrees: 6, untrackedWorktrees: ['C:\\Users\\dev\\.forge\\worktrees\\atlas-api\\old-spike-3f2a'] });
+    case 'storage_cleanup_preview': return done({ olderThanDays: args.olderThanDays, missions: [{ id: 'm6', title: 'Bump docusaurus to latest minor', state: 'merged', updatedAt: '2026-08-01T10:00:00.000Z', events: 1840, files: ['r1.log', 'r2.log'], bytes: 2_300_000 }], orphanFiles: ['r9.stdout'], events: 1840, files: 3, bytes: 2_450_000, token: 'preview' });
+    case 'storage_cleanup_apply': return done({ eventsDeleted: 1840, filesDeleted: 3, bytesFreed: 2_450_000, failures: [] });
+    case 'project_set_agent_backend': return Promise.reject('"Isolated: Linux namespaces (bubblewrap)" cannot be used for agents on this machine: Linux only.');
+    case 'harness_inventory': { const inv = inventory(); inv.mcpServers = inv.mcpServers.map((s) => ({ ...s, runsInForgeMissions: mcpAuth !== null && s.name === mcpAuth.name })); return done(inv); }
+    case 'mcp_preview': return done({ definition: mcpDef, definitionSha256: 'a3f1c0de'.repeat(8), summary: ['Starts the program `npx` on this computer, with your privileges, whenever a Claude mission in this project starts — before any tool call is approved. It is not sandboxed.', 'It is fetched by a package runner: unless the arguments pin an exact version, a different version can run next time.', 'FORGE passes it no extra environment variables.', 'Its tools can only be used with your approval, one call at a time; what they return is treated as untrusted data.'], authorized: mcpAuth });
+    case 'mcp_authorize': mcpAuth = { id: 'ma1', projectId: args.projectId, name: args.name, definition: mcpDef, definitionSha256: args.definitionSha256, toolAllowlist: args.toolAllowlist, authorizedAt: new Date().toISOString(), revokedAt: null }; return done(mcpAuth);
+    case 'mcp_revoke': { const a = { ...mcpAuth!, revokedAt: new Date().toISOString() }; mcpAuth = null; return done(a); }
+    case 'mcp_authorizations': return done(mcpAuth ? [{ authorization: mcpAuth, changedSinceAuthorization: false, summary: [] }] : []);
     case 'harness_doctor': return done(doctor());
     case 'harness_read': { const t = files[args.rel]; return done({ rel: args.rel, exists: t !== undefined, text: t ?? '', sha256: t !== undefined ? H(args.rel) : null, bytes: (t ?? '').length, editable: true } as HarnessFile); }
     case 'harness_preview': return done(preview(args.rel, args.text));

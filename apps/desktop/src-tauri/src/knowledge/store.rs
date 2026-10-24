@@ -449,7 +449,7 @@ impl Store {
 
     // ---- links ---------------------------------------------------------------------------------------
 
-    /// Resolve wikilinks to pages by title or slug. Ambiguity is recorded, never guessed.
+    /// Resolve wikilinks to pages by file name, vault path or title. Ambiguity is recorded, never guessed.
     pub fn k_resolve_links(&self, project_id: &str) -> Result<()> {
         let pages = self.k_list(project_id)?;
         let mut c = self.c();
@@ -458,11 +458,27 @@ impl Store {
             let mut s = tx.prepare("SELECT l.from_page, l.target FROM knowledge_link l JOIN knowledge_page p ON p.id = l.from_page WHERE p.project_id=?1 AND l.kind='wikilink'")?;
             s.query_map([project_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?
         };
+        // Obsidian resolves a link by file name or vault path, case-insensitively; titles are FORGE's addition. Names are
+        // compared composed (NFC) and case-folded, so `[[Café]]` finds a decomposed `Café.md` from macOS and `[[über]]`
+        // finds `Über.md`. Slugs are never used to match: different names share them (every non-ASCII name, `C++` and
+        // `C`, names that differ after 60 characters), so a slug match can point a link at the wrong page.
+        let keys: Vec<(&KPage, [String; 3])> = pages
+            .iter()
+            .filter(|p| !p.missing)
+            .map(|p| {
+                let path = p.rel_path.strip_suffix(".md").unwrap_or(&p.rel_path);
+                let stem = path.rsplit('/').next().unwrap_or(path);
+                (p, [link_key(&p.title), link_key(stem), link_key(path)])
+            })
+            .collect();
         for (from, target) in rows {
-            let t_slug = page::slugify(&target);
-            let matches: Vec<&KPage> = pages
+            let bare = target.trim().trim_start_matches('/');
+            let bare = bare.strip_suffix(".md").unwrap_or(bare);
+            let t_key = link_key(bare);
+            let matches: Vec<&KPage> = keys
                 .iter()
-                .filter(|p| !p.missing && p.id != from && (p.title.eq_ignore_ascii_case(&target) || p.slug == t_slug || p.rel_path.trim_end_matches(".md").eq_ignore_ascii_case(&target)))
+                .filter(|(p, k)| p.id != from && k.contains(&t_key))
+                .map(|(p, _)| *p)
                 .collect();
             let (to, amb) = match matches.len() {
                 0 => (None, false),
@@ -678,4 +694,10 @@ fn source_from(r: &Row) -> rusqlite::Result<KSource> {
 
 fn revision_from(r: &Row) -> rusqlite::Result<KRevision> {
     Ok(KRevision { id: r.get(0)?, page_id: r.get(1)?, base_sha256: r.get(2)?, text: r.get(3)?, author: r.get(4)?, note: r.get(5)?, state: r.get(6)?, created_at: r.get(7)?, decided_at: r.get(8)? })
+}
+
+/// How a wikilink target and a page name are compared: Unicode-composed (NFC) and lower-cased.
+fn link_key(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    s.trim().nfc().collect::<String>().to_lowercase()
 }

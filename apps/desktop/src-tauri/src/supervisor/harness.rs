@@ -28,6 +28,39 @@ pub struct RollbackPreview {
     pub removed: usize,
 }
 
+/// Disk used by Harness Studio backups for one project, and what a prune with `keep_per_file` would remove.
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupUsage {
+    pub keep_per_file: usize,
+    pub files: usize,
+    pub bytes: u64,
+    /// Backups a prune never removes (see `backup_plan`).
+    pub protected_files: usize,
+    pub protected_bytes: u64,
+    pub prunable_files: usize,
+    pub prunable_bytes: u64,
+    /// Backup files no journal entry refers to (left by an interrupted save); always prunable.
+    pub orphan_files: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PruneReport {
+    pub removed_files: usize,
+    pub removed_bytes: u64,
+    pub after: BackupUsage,
+}
+
+/// Default number of rollback steps kept per file.
+pub const DEFAULT_KEEP_BACKUPS_PER_FILE: usize = 10;
+
+struct BackupPlan {
+    usage: BackupUsage,
+    /// (change id or None for an orphan, absolute path, size)
+    prunable: Vec<(Option<String>, PathBuf, u64)>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct HookSpec {
     pub event: String,
@@ -53,7 +86,13 @@ impl Core {
 
     pub fn harness_inventory(&self, project_id: &str) -> Result<inventory::Inventory> {
         let root = self.harness_root(project_id)?;
-        Ok(inventory::scan(&root, self.user_claude_home().as_deref()))
+        let mut inv = inventory::scan(&root, self.user_claude_home().as_deref());
+        // A project server runs in missions only once the user authorized it (and then from the stored definition).
+        let authorized: Vec<String> = self.store.mcp_active(project_id)?.into_iter().map(|a| a.name).collect();
+        for s in inv.mcp_servers.iter_mut().filter(|s| s.scope == "project") {
+            s.runs_in_forge_missions = authorized.contains(&s.name);
+        }
+        Ok(inv)
     }
 
     /// Doctor findings plus "changed since you last reviewed it" for files FORGE wrote or the user marked as reviewed.
@@ -251,7 +290,7 @@ impl Core {
                 }
                 Ok(Some(bytes))
             }
-            (Some(_), None) => Err(ForgeError::Other("this change has no backup".into())),
+            (Some(_), None) => Err(ForgeError::Other("this change has no backup (old backups are removed when you prune them), so it cannot be rolled back".into())),
         }
     }
 
@@ -313,6 +352,104 @@ impl Core {
         self.store.audit("user", "harness.rollback", Some(&c.project_id), &json!({"rel": c.rel, "rolledBack": c.id}));
         self.emit(UiEvent::Harness { project_id: c.project_id.clone() });
         Ok(ch)
+    }
+
+    // ---- backup retention ----------------------------------------------------------------------------------------------
+
+    /// Decide which backups a prune may remove. A backup is **protected** when any of these holds:
+    ///   * its change is unresolved (`started`): crash recovery may still need it;
+    ///   * it belongs to one of the newest `keep_per_file` applied, not-rolled-back changes of its file (undo history);
+    ///   * a rollback of its change is possible right now (the file still has that change's result), whatever its age;
+    ///   * the file's current content cannot be read (FORGE cannot tell whether a rollback is possible, so it keeps it).
+    ///
+    /// Everything else (failed saves, changes already rolled back, older history, backup files no journal entry refers to) is
+    /// prunable. Only `*.bak` regular files inside this project's backup folder are ever considered.
+    fn backup_plan(&self, project_id: &str, keep_per_file: usize) -> Result<BackupPlan> {
+        let root = self.harness_root(project_id)?;
+        let changes = self.store.h_changes_with_backups(project_id)?;
+        let mut usage = BackupUsage { keep_per_file, ..Default::default() };
+        let mut prunable = vec![];
+        let mut referenced = std::collections::HashSet::new();
+        let mut kept_per_rel: HashMap<String, usize> = HashMap::new();
+        let mut current: HashMap<String, Option<Option<String>>> = HashMap::new();
+        for c in &changes {
+            let Some(rel_path) = &c.backup_path else { continue };
+            let abs = self.backup_abs(rel_path)?;
+            referenced.insert(abs.clone());
+            let Ok(meta) = std::fs::symlink_metadata(&abs) else { continue }; // already gone
+            if !meta.is_file() {
+                continue;
+            }
+            let size = meta.len();
+            let cur = current.entry(c.rel.clone()).or_insert_with(|| edit::target(&root, &c.rel).and_then(|p| edit::read_bytes(&p)).ok().map(|b| b.map(|b| edit::sha256_hex(&b))));
+            let live = c.state == "applied" && c.rolled_back_by.is_none();
+            let rollback_possible_now = live && matches!(cur, Some(sha) if *sha == c.after_sha256);
+            let unknown_file_state = live && cur.is_none();
+            let in_history = live && {
+                let n = kept_per_rel.entry(c.rel.clone()).or_default();
+                *n += 1;
+                *n <= keep_per_file
+            };
+            usage.files += 1;
+            usage.bytes += size;
+            if c.state == "started" || in_history || rollback_possible_now || unknown_file_state {
+                usage.protected_files += 1;
+                usage.protected_bytes += size;
+            } else {
+                usage.prunable_files += 1;
+                usage.prunable_bytes += size;
+                prunable.push((Some(c.id.clone()), abs, size));
+            }
+        }
+        if let Ok(dir) = std::fs::read_dir(self.backup_dir(project_id)) {
+            for e in dir.flatten() {
+                let p = e.path();
+                let Ok(meta) = std::fs::symlink_metadata(&p) else { continue };
+                if !meta.is_file() || p.extension().and_then(|x| x.to_str()) != Some("bak") || referenced.contains(&p) {
+                    continue;
+                }
+                usage.files += 1;
+                usage.bytes += meta.len();
+                usage.orphan_files += 1;
+                usage.prunable_files += 1;
+                usage.prunable_bytes += meta.len();
+                prunable.push((None, p, meta.len()));
+            }
+        }
+        Ok(BackupPlan { usage, prunable })
+    }
+
+    /// How much space this project's backups use and what a prune keeping `keep_per_file` undo steps would free. Read-only.
+    pub fn harness_backup_usage(&self, project_id: &str, keep_per_file: Option<usize>) -> Result<BackupUsage> {
+        Ok(self.backup_plan(project_id, keep_per_file.unwrap_or(DEFAULT_KEEP_BACKUPS_PER_FILE))?.usage)
+    }
+
+    /// Remove prunable backups (see `backup_plan`). Runs under the project's harness lock, so no save or rollback is in flight
+    /// and an unreferenced backup cannot belong to one. The journal entry forgets the backup before the file is deleted, so a
+    /// crash in between leaves at most an orphan file (pruned next time), never an entry pointing at nothing.
+    pub fn harness_prune_backups(&self, project_id: &str, keep_per_file: usize) -> Result<PruneReport> {
+        let _lock = self.harness_lock(project_id)?;
+        let plan = self.backup_plan(project_id, keep_per_file)?;
+        let (mut removed_files, mut removed_bytes) = (0, 0);
+        for (change, path, size) in plan.prunable {
+            if let Some(id) = &change {
+                if self.store.h_change_drop_backup(id).is_err() {
+                    continue;
+                }
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    removed_files += 1;
+                    removed_bytes += size;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => eprintln!("[forge] could not remove backup {}: {e}", path.display()),
+            }
+        }
+        let after = self.backup_plan(project_id, keep_per_file)?.usage;
+        self.store.audit("user", "harness.prune_backups", Some(project_id), &json!({"keepPerFile": keep_per_file, "removedFiles": removed_files, "removedBytes": removed_bytes}));
+        self.emit(UiEvent::Harness { project_id: project_id.to_string() });
+        Ok(PruneReport { removed_files, removed_bytes, after })
     }
 
     /// Resolve edits interrupted by a crash by inspecting the file: it either has the new content (the write finished) or it

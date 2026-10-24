@@ -118,9 +118,11 @@ pub fn run_with_input(root: &Path, event: &str, command: &str, timeout: Duration
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
+        // CREATE_NO_WINDOW, and suspended until it is in the kill-on-close Job (see below).
+        cmd.creation_flags(0x0800_0000 | proc::CREATE_SUSPENDED);
     }
 
+    proc::isolate(&mut cmd);
     let started = Instant::now();
     let mut child = cmd.spawn().map_err(|e| ForgeError::Other(format!("could not start the hook command: {e}")))?;
     let pid = child.id();
@@ -134,6 +136,15 @@ pub fn run_with_input(root: &Path, event: &str, command: &str, timeout: Duration
             return Err(ForgeError::Other(format!("could not contain the hook process, so the dry run was stopped: {e}")));
         }
     };
+    // On Windows the hook was created suspended: it has run no code yet, so nothing it starts can predate the Job. Let it run
+    // now; if it cannot be resumed it never ran and is ended with its Job.
+    #[cfg(windows)]
+    if let Err(e) = proc::resume_suspended(&child) {
+        drop(containment);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(ForgeError::Other(format!("could not start the contained hook process, so the dry run was stopped: {e}")));
+    }
     if let Some(mut stdin) = child.stdin.take() {
         let payload = input.to_string();
         std::thread::spawn(move || {

@@ -12,6 +12,7 @@ describe('credentialChip', () => {
   });
   it('shows scripted as a neutral chip, not a billing warning', () => expect(credentialChip('scripted')).toEqual({ kind: 'scripted' }));
   it('warns for any other source', () => expect(credentialChip('ANTHROPIC_API_KEY')).toEqual({ kind: 'api-warning', source: 'ANTHROPIC_API_KEY' }));
+  it('shows agent-managed (ACP) as its own chip', () => expect(credentialChip('agent-managed')).toEqual({ kind: 'agent' }));
   it('reports missing source as unreported', () => expect(credentialChip(undefined)).toEqual({ kind: 'unreported' }));
 });
 

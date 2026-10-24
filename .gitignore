@@ -11,3 +11,4 @@ packages/engine/bundle/
 
 # local agent worktrees (per-machine state, not project code)
 .claude/
+.codeintel-eval/

@@ -1,9 +1,18 @@
+pub mod codeintel;
 pub mod commands;
+pub mod conflicts;
 pub mod contract;
 pub mod db;
 pub mod detect;
 pub mod error;
+pub mod execution;
+#[cfg(all(test, target_os = "linux"))]
+mod execution_tests;
+pub mod experiment;
 pub mod git;
+pub mod acp;
+pub mod evidence;
+pub mod mcp;
 pub mod merge;
 pub mod harness;
 pub mod knowledge;
@@ -16,6 +25,7 @@ pub mod providers;
 pub mod redact;
 pub mod store;
 pub mod store_review;
+pub mod store_experiment;
 pub mod verify;
 pub mod supervisor;
 
@@ -82,12 +92,30 @@ fn locate_node(app: &tauri::App) -> Option<PathBuf> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// One FORGE per home directory. A second copy would run startup recovery against the first one's live state: mark its
+/// running missions interrupted, expire the approvals its agents are waiting on, and race it to merge. The OS drops the lock
+/// when the process ends (also on a crash), so a stale lock file never blocks a restart.
+pub fn acquire_instance_lock(home: &std::path::Path) -> std::result::Result<std::fs::File, String> {
+    let path = home.join("forge.lock");
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(std::fs::TryLockError::WouldBlock) => Err(format!("FORGE is already running with the data folder {}", home.display())),
+        Err(std::fs::TryLockError::Error(e)) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+struct InstanceLock(#[allow(dead_code)] std::fs::File);
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let home = forge_home();
             std::fs::create_dir_all(&home)?;
+            // Held (managed by Tauri) for the life of the app.
+            let lock = acquire_instance_lock(&home).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            app.manage(InstanceLock(lock));
             let store = store::Store::open(&home.join("forge.db"))?;
             let handle = app.handle().clone();
             let cfg = Config {
@@ -99,6 +127,7 @@ pub fn run() {
                 allow_fake: cfg!(debug_assertions) || std::env::var("FORGE_ALLOW_FAKE_PROVIDER").as_deref() == Ok("1"),
                 max_concurrent: 3,
                 ollama_url: std::env::var("FORGE_OLLAMA_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into()),
+                engine_env: vec![],
             };
             let core = Core::new(store, cfg, Arc::new(move |ev| {
                 let _ = handle.emit("forge://event", &ev);
@@ -172,10 +201,35 @@ pub fn run() {
             commands::harness_rollback_preview,
             commands::harness_rollback,
             commands::harness_mark_reviewed,
+            commands::harness_backup_usage,
+            commands::harness_prune_backups,
             commands::harness_hook_templates,
             commands::harness_hook_preview_add,
             commands::harness_hook_preview_remove,
             commands::harness_hook_dry_run,
+            commands::experiment_create,
+            commands::experiment_list,
+            commands::experiment_get,
+            commands::experiment_run,
+            commands::experiment_cancel,
+            commands::mission_conflicts,
+            commands::execution_backends,
+            commands::project_set_execution_backend,
+            commands::project_set_agent_backend,
+            commands::storage_usage,
+            commands::storage_cleanup_preview,
+            commands::storage_cleanup_apply,
+            commands::code_map,
+            commands::code_symbols,
+            commands::mcp_preview,
+            commands::mcp_authorize,
+            commands::mcp_revoke,
+            commands::mcp_authorizations,
+            commands::acp_agents,
+            commands::acp_agent_register,
+            commands::acp_agent_remove,
+            commands::verification_adapters,
+            commands::agents_overview,
             commands::knowledge_open_in_obsidian,
             commands::context_preview,
             commands::context_for_mission,
@@ -183,4 +237,17 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running FORGE");
+}
+
+#[cfg(test)]
+mod instance_lock_tests {
+    #[test]
+    fn a_second_instance_on_the_same_home_is_refused_and_the_lock_is_released_on_exit() {
+        let home = tempfile::tempdir().unwrap();
+        let first = super::acquire_instance_lock(home.path()).unwrap();
+        let err = super::acquire_instance_lock(home.path()).unwrap_err();
+        assert!(err.contains("already running"), "{err}");
+        drop(first);
+        assert!(super::acquire_instance_lock(home.path()).is_ok(), "the lock goes away with its holder");
+    }
 }

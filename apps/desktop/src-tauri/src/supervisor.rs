@@ -25,9 +25,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -79,6 +79,8 @@ pub struct Config {
     pub max_concurrent: usize,
     /// Loopback Anthropic-compatible endpoint (Ollama) for `claude-local` missions.
     pub ollama_url: String,
+    /// Extra environment for engine processes (tests isolate Claude Code's config directory this way).
+    pub engine_env: Vec<(String, String)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,6 +125,8 @@ struct SessionHandle {
     mission_id: String,
     worktree: PathBuf,
     profile: PermissionProfile,
+    /// Where the agent and the tools it runs execute (part of every approval's binding).
+    executes_on: String,
     tx: Sender<String>,
     pid: u32,
     stopping: AtomicBool,
@@ -133,6 +137,10 @@ struct SessionHandle {
     life: Mutex<()>,
     /// approval id -> engine request ids waiting on it (a hook and a fallback prompt can coincide).
     waiters: Mutex<HashMap<String, Vec<String>>>,
+    /// approval id -> the exact (tool, input) the agent asked for, unredacted, so policy can be re-checked at decision time.
+    requests: Mutex<HashMap<String, (String, Value)>>,
+    /// Approvals whose single permitted reuse (provider prompt after FORGE's hook for the same call) has been spent.
+    reused: Mutex<std::collections::HashSet<String>>,
     fatal: Mutex<Option<String>>,
     stderr_tail: Mutex<String>,
     /// Dropping this terminates the whole process tree (Windows Job Object).
@@ -184,6 +192,10 @@ pub struct Core {
     checks: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// project ids with a merge in progress (merges into one checkout are serialised).
     merging: Mutex<HashSet<String>>,
+    /// Seconds a pending approval stays decidable (APPROVAL_TTL_SECS; shortened only by tests).
+    approval_ttl: std::sync::atomic::AtomicU64,
+    /// experiment id -> cancel flag of its running attempt.
+    experiments: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -206,6 +218,26 @@ fn canonical_json(v: &Value) -> String {
     canon(v).to_string()
 }
 
+/// Agents' approved tool calls execute on the host today (see docs/EXECUTION.md); recorded so that changes later are visible.
+pub(crate) const AGENT_EXECUTES_ON: &str = "agent_host";
+/// Longest engine→core protocol line accepted (the engine truncates fields far below this).
+const MAX_ENGINE_LINE: usize = 16 * 1024 * 1024;
+/// How long a request may wait for a human before it can no longer be approved.
+pub(crate) const APPROVAL_TTL_SECS: u64 = 30 * 60;
+
+/// What a human approves: one digest over everything the decision is about. A different mission, session, provider, tool,
+/// input, worktree, permission profile, policy revision or execution place is a different binding.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn approval_binding(mission_id: &str, session_id: &str, provider: &str, tool: &str, input: &Value, worktree: &Path, profile: &str, executes_on: &str) -> String {
+    let doc = json!({
+        "mission": mission_id, "session": session_id, "provider": provider, "tool": tool, "input": input,
+        "worktree": worktree.to_string_lossy(), "profile": profile, "policyRev": policy::REVISION, "executesOn": executes_on,
+    });
+    let mut h = Sha256::new();
+    h.update(canonical_json(&doc).as_bytes());
+    format!("{:x}", h.finalize())
+}
+
 /// Identity of one exact tool call: the provider's id *and* a digest of tool + input.
 fn request_key(tool_use_id: &str, tool: &str, input: &Value) -> String {
     let mut h = Sha256::new();
@@ -217,7 +249,7 @@ fn request_key(tool_use_id: &str, tool: &str, input: &Value) -> String {
 
 impl Core {
     pub fn new(store: Store, cfg: Config, emit: Emitter) -> Arc<Self> {
-        Arc::new(Self { store, cfg, emit, reg: Mutex::new(Registry::default()), checks: Mutex::new(HashMap::new()), merging: Mutex::new(HashSet::new()) })
+        Arc::new(Self { store, cfg, emit, reg: Mutex::new(Registry::default()), checks: Mutex::new(HashMap::new()), merging: Mutex::new(HashSet::new()), experiments: Mutex::new(HashMap::new()), approval_ttl: std::sync::atomic::AtomicU64::new(APPROVAL_TTL_SECS) })
     }
 
     fn emit(&self, e: UiEvent) {
@@ -295,7 +327,10 @@ impl Core {
         if provider == "fake" && !self.cfg.allow_fake {
             return Err(ForgeError::Provider("the scripted test agent is not enabled".into()));
         }
-        if !matches!(provider, "claude" | "claude-local" | "codex" | "fake") {
+        if provider == "acp" {
+            self.store.acp_by_name(model.map(str::trim).unwrap_or(""))?;
+        }
+        if !matches!(provider, "claude" | "claude-local" | "codex" | "acp" | "fake") {
             return Err(ForgeError::Provider(format!("provider \"{provider}\" is not available in this build")));
         }
         if provider == "claude-local" && model.map(str::trim).unwrap_or("").is_empty() {
@@ -416,10 +451,46 @@ impl Core {
         let branch = format!("forge/{slug}-{short}");
         let proj_short = &project.id[project.id.len().saturating_sub(8)..];
         let wt = self.cfg.home.join("worktrees").join(proj_short).join(format!("{slug}-{short}"));
+        // A crash after `git worktree add` but before the database write leaves this exact worktree behind (the path and branch
+        // are derived from the mission). Adopt it only if it is provably ours and untouched; otherwise refuse as before.
+        if wt.exists() {
+            let adopted = (|| -> Result<(PathBuf, String)> {
+                let real = crate::paths::canonical_dir(&wt)?;
+                git::verify_worktree(&root, &real, Some(&branch))?;
+                let head = git::head_commit(&real)?;
+                if git::status(&real)?.dirty {
+                    return Err(ForgeError::Git("it has uncommitted changes".into()));
+                }
+                if git::run(&real, &["rev-list", "--count", &format!("{head}..refs/heads/{branch}")]).map(|n| n.trim() != "0").unwrap_or(true) {
+                    return Err(ForgeError::Git("its branch moved".into()));
+                }
+                Ok((real, head))
+            })();
+            return match adopted {
+                Ok((real, head)) => {
+                    self.store.set_mission_workspace(&m.id, &base_ref, &head, &branch, &real.to_string_lossy())?;
+                    self.store.audit("system", "worktree.adopt", Some(&m.id), &json!({"branch": branch, "path": real.to_string_lossy(), "base": head}));
+                    Ok(real)
+                }
+                Err(e) => Err(ForgeError::Git(format!("{} already exists and cannot be adopted for this mission ({e}); remove it or discard the mission", wt.display()))),
+            };
+        }
         git::worktree_add(&root, &wt, &branch, &base_commit)?;
-        let wt = crate::paths::canonical_dir(&wt)?;
-        git::verify_worktree(&root, &wt, Some(&branch))?;
-        self.store.set_mission_workspace(&m.id, &base_ref, &base_commit, &branch, &wt.to_string_lossy())?;
+        let recorded = (|| -> Result<PathBuf> {
+            let real = crate::paths::canonical_dir(&wt)?;
+            git::verify_worktree(&root, &real, Some(&branch))?;
+            self.store.set_mission_workspace(&m.id, &base_ref, &base_commit, &branch, &real.to_string_lossy())?;
+            Ok(real)
+        })();
+        let wt = match recorded {
+            Ok(real) => real,
+            Err(e) => {
+                // Nothing has run in it yet: undo what we just created rather than leave an orphan that blocks every retry.
+                let _ = git::worktree_remove(&root, &wt, true);
+                let _ = git::delete_branch(&root, &branch, true);
+                return Err(e);
+            }
+        };
         self.store.audit("system", "worktree.create", Some(&m.id), &json!({"branch": branch, "path": wt.to_string_lossy(), "base": base_commit}));
         Ok(wt)
     }
@@ -453,27 +524,58 @@ impl Core {
         if matches!(m.provider.as_str(), "claude" | "claude-local") && self.cfg.claude.is_none() {
             return Err(ForgeError::Provider("Claude Code was not found on PATH; install it and sign in with `claude`".into()));
         }
+        // Only servers the user authorized for this project, from their stored (reviewed) definitions; never the repo's .mcp.json.
+        // Codex receives none: its MCP configuration lives in the user's own ~/.codex/config.toml, which FORGE does not touch.
+        // ACP agents run MCP tool calls themselves (FORGE only sees what they choose to ask about), so a per-tool allow-list
+        // cannot be enforced for them: servers authorized with an allow-list are withheld from ACP missions.
+        let mcp_servers = match m.provider.as_str() {
+            "codex" => serde_json::Map::new(),
+            "acp" => self.mcp_servers_for_mission_filtered(&m.project_id, true)?,
+            _ => self.mcp_servers_for_mission(&m.project_id)?,
+        };
+        let acp_agent = if m.provider == "acp" {
+            let a = self.store.acp_by_name(m.model.as_deref().unwrap_or(""))?;
+            if !Path::new(&a.command).is_file() {
+                return Err(ForgeError::Provider(format!("the ACP agent \"{}\" ({}) no longer exists; register it again", a.name, a.command)));
+            }
+            Some(json!({"name": a.name, "command": a.command, "args": a.args}))
+        } else {
+            None
+        };
         if m.provider == "codex" && self.cfg.codex.is_none() {
             return Err(ForgeError::Provider("Codex was not found (or only an npm shim was found); install the Codex app/CLI and sign in with `codex login`".into()));
         }
+        // Where the agent runs: the project's agent backend, required (never a silent fallback to the host). Decided, and
+        // what a contained agent may see checked, before a session is recorded: a refusal here leaves no session behind.
+        let project = self.store.get_project(&m.project_id)?;
+        let backend = crate::execution::Backend::parse(&project.agent_backend)?;
+        let executes_on = if backend == crate::execution::Backend::TrustedLocal { AGENT_EXECUTES_ON.to_string() } else { backend.as_str().to_string() };
+        let (read_only, read_write) = if backend == crate::execution::Backend::TrustedLocal {
+            (vec![], vec![])
+        } else {
+            (self.agent_read_only_paths(&node, &script, worktree, acp_agent.as_ref(), &mcp_servers)?, self.agent_state_paths(&m.provider, worktree)?)
+        };
         let session = self.store.create_session(&m.id, &m.provider, resume)?;
         let fail_session = |reason: String| {
             let _ = self.store.end_session(&session.id, "lost", &reason);
             ForgeError::Provider(reason)
         };
-
-        let mut cmd = Command::new(&node);
-        cmd.arg(&script)
-            .current_dir(worktree)
+        self.store.set_session_executes_on(&session.id, &executes_on).map_err(|e| fail_session(e.to_string()))?;
+        let script_arg = [script.clone().into_os_string()];
+        let spec = crate::execution::AgentSpec { program: &node, args: &script_arg, workspace: worktree, read_only, read_write };
+        let mut cmd = crate::execution::agent_command(backend, &spec).map_err(|e| fail_session(e.to_string()))?;
+        cmd.current_dir(worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("FORGE_ALLOW_FAKE_PROVIDER", if self.cfg.allow_fake { "1" } else { "0" });
+            .env("FORGE_ALLOW_FAKE_PROVIDER", if self.cfg.allow_fake { "1" } else { "0" })
+            .envs(self.cfg.engine_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
+        proc::isolate(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| fail_session(format!("could not start the engine: {e}")))?;
         let pid = child.id();
 
@@ -496,6 +598,7 @@ impl Core {
             mission_id: m.id.clone(),
             worktree: worktree.to_path_buf(),
             profile,
+            executes_on: executes_on.clone(),
             tx,
             pid,
             stopping: AtomicBool::new(false),
@@ -503,12 +606,27 @@ impl Core {
             core_seq: AtomicI64::new(0),
             life: Mutex::new(()),
             waiters: Mutex::new(HashMap::new()),
+            requests: Mutex::new(HashMap::new()),
+            reused: Mutex::new(std::collections::HashSet::new()),
             fatal: Mutex::new(None),
             stderr_tail: Mutex::new(String::new()),
             containment: Mutex::new(Some(containment)),
         });
         self.reg().sessions.insert(session.id.clone(), handle.clone());
-        self.store.audit("system", "session.spawn", Some(&session.id), &json!({"mission": m.id, "provider": m.provider, "pid": pid}));
+        // Expire requests nobody decided in time, so an agent is never left waiting on a stale prompt.
+        {
+            let (core, sid) = (self.clone(), session.id.clone());
+            let _ = std::thread::Builder::new().name(format!("forge-expiry-{}", &session.id[..8])).spawn(move || loop {
+                let ttl_ms = core.approval_ttl.load(Ordering::SeqCst) * 1000;
+                std::thread::sleep(Duration::from_millis((ttl_ms / 4).clamp(100, 15_000)));
+                let Some(h) = core.reg().sessions.get(&sid).cloned() else { break };
+                core.expire_overdue(&h);
+            });
+        }
+        self.store.audit("system", "session.spawn", Some(&session.id), &json!({"mission": m.id, "provider": m.provider, "pid": pid, "agentBackend": backend.as_str()}));
+        if backend != crate::execution::Backend::TrustedLocal {
+            self.core_event(&handle, "status", json!({"message": format!("The agent runs isolated: {}", backend.label()), "agentBackend": backend.as_str()}));
+        }
 
         // Start the I/O threads; if any cannot start, unwind everything instead of leaving a half-session.
         let sid8 = session.id[..8].to_string();
@@ -539,13 +657,33 @@ impl Core {
             })?;
             let (c2, h3) = (core.clone(), handle.clone());
             std::thread::Builder::new().name(format!("forge-reader-{sid8}")).spawn(move || {
-                for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
-                    if line.trim().is_empty() {
+                // Protocol lines are bounded, and a line the core cannot read ends the session: silently skipping it could drop a
+                // permission request (the agent would wait forever) or a tool event (a gap in the audit trail).
+                let mut reader = BufReader::new(stdout);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    let n = match (&mut reader).take(MAX_ENGINE_LINE as u64 + 1).read_until(b'\n', &mut buf) {
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    let too_long = buf.len() > MAX_ENGINE_LINE && buf.last() != Some(&b'\n');
+                    let line = String::from_utf8_lossy(&buf);
+                    if !too_long && line.trim().is_empty() {
                         continue;
                     }
-                    match serde_json::from_str::<EngineMsg>(&line) {
-                        Ok(msg) => c2.on_engine_msg(&h3, msg),
-                        Err(e) => eprintln!("[forge] malformed engine line ({e}): {}", redact::truncate(&line, 200).0),
+                    match (too_long, serde_json::from_str::<EngineMsg>(line.trim_end())) {
+                        (false, Ok(msg)) => c2.on_engine_msg(&h3, msg),
+                        (_, res) => {
+                            let why = if too_long { format!("a protocol line longer than {MAX_ENGINE_LINE} bytes") } else { format!("an unreadable protocol line ({})", res.err().map(|e| e.to_string()).unwrap_or_default()) };
+                            eprintln!("[forge] {why}: {}", redact::truncate(&line, 200).0);
+                            *lock(&h3.fatal) = Some(format!("the engine sent {why}; the session was stopped for safety"));
+                            h3.terminate_tree();
+                            break;
+                        }
                     }
                 }
                 let _ = done_tx.send(());
@@ -590,6 +728,8 @@ impl Core {
             "appendSystemPrompt": MISSION_GUIDANCE,
             "allowApiBilling": false,
             "localEndpoint": if local { Some(self.cfg.ollama_url.clone()) } else { None },
+            "mcpServers": mcp_servers,
+            "acp": acp_agent,
         }));
         Ok(())
     }
@@ -659,6 +799,10 @@ impl Core {
         };
         // Everything below happens under the lifecycle lock: insert, register waiter, change state, announce.
         let _life = lock(&h.life);
+        // After the turn has ended nothing may still be granted (a late callback from a lingering agent process).
+        if h.completed.load(Ordering::SeqCst) {
+            return reply("deny", Some("the turn has ended; FORGE does not grant anything after it"));
+        }
         let key = request_key(&req.tool_use_id, &req.tool, &req.input);
 
         // A hook and the provider's own prompt can both ask about the same tool use. Only an IDENTICAL call
@@ -667,7 +811,17 @@ impl Core {
             Ok(Some(existing)) => {
                 match existing.state.as_str() {
                     "pending" => lock(&h.waiters).entry(existing.id).or_default().push(req.request_id.clone()),
-                    "approved" | "auto_allowed" => reply("allow", None),
+                    "approved" | "auto_allowed" => {
+                        // The only legitimate repeat is the provider's own prompt following FORGE's hook for the same call, so
+                        // an allow is reused once, and only if policy still allows it now (the world may have changed).
+                        let first_reuse = lock(&h.reused).insert(existing.id.clone());
+                        let still = self.policy_decision(h, &req.tool, &req.input);
+                        match (first_reuse, still) {
+                            (false, _) => reply("deny", Some("this tool call was already answered; FORGE does not reuse an approval twice")),
+                            (true, Decision::Deny { reason }) => reply("deny", Some(&format!("Blocked by FORGE policy: {reason}"))),
+                            (true, _) => reply("allow", None),
+                        }
+                    }
                     _ => reply("deny", existing.decision_note.as_deref().or(Some("Denied by FORGE"))),
                 }
                 return;
@@ -682,7 +836,20 @@ impl Core {
         let mut detail = json!({"tool": req.tool, "input": req.input, "source": req.source, "blockedPath": req.blocked_path, "providerReason": req.reason});
         redact::redact_value(&mut detail);
 
-        match policy::evaluate(&req.tool, &req.input, &h.worktree, h.profile) {
+        let mut decision = self.policy_decision(h, &req.tool, &req.input);
+        // What the human approves must be what runs. Redaction hides secret-looking text on the card, so a command whose text
+        // redaction would change cannot be shown faithfully: refuse it rather than ask about a censored version.
+        let mut shown = req.input.clone();
+        redact::redact_value(&mut shown);
+        if shown != req.input {
+            if policy::is_shell_tool(&req.tool) {
+                decision = Decision::Deny { reason: "the command contains text FORGE would have to hide from you (it looks like a secret); write the command without inline secrets".into() };
+            } else if let Decision::Ask { risk, warnings, .. } = &mut decision {
+                *risk = Risk::High;
+                warnings.push("Part of this request looks like a secret and is hidden here; what you approve includes the hidden text".into());
+            }
+        }
+        match decision {
             Decision::Allow => reply("allow", None),
             Decision::Deny { reason } => {
                 let note = format!("Blocked by FORGE policy: {reason}");
@@ -701,8 +868,17 @@ impl Core {
                     Risk::Medium => "medium",
                     Risk::High => "high",
                 };
-                match self.store.create_approval(&h.mission_id, &h.session_id, &key, &req.tool, &redact::redact_str(&summary), &detail, risk_s, &warnings, "pending", None, None) {
+                let provider = self.store.get_mission(&h.mission_id).map(|m| m.provider).unwrap_or_default();
+                let binding = approval_binding(&h.mission_id, &h.session_id, &provider, &req.tool, &req.input, &h.worktree, h.profile.as_str(), &h.executes_on);
+                let ttl = self.approval_ttl.load(Ordering::SeqCst);
+                let expires = (chrono::Utc::now() + chrono::Duration::seconds(ttl as i64)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                let created = self
+                    .store
+                    .create_approval(&h.mission_id, &h.session_id, &key, &req.tool, &redact::redact_str(&summary), &detail, risk_s, &warnings, "pending", None, None)
+                    .and_then(|a| self.store.bind_approval(&a.id, &binding, policy::REVISION, &h.executes_on, &expires));
+                match created {
                     Ok(a) => {
+                        lock(&h.requests).insert(a.id.clone(), (req.tool.clone(), req.input.clone()));
                         lock(&h.waiters).entry(a.id.clone()).or_default().push(req.request_id.clone());
                         self.core_event(h, "approval.requested", json!({"approvalId": a.id, "tool": req.tool, "summary": a.summary, "risk": risk_s}));
                         self.settle(&h.mission_id, MissionState::AwaitingApproval, "waiting for approval");
@@ -715,6 +891,127 @@ impl Core {
                 }
             }
         }
+    }
+
+    /// What an agent sandbox must be able to read: the engine (and its modules), Node, the provider binary, and the programs
+    /// an ACP agent or an authorized MCP server will start. Programs and scripts are exposed by their directory (they load
+    /// siblings); any other file argument only as that file; a directory argument not at all (a data folder is not
+    /// something FORGE exposes silently). Every path must pass [`Core::narrow_enough`], or the agent does not start.
+    fn agent_read_only_paths(&self, node: &Path, script: &Path, worktree: &Path, acp: Option<&Value>, mcp: &serde_json::Map<String, Value>) -> Result<Vec<PathBuf>> {
+        let mut out: Vec<PathBuf> = vec![];
+        let mut add = |p: PathBuf, why: &str| -> Result<()> {
+            let p = dunce::canonicalize(&p).unwrap_or(p);
+            self.narrow_enough(&p, worktree).map_err(|e| ForgeError::Provider(format!("refusing to start a contained agent: {why} would expose {e}")))?;
+            if !out.iter().any(|o| p.starts_with(o)) {
+                out.retain(|o| !o.starts_with(&p));
+                out.push(p);
+            }
+            Ok(())
+        };
+        // The engine's own package, and every node_modules Node may resolve its imports from (it walks all ancestors; a
+        // workspace hoists dependencies to the repository root). Read-only: dependencies, not user data.
+        let engine_root = script.ancestors().skip(1).find(|a| a.join("package.json").is_file()).unwrap_or_else(|| script.parent().unwrap_or(script));
+        add(engine_root.to_path_buf(), "the engine package")?;
+        for a in script.ancestors().skip(1) {
+            if a.join("node_modules").is_dir() {
+                add(a.join("node_modules"), "a node_modules folder")?;
+            }
+        }
+        add(node.parent().unwrap_or(node).to_path_buf(), "the Node runtime")?;
+        for p in [self.cfg.claude.as_deref(), self.cfg.codex.as_deref()].into_iter().flatten() {
+            add(p.parent().unwrap_or(p).to_path_buf(), "the provider binary")?;
+        }
+        let mut programs: Vec<(String, Vec<String>)> = vec![];
+        if let Some(a) = acp {
+            programs.push((a["command"].as_str().unwrap_or("").to_string(), a["args"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect()));
+        }
+        for cfg in mcp.values() {
+            programs.push((cfg["command"].as_str().unwrap_or("").to_string(), cfg["args"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect()));
+        }
+        const SCRIPTS: &[&str] = &["js", "mjs", "cjs", "ts", "py", "rb", "sh", "pl"];
+        for (command, args) in programs {
+            let c = Path::new(&command);
+            if c.is_absolute() && c.is_file() {
+                add(c.parent().unwrap_or(c).to_path_buf(), &format!("the program {command}"))?;
+            }
+            for a in args {
+                let p = Path::new(&a);
+                if !p.is_absolute() || !p.is_file() {
+                    continue;
+                }
+                if p.extension().and_then(|e| e.to_str()).is_some_and(|e| SCRIPTS.contains(&e)) {
+                    add(p.parent().unwrap_or(p).to_path_buf(), &format!("the script {a}"))?;
+                } else {
+                    add(p.to_path_buf(), &format!("the file {a}"))?;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// A path that may be exposed to a contained agent: not the root or a top-level folder, not the user's home or one of
+    /// its ancestors, not FORGE's own data (or anything above or inside it), not an ancestor of the worktree.
+    fn narrow_enough(&self, p: &Path, worktree: &Path) -> std::result::Result<(), String> {
+        let canon = |q: &Path| dunce::canonicalize(q).unwrap_or_else(|_| q.to_path_buf());
+        let shown = p.display().to_string();
+        if !p.is_absolute() {
+            return Err(format!("{shown}, which is not an absolute path"));
+        }
+        if p.components().filter(|c| matches!(c, std::path::Component::Normal(_))).count() < 2 {
+            return Err(format!("{shown}, a top-level folder"));
+        }
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|h| canon(Path::new(&h))) {
+            if home.starts_with(p) {
+                return Err(format!("{shown}, your home folder or a folder above it"));
+            }
+        }
+        let forge = canon(&self.cfg.home);
+        if forge.starts_with(p) || p.starts_with(&forge) {
+            return Err(format!("{shown}, which holds FORGE's own data"));
+        }
+        if canon(worktree).starts_with(p) {
+            return Err(format!("{shown}, a folder above the worktree"));
+        }
+        Ok(())
+    }
+
+    /// The provider's own state, writable inside an agent sandbox: Claude Code's config dir (login, sessions), Codex's home.
+    /// It also holds the provider's transcripts of the user's other projects; the agent can read those (documented).
+    fn agent_state_paths(&self, provider: &str, worktree: &Path) -> Result<Vec<PathBuf>> {
+        let env = |k: &str| self.cfg.engine_env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).or_else(|| std::env::var(k).ok());
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let paths = match provider {
+            "claude" | "claude-local" => match env("CLAUDE_CONFIG_DIR") {
+                Some(d) => vec![PathBuf::from(d)],
+                None => home.map(|h| vec![h.join(".claude"), h.join(".claude.json")]).unwrap_or_default(),
+            },
+            "codex" => match env("CODEX_HOME") {
+                Some(d) => vec![PathBuf::from(d)],
+                None => home.map(|h| vec![h.join(".codex")]).unwrap_or_default(),
+            },
+            _ => vec![],
+        };
+        paths
+            .into_iter()
+            .map(|p| {
+                let p = dunce::canonicalize(&p).unwrap_or(p);
+                self.narrow_enough(&p, worktree).map_err(|e| ForgeError::Provider(format!("refusing to start a contained agent: its provider state folder would expose {e}")))?;
+                if worktree.starts_with(&p) || p.starts_with(worktree) {
+                    return Err(ForgeError::Provider("refusing to start a contained agent: its provider state folder overlaps the worktree".into()));
+                }
+                Ok(p)
+            })
+            .collect()
+    }
+
+    /// FORGE policy for one request: the MCP gate first (only authorized servers/tools), then the general rules.
+    fn policy_decision(&self, h: &SessionHandle, tool: &str, input: &Value) -> Decision {
+        if tool.starts_with("mcp__") {
+            if let Err(reason) = self.mcp_gate(&h.mission_id, tool) {
+                return Decision::Deny { reason };
+            }
+        }
+        policy::evaluate(tool, input, &h.worktree, h.profile)
     }
 
     /// The provider withdrew a tool call (interrupt/timeout): drop its prompt instead of leaving it stale.
@@ -730,6 +1027,7 @@ impl Core {
         }
         waiters.remove(&approval_id);
         drop(waiters);
+        lock(&h.requests).remove(&approval_id);
         if let Ok(Some(a)) = self.store.expire_approval(&approval_id, "the agent withdrew this request") {
             self.emit(UiEvent::Approval { approval: a });
         }
@@ -746,8 +1044,51 @@ impl Core {
         }
     }
 
+    fn expire_overdue(&self, h: &Arc<SessionHandle>) {
+        let _life = lock(&h.life);
+        let ids: Vec<String> = lock(&h.waiters).keys().cloned().collect();
+        let now = crate::store::now();
+        for id in ids {
+            let Ok(a) = self.store.get_approval(&id) else { continue };
+            if a.state == "pending" && a.expires_at.as_deref().is_some_and(|e| e < now.as_str()) {
+                if let Ok(Some(a)) = self.store.expire_approval(&id, "no decision before it expired") {
+                    self.store.audit("system", "approval.expired", Some(&a.id), &json!({"tool": a.tool}));
+                    self.core_event(h, "approval.decided", json!({"approvalId": a.id, "tool": a.tool, "decision": "expired"}));
+                    self.release_waiters(h, &id, false, Some("The request expired before anyone decided it".into()));
+                    self.after_approval_change(&a.mission_id);
+                    self.emit(UiEvent::Approval { approval: a });
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_approval_ttl_for_tests(&self, secs: u64) {
+        self.approval_ttl.store(secs, Ordering::SeqCst);
+    }
+
     /// The human's answer. Single-shot; fails if the request is no longer pending or its session is gone.
+    /// Internal/test path: decides the request as stored (the UI path is `decide_approval_checked` with the card's binding).
     pub fn decide_approval(&self, approval_id: &str, approved: bool, note: Option<&str>) -> Result<Approval> {
+        let binding = self.store.get_approval(approval_id)?.binding_sha256;
+        self.decide_approval_checked(approval_id, approved, note, binding.as_deref())
+    }
+
+    /// Answer the agent's waiting tool calls for `approval_id` and update the mission state. Caller holds `life`.
+    fn release_waiters(&self, handle: &SessionHandle, approval_id: &str, allow: bool, message: Option<String>) {
+        let waiting = lock(&handle.waiters).remove(approval_id).unwrap_or_default();
+        lock(&handle.requests).remove(approval_id);
+        for r in waiting {
+            handle.send(json!({"t": "permission_result", "requestId": r, "behavior": if allow { "allow" } else { "deny" }, "message": message}));
+        }
+    }
+
+    /// The human's answer, checked against what they were shown (`expected_binding`, from the approval card) and against the
+    /// current state of the world:
+    ///   * an expired request cannot be approved (it is expired and the agent is told "denied");
+    ///   * an approval re-runs FORGE policy on the exact original request first: if the target became protected or moved out of
+    ///     the worktree while the human was reading (a junction swapped in, say), the policy denial wins.
+    pub fn decide_approval_checked(&self, approval_id: &str, approved: bool, note: Option<&str>, expected_binding: Option<&str>) -> Result<Approval> {
         let existing = self.store.get_approval(approval_id)?;
         let handle = self
             .reg()
@@ -756,14 +1097,47 @@ impl Core {
             .cloned()
             .ok_or_else(|| ForgeError::InvalidState("the agent session for this request has ended".into()))?;
         let _life = lock(&handle.life);
+        let existing = self.store.get_approval(approval_id)?; // re-read under the lock
+        match (expected_binding, existing.binding_sha256.as_deref()) {
+            (Some(expected), stored) if stored != Some(expected) => {
+                return Err(ForgeError::InvalidState("this request is not the one you were shown; reload and decide again".into()));
+            }
+            // A bound request can only be *approved* by naming what was shown; denying needs no proof.
+            (None, Some(_)) if approved => {
+                return Err(ForgeError::InvalidState("an approval must name the request it approves; reload and decide again".into()));
+            }
+            _ => {}
+        }
+        if existing.state == "pending" && existing.expires_at.as_deref().is_some_and(|e| e < crate::store::now().as_str()) {
+            if let Ok(Some(a)) = self.store.expire_approval(approval_id, "no decision before it expired") {
+                self.store.audit("system", "approval.expired", Some(&a.id), &json!({"tool": a.tool}));
+                self.release_waiters(&handle, approval_id, false, Some("The request expired before anyone decided it".into()));
+                self.after_approval_change(&a.mission_id);
+                self.emit(UiEvent::Approval { approval: a });
+            }
+            return Err(ForgeError::InvalidState("this request expired before it was decided; the agent was told it was denied".into()));
+        }
+        if approved && existing.state == "pending" {
+            let original = lock(&handle.requests).get(approval_id).cloned();
+            let Some((tool, input)) = original else {
+                return Err(ForgeError::InvalidState("FORGE no longer holds the original request, so it cannot be approved safely; deny it instead".into()));
+            };
+            if let Decision::Deny { reason } = policy::evaluate(&tool, &input, &handle.worktree, handle.profile) {
+                let why = format!("Blocked by FORGE policy at decision time: {reason}");
+                let a = self.store.decide_approval(approval_id, false, "policy", Some(&why))?;
+                self.store.audit("system", "approval.policy_override", Some(&a.id), &json!({"tool": a.tool, "reason": reason}));
+                self.core_event(&handle, "approval.decided", json!({"approvalId": a.id, "tool": a.tool, "decision": a.state, "note": why}));
+                self.release_waiters(&handle, approval_id, false, Some(why.clone()));
+                self.after_approval_change(&a.mission_id);
+                self.emit(UiEvent::Approval { approval: a });
+                return Err(ForgeError::InvalidState(format!("{why}. The request was denied.")));
+            }
+        }
         let a = self.store.decide_approval(approval_id, approved, "user", note)?;
         self.store.audit("user", if approved { "approval.approve" } else { "approval.deny" }, Some(&a.id), &json!({"tool": a.tool, "summary": a.summary, "risk": a.risk}));
         self.core_event(&handle, "approval.decided", json!({"approvalId": a.id, "tool": a.tool, "decision": a.state, "note": note}));
-        let waiting = lock(&handle.waiters).remove(&a.id).unwrap_or_default();
         let message = if approved { None } else { Some(note.map(str::to_string).unwrap_or_else(|| "Denied by the user".into())) };
-        for r in waiting {
-            handle.send(json!({"t": "permission_result", "requestId": r, "behavior": if approved { "allow" } else { "deny" }, "message": message}));
-        }
+        self.release_waiters(&handle, &a.id, approved, message);
         self.after_approval_change(&a.mission_id);
         self.emit(UiEvent::Approval { approval: a.clone() });
         Ok(a)
@@ -838,18 +1212,49 @@ impl Core {
     /// supposed to be running is honestly marked interrupted.
     pub fn recover(&self) -> Result<RecoveryReport> {
         let mut report = RecoveryReport::default();
+        // Best effort per item: one failed write must not skip the rest of recovery.
+        let mut failures: Vec<String> = vec![];
         for s in self.store.live_sessions()? {
-            self.store.end_session(&s.id, "lost", "FORGE restarted; the session could not be re-attached")?;
-            report.expired_approvals += self.store.expire_pending_for_session(&s.id, "FORGE restarted before this was answered")?;
-            report.lost_sessions += 1;
+            match self.store.end_session(&s.id, "lost", "FORGE restarted; the session could not be re-attached") {
+                Ok(_) => report.lost_sessions += 1,
+                Err(e) => failures.push(format!("session {}: {e}", s.id)),
+            }
+            match self.store.expire_pending_for_session(&s.id, "FORGE restarted before this was answered") {
+                Ok(n) => report.expired_approvals += n,
+                Err(e) => failures.push(format!("approvals of session {}: {e}", s.id)),
+            }
+        }
+        match self.store.expire_all_pending("FORGE restarted before this was answered") {
+            Ok(n) => report.expired_approvals += n,
+            Err(e) => failures.push(format!("pending approvals: {e}")),
         }
         for m in self.store.missions_in_states(&[MissionState::Preparing, MissionState::Running, MissionState::AwaitingApproval])? {
-            self.store.transition(&m.id, MissionState::Interrupted, "FORGE restarted while this mission was active")?;
-            report.interrupted_missions.push(m.id);
+            match self.store.transition(&m.id, MissionState::Interrupted, "FORGE restarted while this mission was active") {
+                Ok(_) => report.interrupted_missions.push(m.id),
+                Err(e) => failures.push(format!("mission {}: {e}", m.id)),
+            }
+        }
+        // Merges that reached git but not the database are finished from what the repository shows.
+        for rec in self.store.unfinished_merges().unwrap_or_default() {
+            let Ok(m) = self.store.get_mission(&rec.mission_id) else { continue };
+            let Ok(project) = self.store.get_project(&m.project_id) else { continue };
+            match self.reconcile_merge(&m.id, Path::new(&project.root_path)) {
+                Ok(Some(commit)) if m.state == MissionState::Approved.as_str() => {
+                    if let Err(e) = self.store.finish_merge(&m.id, &commit).and_then(|_| self.store.transition(&m.id, MissionState::Merged, "the merge reached git before FORGE stopped").map(|_| ())) {
+                        failures.push(format!("merge of mission {}: {e}", m.id));
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => failures.push(format!("merge of mission {}: {e}", m.id)),
+            }
+        }
+        if !failures.is_empty() {
+            self.store.audit("system", "recovery.failures", None, &json!({"failures": failures}));
         }
         // Interrupted knowledge writes are resolved by inspecting what is actually on disk.
         self.recover_knowledge();
         self.recover_harness();
+        self.recover_experiments();
         let orphaned = self.store.fail_orphaned_runs()?;
         if orphaned > 0 {
             self.store.audit("system", "recovery.checks", None, &json!({"orphanedRuns": orphaned}));
@@ -865,12 +1270,18 @@ impl Core {
     pub fn worktree_safety(&self, mission_id: &str) -> Result<git::WorktreeSafety> {
         let m = self.store.get_mission(mission_id)?;
         let Some(base) = m.base_commit.as_deref() else {
-            return Ok(git::WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: 0 });
+            return Ok(git::WorktreeSafety { exists: false, dirty_files: 0, unmerged_commits: 0, ignored_entries: 0 });
         };
         let project = self.store.get_project(&m.project_id)?;
         // A merged mission's commits are "safe" only if they are actually in the main checkout's history now. Anything added to
         // the branch after the merge is unmerged work and needs the same confirmation as any other.
-        let yardstick = if m.state == MissionState::Merged.as_str() { crate::merge::oid(Path::new(&project.root_path), "HEAD").unwrap_or_else(|_| base.to_string()) } else { base.to_string() };
+        // A squash commit does not contain the branch commits; what it merged is recorded, so measure against that instead.
+        let squashed_branch = self.store.merge_record(mission_id)?.filter(|r| r.squash && r.finished_at.is_some()).map(|r| r.branch_oid);
+        let yardstick = match (m.state == MissionState::Merged.as_str(), squashed_branch) {
+            (true, Some(b)) => b,
+            (true, None) => crate::merge::oid(Path::new(&project.root_path), "HEAD").unwrap_or_else(|_| base.to_string()),
+            _ => base.to_string(),
+        };
         git::worktree_safety(Path::new(&project.root_path), m.worktree_path.as_deref().map(Path::new), m.branch.as_deref(), &yardstick)
     }
 
@@ -879,18 +1290,19 @@ impl Core {
     pub fn discard_mission(self: &Arc<Self>, mission_id: &str, confirm_loss: bool) -> Result<Mission> {
         let _res = self.reserve(mission_id, false)?;
         let m = self.store.get_mission(mission_id)?;
+        // Finished missions are cleaned up (cleanup_workspace), not discarded: check *before* deleting anything.
+        if MissionState::parse(&m.state).is_some_and(|s| s.is_terminal()) {
+            return Err(ForgeError::InvalidState(format!("a {} mission cannot be discarded; use Clean up to remove its worktree", m.state)));
+        }
         let project = self.store.get_project(&m.project_id)?;
         let root = Path::new(&project.root_path);
-        let safety = self.worktree_safety(mission_id)?;
-        if (safety.dirty_files > 0 || safety.unmerged_commits > 0) && !confirm_loss {
-            return Err(ForgeError::InvalidState(format!(
-                "discarding would permanently delete {} uncommitted file change(s) and {} unmerged commit(s) on branch {}",
-                safety.dirty_files, safety.unmerged_commits, m.branch.as_deref().unwrap_or("?")
-            )));
+        let safety = self.removal_safety(mission_id)?;
+        if (safety.dirty_files > 0 || safety.unmerged_commits > 0 || safety.ignored_entries > 0) && !confirm_loss {
+            return Err(ForgeError::InvalidState(loss_message("discarding", &safety, m.branch.as_deref())));
         }
         if let Some(wt) = &m.worktree_path {
             // Without confirmation git itself refuses to remove a dirty tree; with it, the user accepted the stated loss.
-            git::worktree_remove(root, Path::new(wt), confirm_loss)?;
+            self.remove_mission_worktree(root, Path::new(wt), m.branch.as_deref(), confirm_loss)?;
         }
         if let Some(b) = &m.branch {
             if let Err(e) = git::delete_branch(root, b, safety.unmerged_commits > 0) {
@@ -902,16 +1314,119 @@ impl Core {
     }
 }
 
+/// What removing a worktree would destroy, in words.
+pub(crate) fn loss_message(verb: &str, s: &git::WorktreeSafety, branch: Option<&str>) -> String {
+    let mut parts = vec![format!("{} uncommitted file change(s)", s.dirty_files), format!("{} unmerged commit(s) on branch {}", s.unmerged_commits, branch.unwrap_or("?"))];
+    if s.ignored_entries > 0 {
+        parts.push(format!("{} ignored file(s) or folder(s) such as build output or a local .env", s.ignored_entries));
+    }
+    format!("{verb} would permanently delete {}", parts.join(", "))
+}
+
+impl Core {
+    /// Before deleting a worktree named in the database, prove it is a FORGE worktree of this repository on this mission's
+    /// branch, under FORGE's own worktrees folder, and not a link to somewhere else (another mission's worktree, user data).
+    pub(crate) fn removable_worktree(&self, root: &Path, wt: &Path, branch: Option<&str>) -> Result<()> {
+        if !wt.exists() && std::fs::symlink_metadata(wt).is_err() {
+            return Ok(()); // already gone; git worktree prune handles the registration
+        }
+        let real = self.inside_worktrees_folder(wt)?;
+        git::verify_worktree(root, &real, branch)
+    }
+
+    /// The real path of `wt` if it is a folder (not a link) inside FORGE's worktrees folder; otherwise refused.
+    fn inside_worktrees_folder(&self, wt: &Path) -> Result<PathBuf> {
+        if std::fs::symlink_metadata(wt).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+            return Err(ForgeError::PathRejected(format!("{} is a link, not a worktree; FORGE will not delete through it", wt.display())));
+        }
+        let home = dunce::canonicalize(self.cfg.home.join("worktrees")).map_err(|e| ForgeError::PathRejected(format!("FORGE's worktrees folder: {e}")))?;
+        let real = dunce::canonicalize(wt).map_err(|e| ForgeError::PathRejected(format!("{}: {e}", wt.display())))?;
+        if !crate::paths::is_within(&home, &real) || real == home {
+            return Err(ForgeError::PathRejected(format!("{} is not inside FORGE's worktrees folder; FORGE will not delete it", real.display())));
+        }
+        Ok(real)
+    }
+
+    /// A worktree folder that a previous removal could only partly delete: it still exists but is no longer a git worktree
+    /// (git deletes the `.git` link early, then stops at a file another program holds open on Windows).
+    pub(crate) fn half_removed(wt: &Path) -> bool {
+        wt.is_dir() && std::fs::symlink_metadata(wt.join(".git")).is_err()
+    }
+
+    /// What removing a mission's worktree would lose. For a half-removed worktree only the branch can still be measured,
+    /// so uncommitted files count as unknown and confirmation is always required.
+    pub(crate) fn removal_safety(&self, mission_id: &str) -> Result<git::WorktreeSafety> {
+        let m = self.store.get_mission(mission_id)?;
+        match m.worktree_path.as_deref().map(Path::new).filter(|w| Self::half_removed(w)) {
+            Some(_) => {
+                let project = self.store.get_project(&m.project_id)?;
+                let base = m.base_commit.as_deref().unwrap_or("HEAD");
+                let mut s = git::worktree_safety(Path::new(&project.root_path), None, m.branch.as_deref(), base)?;
+                s.exists = true;
+                s.dirty_files = s.dirty_files.max(1);
+                Ok(s)
+            }
+            None => self.worktree_safety(mission_id),
+        }
+    }
+
+    /// Remove a mission's worktree. Refuses before deleting anything when a file in it is in use by another program, and
+    /// finishes a worktree an earlier attempt could only partly remove (only after the user confirmed the loss).
+    pub(crate) fn remove_mission_worktree(&self, root: &Path, wt: &Path, branch: Option<&str>, confirm_loss: bool) -> Result<()> {
+        if Self::half_removed(wt) {
+            if !confirm_loss {
+                return Err(ForgeError::InvalidState(format!("an earlier attempt removed part of {}; confirm to finish removing what is left", wt.display())));
+            }
+            let real = self.inside_worktrees_folder(wt)?;
+            std::fs::remove_dir_all(&real).map_err(|e| ForgeError::Other(format!("could not finish removing {}: {e}. Close any program using files in it and try again.", real.display())))?;
+            let _ = git::run(root, &["worktree", "prune"]);
+            return Ok(());
+        }
+        self.removable_worktree(root, wt, branch)?;
+        Self::ensure_not_in_use(wt)?;
+        git::worktree_remove(root, wt, confirm_loss)
+    }
+
+    /// On Windows a folder cannot be renamed while a program holds a file in it open, and git would delete part of the
+    /// worktree before failing on that file. Renaming it aside and back first turns that into a clean refusal. (On Unix
+    /// the rename always succeeds and nothing changes.)
+    fn ensure_not_in_use(wt: &Path) -> Result<()> {
+        if !wt.exists() {
+            return Ok(());
+        }
+        let probe = wt.with_file_name(format!("{}.forge-in-use-check", wt.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        match std::fs::rename(wt, &probe) {
+            Ok(()) => std::fs::rename(&probe, wt).map_err(|e| ForgeError::Other(format!("FORGE moved {} to {} to check it was not in use and could not move it back: {e}", wt.display(), probe.display()))),
+            Err(e) => Err(ForgeError::InvalidState(format!(
+                "files in {} are in use by another program (an editor, a terminal, an antivirus scan): {e}. Close it and try again; nothing was deleted.",
+                wt.display()
+            ))),
+        }
+    }
+}
+
 fn derive_title(objective: &str) -> String {
     let first = objective.lines().find(|l| !l.trim().is_empty()).unwrap_or("Mission").trim();
     let t: String = first.chars().take(72).collect();
     if first.chars().count() > 72 { format!("{t}…") } else { t }
 }
 
+mod acp;
+mod code;
+mod execution;
+mod mcp;
+mod agents;
+mod experiment;
 mod harness;
 mod memory;
 mod review;
-pub use harness::{HookSpec, RollbackPreview};
+pub mod storage;
+pub use agents::{AgentsOverview, ProviderUsage, SessionRow};
+pub use experiment::ExperimentDetail;
+pub use mcp::{McpAuthorizationStatus, McpPreview};
+pub use harness::{BackupUsage, DEFAULT_KEEP_BACKUPS_PER_FILE, HookSpec, PruneReport, RollbackPreview};
+mod conflicts;
+pub use conflicts::{ConflictReport, MissionChangeSet, SkippedMission};
 pub use memory::{KnowledgeStatus, NewKnowledgeArgs, PageDetail};
 pub use review::{MergeOutcome, ReviewDecision, Seen};
 

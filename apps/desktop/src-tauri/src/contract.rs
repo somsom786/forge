@@ -35,6 +35,9 @@ pub struct CheckSpec {
     /// A required check that is not passing on the current changes blocks approval (unless overridden with a reason).
     #[serde(default)]
     pub required: bool,
+    /// A verification adapter (`crate::evidence`) that reads the tool's JSON report from stdout into structured findings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -53,7 +56,11 @@ fn rev_of(parts: &[&str]) -> String {
 impl CheckSpec {
     /// Identity of what this check *means*: changing the command, kind or timeout makes old results about a different check.
     pub fn revision(&self) -> String {
-        rev_of(&[&self.id, &self.command, &format!("{:?}", self.kind), &self.timeout_secs.to_string()])
+        match &self.adapter {
+            // Unchanged for checks without an adapter, so existing evidence keeps its meaning.
+            None => rev_of(&[&self.id, &self.command, &format!("{:?}", self.kind), &self.timeout_secs.to_string()]),
+            Some(a) => rev_of(&[&self.id, &self.command, &format!("{:?}", self.kind), &self.timeout_secs.to_string(), a]),
+        }
     }
 }
 
@@ -120,6 +127,11 @@ impl Contract {
             }
             if c.timeout_secs == 0 || c.timeout_secs > 4 * 3600 {
                 return Err(ForgeError::Other(format!("check \"{}\": timeout must be between 1 second and 4 hours", c.id)));
+            }
+            if let Some(a) = &c.adapter {
+                if crate::evidence::adapter(a).is_none() {
+                    return Err(ForgeError::Other(format!("check \"{}\": unknown verification adapter \"{a}\"", c.id)));
+                }
             }
         }
         let mut cseen = HashSet::new();
@@ -453,7 +465,7 @@ mod tests {
     #[test]
     fn validation_catches_broken_contracts() {
         let mut c = Contract::default();
-        c.checks.push(CheckSpec { id: "t".into(), name: "tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true });
+        c.checks.push(CheckSpec { id: "t".into(), name: "tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true, adapter: None });
         c.criteria.push(Criterion { id: "a".into(), text: "x".into(), verified_by: vec!["missing".into()], manual: false, scope_rule: false });
         assert!(c.validate().unwrap_err().to_string().contains("unknown check"));
         c.criteria[0].verified_by = vec!["t".into()];
@@ -471,7 +483,7 @@ mod tests {
     fn blocking_checks_lists_required_checks_not_passing_now() {
         let mut c = Contract::default();
         for (id, req) in [("t", true), ("l", true), ("o", false)] {
-            c.checks.push(CheckSpec { id: id.into(), name: id.into(), command: "x".into(), kind: CheckKind::Custom, timeout_secs: 10, required: req });
+            c.checks.push(CheckSpec { id: id.into(), name: id.into(), command: "x".into(), kind: CheckKind::Custom, timeout_secs: 10, required: req, adapter: None });
         }
         let mut passed = run("t", RunState::Passed, "f");
         passed.1.spec_rev = c.checks[0].revision(); // it ran under the check's current definition
@@ -562,7 +574,7 @@ mod tests {
 
     #[test]
     fn revisions_change_with_meaning_and_not_with_noise() {
-        let a = CheckSpec { id: "t".into(), name: "Tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true };
+        let a = CheckSpec { id: "t".into(), name: "Tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true, adapter: None };
         let mut renamed = a.clone();
         renamed.name = "Unit tests".into();
         renamed.required = false;
@@ -585,7 +597,7 @@ mod tests {
     #[test]
     fn blocking_checks_require_current_definition_and_no_mutation() {
         let mut ct = Contract::default();
-        let spec = CheckSpec { id: "t".into(), name: "Tests".into(), command: "x".into(), kind: CheckKind::Test, timeout_secs: 10, required: true };
+        let spec = CheckSpec { id: "t".into(), name: "Tests".into(), command: "x".into(), kind: CheckKind::Test, timeout_secs: 10, required: true, adapter: None };
         ct.checks.push(spec.clone());
         let mut r = RunEvidence { check_id: "t".into(), run_id: "r".into(), state: RunState::Passed, fingerprint: "f".into(), spec_rev: spec.revision(), mutated: false };
         let ok: HashMap<_, _> = [("t".to_string(), r.clone())].into();

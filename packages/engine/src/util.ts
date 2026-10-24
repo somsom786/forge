@@ -53,3 +53,11 @@ export function truncateDeep<T>(v: T, max: number): T {
 export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
+
+/**
+ * One protocol line. Lone UTF-16 surrogates (possible in agent output) would be serialised as `\ud800`, which strict JSON
+ * readers such as the core's reject; every string is made well-formed first so one odd character never costs a line.
+ */
+export function protocolLine(v: unknown): string {
+  return JSON.stringify(v, (_k, x) => (typeof x === 'string' ? (x as string & { toWellFormed(): string }).toWellFormed() : x));
+}

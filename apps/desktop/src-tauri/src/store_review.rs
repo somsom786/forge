@@ -31,6 +31,10 @@ pub struct VerificationRun {
     pub log_path: Option<String>,
     /// Revision of the check definition this ran under; results never carry over to a changed check.
     pub spec_rev: String,
+    /// The execution backend the command ran on (part of the evidence: a pass on the host is not a pass in isolation).
+    pub backend: String,
+    /// Structured evidence when the check has a verification adapter.
+    pub evidence: Option<crate::evidence::Evidence>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -94,7 +98,7 @@ fn run_state_parse(s: &str) -> RunState {
     }
 }
 
-const RUN_COLS: &str = "id, mission_id, check_id, name, command, kind, state, exit_code, started_at, ended_at, duration_ms, fingerprint, head_commit, mutated, output_tail, output_truncated, log_path, spec_rev";
+const RUN_COLS: &str = "id, mission_id, check_id, name, command, kind, state, exit_code, started_at, ended_at, duration_ms, fingerprint, head_commit, mutated, output_tail, output_truncated, log_path, spec_rev, backend, evidence_json";
 
 fn run_from(r: &Row) -> rusqlite::Result<VerificationRun> {
     let state: String = r.get(6)?;
@@ -117,6 +121,8 @@ fn run_from(r: &Row) -> rusqlite::Result<VerificationRun> {
         output_truncated: r.get::<_, i64>(15)? != 0,
         log_path: r.get(16)?,
         spec_rev: r.get(17)?,
+        backend: r.get(18)?,
+        evidence: r.get::<_, Option<String>>(19)?.and_then(|j| serde_json::from_str(&j).ok()),
     })
 }
 
@@ -148,8 +154,8 @@ impl Store {
 
     pub fn insert_run(&self, run: &VerificationRun) -> Result<()> {
         self.c().execute(
-            "INSERT INTO verification_run(id,mission_id,check_id,name,command,kind,state,started_at,fingerprint,head_commit,spec_rev) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-            params![run.id, run.mission_id, run.check_id, run.name, run.command, run.kind, run_state_str(run.state), run.started_at, run.fingerprint, run.head_commit, run.spec_rev],
+            "INSERT INTO verification_run(id,mission_id,check_id,name,command,kind,state,started_at,fingerprint,head_commit,spec_rev,backend) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            params![run.id, run.mission_id, run.check_id, run.name, run.command, run.kind, run_state_str(run.state), run.started_at, run.fingerprint, run.head_commit, run.spec_rev, run.backend],
         )?;
         Ok(())
     }
@@ -161,6 +167,11 @@ impl Store {
             params![id, run_state_str(state), exit_code, now(), duration_ms, fingerprint, mutated as i64, output_tail, truncated as i64, log_path],
         )?;
         self.get_run(id)
+    }
+
+    pub fn set_run_evidence(&self, id: &str, evidence: &crate::evidence::Evidence) -> Result<()> {
+        self.c().execute("UPDATE verification_run SET evidence_json=?2 WHERE id=?1", params![id, serde_json::to_string(evidence)?])?;
+        Ok(())
     }
 
     pub fn get_run(&self, id: &str) -> Result<VerificationRun> {
@@ -276,7 +287,7 @@ mod tests {
     }
 
     fn run(mid: &str, check: &str, fp: &str) -> VerificationRun {
-        VerificationRun { id: new_id(), mission_id: mid.into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state: RunState::Running, exit_code: None, started_at: now(), ended_at: None, duration_ms: None, fingerprint: fp.into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: "r1".into() }
+        VerificationRun { id: new_id(), mission_id: mid.into(), check_id: check.into(), name: check.into(), command: "x".into(), kind: "test".into(), state: RunState::Running, exit_code: None, started_at: now(), ended_at: None, duration_ms: None, fingerprint: fp.into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: "r1".into(), backend: "trusted_local".into(), evidence: None }
     }
 
     #[test]
@@ -285,7 +296,7 @@ mod tests {
         assert!(s.get_contract(&id).unwrap().criteria.is_empty());
         let c = Contract {
             version: 1,
-            checks: vec![CheckSpec { id: "t".into(), name: "Tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true }],
+            checks: vec![CheckSpec { id: "t".into(), name: "Tests".into(), command: "npm test".into(), kind: CheckKind::Test, timeout_secs: 60, required: true, adapter: None }],
             in_scope: vec!["src/".into()],
             ..Default::default()
         };
@@ -347,5 +358,59 @@ mod tests {
         let p = s.proof_packs(&id).unwrap();
         assert_eq!(p.iter().map(|x| x.content_sha256.as_str()).collect::<Vec<_>>(), vec!["bbb", "aaa"]);
         assert_eq!(p[0].content["v"], 2);
+    }
+}
+
+// ---- merge intents (migration 13) ------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergeRecord {
+    pub mission_id: String,
+    pub target_oid: String,
+    pub branch_oid: String,
+    pub predicted_tree: String,
+    pub squash: bool,
+    pub message: String,
+    pub commit_oid: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+fn merge_from(r: &Row) -> rusqlite::Result<MergeRecord> {
+    Ok(MergeRecord { mission_id: r.get(0)?, target_oid: r.get(1)?, branch_oid: r.get(2)?, predicted_tree: r.get(3)?, squash: r.get::<_, i64>(4)? != 0, message: r.get(5)?, commit_oid: r.get(6)?, finished_at: r.get(7)? })
+}
+
+impl Store {
+    /// Record a merge before running git. Replaces an earlier unfinished intent of the same mission.
+    pub fn begin_merge(&self, rec: &MergeRecord) -> Result<()> {
+        self.c().execute(
+            "INSERT INTO mission_merge(mission_id,target_oid,branch_oid,predicted_tree,squash,message,started_at) VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(mission_id) DO UPDATE SET target_oid=?2, branch_oid=?3, predicted_tree=?4, squash=?5, message=?6, started_at=?7, commit_oid=NULL, finished_at=NULL",
+            params![rec.mission_id, rec.target_oid, rec.branch_oid, rec.predicted_tree, rec.squash as i64, rec.message, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn finish_merge(&self, mission_id: &str, commit: &str) -> Result<()> {
+        self.c().execute("UPDATE mission_merge SET commit_oid=?2, finished_at=?3 WHERE mission_id=?1", params![mission_id, commit, now()])?;
+        Ok(())
+    }
+
+    /// The merge did not happen (git refused, nothing changed): forget the intent.
+    pub fn abandon_merge(&self, mission_id: &str) -> Result<()> {
+        self.c().execute("DELETE FROM mission_merge WHERE mission_id=?1 AND finished_at IS NULL", [mission_id])?;
+        Ok(())
+    }
+
+    pub fn merge_record(&self, mission_id: &str) -> Result<Option<MergeRecord>> {
+        Ok(self
+            .c()
+            .query_row("SELECT mission_id,target_oid,branch_oid,predicted_tree,squash,message,commit_oid,finished_at FROM mission_merge WHERE mission_id=?1", [mission_id], merge_from)
+            .optional()?)
+    }
+
+    pub fn unfinished_merges(&self) -> Result<Vec<MergeRecord>> {
+        let c = self.c();
+        let mut s = c.prepare("SELECT mission_id,target_oid,branch_oid,predicted_tree,squash,message,commit_oid,finished_at FROM mission_merge WHERE finished_at IS NULL")?;
+        Ok(s.query_map([], merge_from)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }

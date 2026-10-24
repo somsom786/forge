@@ -24,7 +24,7 @@ certification, and no remote service. Treat everything below as the implemented 
 | Path containment: component-wise, case-insensitive on Windows, `..` and junction/symlink escape, alternate data streams, reserved device names. | `paths.rs` | `paths::tests` (incl. real junction) |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, Bedrock/Vertex/Foundry switches are stripped from the engine env, so missions cannot silently bill the API. A non-subscription `credentialSource` is surfaced in the UI. | `adapters/claude.ts` | `normalize.test.ts` |
 | Secrets redaction (common token shapes, `key=value` assignments, PEM blocks) before persistence; stderr tails redacted; payloads size-bounded. | `redact.rs`, `util.ts` | `redact::tests` |
-| Process containment: Windows Job Object `KILL_ON_JOB_CLOSE` per engine; engine exits when stdin closes; forced tree kill after 8 s on stop. | `proc.rs`, `main.ts`, `supervisor.rs` | `stopping_a_hung_agent…`, host tests |
+| Process containment: Windows Job Object `KILL_ON_JOB_CLOSE` per engine; on Unix each engine, check and hook dry-run leads its own process group and dropping its containment kills the group (does not survive a crash of FORGE itself; a descendant calling `setsid` escapes); engine exits when stdin closes; forced tree kill after 8 s on stop. | `proc.rs`, `main.ts`, `supervisor.rs` | `stopping_a_hung_agent…`, `proc::unix_tests`, host tests |
 | Worktree safety: removal refuses when uncommitted/unmerged work exists unless the user confirms the stated loss. | `git.rs`, `supervisor.rs` | `discard_refuses…` |
 | Restart honesty: active missions become `interrupted`; pending approvals `expired`. | `supervisor.rs::recover` | `restart_recovery…` |
 | Webview CSP; minimal Tauri capabilities (`core:default`, `dialog:allow-open`); no shell/fs/opener plugins exposed to the webview. | `tauri.conf.json`, `capabilities/` | — |
@@ -33,7 +33,7 @@ certification, and no remote service. Treat everything below as the implemented 
 
 | Control | Where | Test |
 |---|---|---|
-| Repo-defined execution surfaces are neutralised: project hooks and `.mcp.json` servers do not run (`allowManagedHooksOnly`, `strictMcpConfig`, empty `mcpServers`), while CLAUDE.md/rules/skills still load and FORGE's own hook still fires. Verified with a hostile-repo experiment (control vs locked). | `adapters/claude.ts` | `claudeOptions.test.ts`, `scripts/lockdown-experiment.mjs` (live) |
+| Repo-defined execution surfaces are neutralised: project hooks and `.mcp.json` servers do not run (`allowManagedHooksOnly`, `strictMcpConfig`, and `mcpServers` limited to what the user authorized; see MCP authorization), while CLAUDE.md/rules/skills still load and FORGE's own hook still fires. Verified with a hostile-repo experiment (control vs locked). | `adapters/claude.ts` | `claudeOptions.test.ts`, `scripts/lockdown-experiment.mjs` (live) |
 | Approvals are bound to `tool_use_id` + digest of the exact tool input; a changed re-ask is a new request; hooks never rewrite input. | `supervisor.rs` | `a_reask_with_changed_input…` |
 | Path identity: policy evaluates the *real* path (junctions, short names resolved); trailing-dot/space and 8.3 spellings rejected; comparison is case-insensitive. | `paths.rs`, `policy.rs` | `protection_follows_the_real_path…` |
 | Atomic per-mission reservation: one start/discard/merge owner, concurrency counted for in-flight starts. | `supervisor.rs` | `only_one_of_many_concurrent_starts_wins` |
@@ -57,22 +57,170 @@ certification, and no remote service. Treat everything below as the implemented 
 | Every write backs up the previous bytes first (verified), is journaled before it happens, is atomic, is read back, and is reversible. Rollback refuses if the file changed after the edit, and never restores a backup whose hash does not match the journal. | `supervisor/harness.rs`, `harness/store.rs` | `an_edit_is_previewed_journaled…`, `rollback_refuses_when…`, `a_tampered_backup…`, `a_crash_between_journal_and_write…` |
 | Hooks: exact event names, single-line visible commands (hidden/bidi characters flagged and shown escaped), mandatory timeout. A new or changed hook may only be a plain command hook (no `args`/`shell`/HTTP/prompt forms), and **every** new or changed hook needs an explicit acknowledgement, whatever the heuristics say. Unchanged hooks are grandfathered by (event, matcher, definition, multiplicity); widening a matcher, copying a hook or re-enabling hooks makes them new. | `harness/hooks.rs`, `harness/edit.rs` | `hooks::tests`, `risky_hooks_need_an_explicit_acknowledgement…` |
 | Other settings that run commands or redirect traffic (`apiKeyHelper`, `awsAuthRefresh`, `statusLine`, `fileSuggestion`, …, `enableAllProjectMcpServers`, `env` entries such as `*_BASE_URL`/`*_PROXY`) are listed as risks and need the same acknowledgement. | `harness/hooks.rs` | `other_command_running_settings_need_acknowledgement` |
-| Hook dry-run runs only on an explicit command from the app's webview, in bash only (no fallback shell), refuses to run uncontained, scrubs secret-looking env, has a timeout, caps output, kills the whole job and joins its readers; every run is audited with a redacted command and its hash. Hooks FORGE cannot reproduce faithfully (`dryRunSupported:false`) are not run. | `harness/dryrun.rs`, `supervisor/harness.rs` | `dryrun::tests`, `the_dry_run_audit_never_stores_a_secret…` |
+| Hook dry-run runs only on an explicit command from the app's webview, in bash only (no fallback shell), refuses to run uncontained (on Windows the process is created suspended and resumed only after it is in the Job; compiled, not yet run on Windows), scrubs secret-looking env, has a timeout, caps output, kills the whole job and joins its readers; every run is audited with a redacted command and its hash. Hooks FORGE cannot reproduce faithfully (`dryRunSupported:false`) are not run. | `harness/dryrun.rs`, `supervisor/harness.rs` | `dryrun::tests`, `the_dry_run_audit_never_stores_a_secret…` |
 | Shipped hook templates are executed in the real shell by tests; the formatter never uses a shell. | `harness/hooks.rs`, `harness/dryrun.rs` | `every_shipped_template_runs…`, `the_formatter_passes_hostile_file_names…` |
 | Inventory and Doctor are bounded (entry budget, skipped dependency trees, bounded reads, per-kind finding cap) and never follow links or junctions, including a linked `.claude`. | `harness/inventory.rs`, `harness/doctor.rs` | `scanning_is_bounded…`, `a_linked_dot_claude_directory…`, `a_repetitive_hostile_pair…` |
 
 ## Codex missions (Phase 5; review 5 in ENGINEERING_REVIEWS.md)
 
-* Every command and file change is an approval request decided by FORGE (policy, then a human); Codex's `workspace-write` sandbox stays on as defence in depth (requested, not verified).
+* Every file change and every command Codex asks about is an approval request decided by FORGE (policy, then a human); Codex's `workspace-write` sandbox stays on as defence in depth. **Correction (protocol review):** under `approvalPolicy: "untrusted"` Codex still runs commands it classifies as known-safe and read-only (`ls`, `cat`, …) *without asking*, and its sandbox allows reading outside the worktree. FORGE cannot see those before they run; it flags each one as **ungated** in the activity feed (`tool.result.ungated`, plus a warning) so a review can see what ran unasked.
+* **Effective settings are checked, not assumed.** `thread/start`/`thread/resume` answer with the sandbox, approval policy, approval reviewer, cwd and provider Codex actually applied after merging the user's config. FORGE records those values in `session.started` (`effective`, next to `requested`) and refuses the session before any turn starts if they are broader than requested: full access or an external sandbox, network access, writable roots outside the worktree, any approval policy other than `untrusted`, a reviewer other than `user`, another cwd or provider, or a missing field. (Engine tests against a scripted app-server; the response shape is from the Codex 0.163.0 protocol schema. Not yet observed against a real Codex whose user config widens the sandbox.)
+* **Approvals are scoped.** A command or file-change approval must name this session's thread and the current turn, and refer to an item announced in that turn with the matching type; otherwise it is declined without asking. An item re-announced with different content cannot be approved (an approval given while it changed is withdrawn); if it changes *after* approval, or a completed file change touches a path FORGE did not approve, the session is aborted.
+* **Items with no approval gate abort the session.** `mcpToolCall`, `dynamicToolCall`, `webSearch`, `imageGeneration`, `collabAgentToolCall`, `subAgentActivity` and `hookPrompt` items are shown to the user and the session is interrupted and killed. Their prerequisites are disabled, so this is a tripwire, not the primary control; it acts after the item has started.
 * **Codex starts MCP servers from a repository's `.codex/config.toml` even though it calls project config untrusted** (reproduced). FORGE refuses to run Codex in a worktree with project Codex config, disables every other server by name, disables hooks/plugins/apps/computer-use/browser/multi-agent, sets `notify=[]` and `web_search="disabled"`, and aborts on any MCP/hook startup.
 * **User exec allow-rules bypass approvals** (reproduced: an allowed command ran with no request). A Codex mission refuses to start while the Codex home contains allow rules unless `FORGE_CODEX_ALLOW_USER_RULES=1`.
 * Only a ChatGPT login is accepted (`account/read`); API-key/custom-provider logins and API-key environment variables are refused/scrubbed (case-insensitive). FORGE never reads `~/.codex/auth.json`.
-* Not verified: the effective sandbox settings Codex applies when the user's config widens them.
+* Cleanup on Windows runs `%SystemRoot%\System32\taskkill.exe` (absolute; a non-absolute `SystemRoot` falls back to `C:\Windows`) with `SystemRoot` as cwd; tested with an injected spawn and a hostile worktree full of `taskkill` sentinels, and on Linux with real processes. The Windows branch has **not been run on Windows** by this change.
+* Not verified on a real Codex: that a widened user config is reported in the `thread/start` response the way the schema says (the refusal logic is unit-tested only).
+
+## Experiments (Phase 6, backend only)
+
+* **Running an experiment executes the user's command against code from every revision it compares** (any branch, tag or commit of the
+  project, which may contain agent-written code) with the user's privileges, exactly like a verification check (limit 4). It only runs
+  on an explicit user action. Revisions are pinned to the commit they resolved to when the experiment was defined.
+* Each revision runs in its own detached worktree under the FORGE home, never in the user's checkout; repositories configuring external
+  git programs are refused before any checkout; git runs with the same hardening as missions. References are validated (no options,
+  ranges or reflog expressions) before they reach git.
+* Run output is redacted (tail and log) like checks; containment is the check runner's (best-effort, limit 5).
+* A mission used as a variant is snapshotted with `commit-tree` from its worktree state (temporary index, as for review fingerprints) and the
+  commit is kept alive by a ref `refs/forge/snapshots/<sha>` in the project repository. These refs are FORGE's own namespace (not branches)
+  and are never pushed by FORGE; nothing removes them yet. The UI asks for confirmation and states the commands before a run.
+
+## Approval binding (Milestone 2)
+
+| Control | Where | Test |
+|---|---|---|
+| Every approval request is bound to a digest of mission, session, provider, tool, canonical input, worktree, permission profile, policy revision (`policy::REVISION`) and where it executes (`agent_host`, or `linux_namespaces` for a contained agent). The UI sends the digest back; a decision on a different request is refused. | `supervisor.rs` (`approval_binding`, `decide_approval_checked`), migration 9 | `approvals::an_approval_is_bound…` |
+| Requests expire (30 min). A sweeper expires overdue ones and tells the agent "denied", so nothing waits forever and nothing old can be approved. | `supervisor.rs` (`expire_overdue`) | `approvals::an_undecided_request_expires…` |
+| Approving re-runs FORGE policy on the exact original (unredacted, in-memory) request. A target that became protected or was redirected outside the worktree while the human read the prompt is denied by policy. Before this, such an approval went through (shown by a mutation test). | `decide_approval_checked` | `approvals::policy_is_rechecked_at_decision_time…` (Unix; a Windows junction variant is in the Windows handoff) |
+| Reuse is narrow: only an identical call (same provider tool-use id and input digest) in the same session reuses an answer. | `on_permission` | `regressions::a_reask_with_changed_input…` |
+
+Remaining window: between FORGE's decision-time check and the agent's own write there is still a small gap that only a brokered
+file layer or an OS sandbox closes (limit 3).
+
+## MCP authorization (Milestone 2)
+
+| Control | Where | Test |
+|---|---|---|
+| A repository's `.mcp.json` gives a mission no servers. The Claude adapter keeps `strictMcpConfig` and receives **only** the servers the user authorized for that project, built by the core from the stored definitions. Codex missions receive none. | `mcp.rs`, `supervisor/mcp.rs`, `spawn_session`, `adapters/claude.ts` | `tests::mcp::a_repository_mcp_json_alone…`, `claudeOptions.test.ts` |
+| Authorizing pins the exact definition FORGE read and showed (command, args, URL, env *names*) by SHA-256; the UI must echo the hash, so a file changed after review cannot be authorized. Literal env values in `.mcp.json` are never read into FORGE; values come from FORGE's environment at mission start and are never stored. | `mcp::from_project_file`, `Core::mcp_authorize` | `tests::mcp::only_the_authorized_definition…`, `mcp::tests` |
+| Editing `.mcp.json` after authorization changes nothing that runs; the UI flags "changed since authorized". | `mcp_servers_for_mission`, `mcp_authorizations` | `tests::mcp::only_the_authorized_definition…` |
+| The core denies, without asking, any `mcp__server__tool` call for a server not authorized for the mission's project or a tool outside the server's allow-list. Allowed calls still go through policy (Ask). | `Core::mcp_gate`, `on_permission` | both tests above |
+| Servers that would receive `ANTHROPIC_API_KEY`, `*_BASE_URL` and similar, names with `__`, multi-line args or non-loopback plain-http URLs are refused. Authorize/revoke are audited. | `McpDefinition::validate` | `tests::mcp::servers_that_would_redirect…`, `mcp::tests` |
+
+Honest limits: an authorized stdio server is a program running **on the host with the user's privileges** from the moment the
+mission starts (not in an execution backend, not before any approval); FORGE cannot restrict what that program does, only which
+of its tools the agent may call and with whose approval. Package-runner commands (`npx`, `uvx`) without a pinned version can
+change between runs; the dialog says so.
+
+## Verification adapters (Proof Engine 2.0, Milestone 4)
+
+| Control | Where | Test |
+|---|---|---|
+| A check may name an adapter (`gitleaks`, `osv-scanner`, `trivy`, `playwright`). The command stays user-authored and runs on the project's execution backend like any check; FORGE only suggests the command, and only when the tool is installed (Playwright: when the project declares it). | `evidence.rs`, `detect::adapter_checks`, `contract.rs` (unknown adapters refused) | `detect::tests`, `tests::evidence::unknown_adapters…` |
+| The adapter reads **stdout only** (captured separately from stderr, redacted line by line, capped at 16 MiB) and the report, not the exit code, decides the result. Unparseable output, or a non-zero exit with a clean report, is a *tool error*; a missing tool is *tool missing*; neither is ever a pass, and a required check in either state blocks approval. | `verify::run_check_capture`, `evidence::evaluate` | `evidence::tests` (9), `verify::tests::stdout_can_be_captured_alone…`, `tests::evidence::a_clean_report_passes…` |
+| Secret-scan findings keep rule, file and line only; `Secret`/`Match` are never stored or shown, even redacted. At most 200 findings are kept per run (counts cover all). Unknown severity is treated as blocking. | `evidence::gitleaks`, `MAX_FINDINGS` | `evidence::tests::gitleaks_findings…`, `findings_are_capped…` |
+| Findings appear in the Verification view and the Proof Pack (JSON + markdown). | `proof.rs` | `tests::evidence::findings_from_a_secret_scan…` |
+
+Honest limits: the parsers were tested against **hand-written fixtures** built from each tool's documented JSON format
+(`apps/desktop/src-tauri/fixtures/evidence/README.md`), not against real tool runs; the suggested command lines (notably
+`gitleaks … --report-path -` and `osv-scanner scan source`) must be confirmed against the tool versions on the user's machine.
+Trivy downloads its vulnerability database, so it fails (tool error) on the `linux_namespaces` backend, which has no network.
+
+## ACP agents (Milestone 3)
+
+FORGE is the ACP **client** (official SDK `@agentclientprotocol/sdk` 1.8.0); an ACP agent is a program the user registered.
+
+| Control | Where | Test |
+|---|---|---|
+| Agents run only if registered by the user; the command is pinned to an absolute, existing file at registration; `.cmd`/`.bat`/`.ps1` wrappers are refused (no shell); registration/removal audited. Missions name a registered agent. | `acp.rs`, `supervisor/acp.rs`, `create_mission` | `acp::tests`, `tests::acp::acp_missions_need_a_registered_agent` |
+| Every `session/request_permission` is mapped onto FORGE policy (`edit`/`delete`/`move` → one `Edit` per location, `read`/`search` → `Read`, `execute` → `Bash`, `fetch` → `WebFetch`, anything else → `acp_<kind>`, which asks). A write-like call without a location is denied by policy. | `adapters/acp.ts` `forgeRequests` | `acp.test.ts`, `tests::acp::policy_denies…` |
+| FORGE answers only with *once* options (`allow_once`, `reject_once`); if the agent offers no `allow_once`, the call is refused rather than granting standing permission. | `chooseOption` | `acp.test.ts` (never grants standing permission) |
+| File access the agent asks for (`fs/read_text_file`, `fs/write_text_file`) is brokered: policy decides (reads inside the worktree are allowed, outside ask; writes ask unless covered by the edit just approved, consumed once), and FORGE performs the write after re-checking the **real** path is inside the worktree and not a link. A target swapped for a link after approval is not written through (mutation-checked). | `writeTextFile`, `safeTarget` | `acp.test.ts`, `tests::acp::an_acp_agents_edit…` |
+| No terminal capability is offered. MCP servers: only the project's authorized ones (http only if the agent supports it). | `initialize`, `toAcpMcpServers` | `acp.test.ts` |
+| The agent process gets FORGE's environment minus API keys/base URLs of every provider and minus `FORGE_*`; FORGE never calls `authenticate` (an agent that needs sign-in fails with a message telling the user to sign in outside FORGE). A protocol version other than 1 is refused. | `acpEnv`, `runAcp` | `acp.test.ts` |
+
+**Limit (important):** ACP permission requests are *agent-initiated*. An agent that runs a tool or writes a file itself without
+asking is not mediated by FORGE (same trust class as limit 1). The worktree diff remains the authoritative record and is
+reviewed before merge. FORGE prepends its mission guidance to the prompt (ACP has no system prompt).
+
+## Real Claude Code and a real MCP server in the test suite (no account, no quota)
+
+`supervisor::tests::claude_real` runs the **real Claude Code CLI** (the binary `npm ci` installs with the Agent SDK) through
+FORGE's full mission path, as a `claude-local` mission pointed at a scripted Anthropic-compatible server on loopback
+(`packages/engine/test/fixtures/fake-anthropic.mjs`; it only replays fixed tool calls). Everything else is real:
+
+| Test | Shows |
+|---|---|
+| `real_claude_code_writes_only_after_the_human_approves_through_forge` | Claude Code's Write reaches FORGE's hook; nothing is written before the human decides |
+| `real_claude_code_cannot_write_outside_the_worktree_even_with_auto_approved_edits` | policy denies `../` writes without asking, even with auto-approved edits |
+| `a_real_mcp_server_runs_only_as_authorized` | a real MCP server (official SDK, `test/fixtures/mcp-server.mjs`) is started by Claude Code from FORGE's stored definition; the allow-listed tool runs after approval, the tool outside the allow-list never reaches the server, a server the repository declared but nobody authorized is never started, no billing key reaches it |
+| `a_hostile_repository_configuration_runs_nothing_and_widens_nothing_in_real_claude_code` | a committed `.claude/settings.json` (SessionStart/PreToolUse/UserPromptSubmit hooks, `allow` rules, `bypassPermissions`, `enableAllProjectMcpServers`) and `.mcp.json` run nothing and FORGE is still asked. **Mutation-checked:** without FORGE's lockdown options all four hook/MCP markers appear and the test fails |
+
+This replaces the quota-spending manual lockdown experiment as the regression gate (CI requires these tests on Linux and
+Windows). What it does not show: behaviour of a real model, or of the user's own (possibly different) Claude Code version.
+
+## Fixes from the independent cloud reviews (2026-10-23)
+
+Found by independent security, protocol and data-integrity reviews of `cloud/overhaul`; each fix has a regression test that
+fails without it (mutation-checked where noted).
+
+| Finding | Severity | Fix | Test |
+|---|---|---|---|
+| A **dangling** symlink/junction in the worktree let a Write escape the worktree or reach a protected file: `exists()` follows links, so the link's own (inside) path was checked | **P0** | `resolve_within` refuses any component that exists as a link but whose target does not | `paths::a_broken_link_is_refused_wherever_it_points`, `approvals::a_dangling_link_*` (mutation-checked) |
+| Redaction could hide part of a shell command from the approver (`TOKEN=$(… \| sh)` shown as `TOKEN=[REDACTED]`) while the digest covered the real command | P1 | A shell command whose text redaction would change is refused, not asked; other tools get High risk + a warning | `approvals::a_command_whose_text_would_be_hidden…` |
+| An approved call could be replayed indefinitely with the same tool-use id (ACP agents choose their ids) without a policy re-check | P1 | A decided allow is reused once (the provider prompt after FORGE's hook), after re-running policy; further repeats are denied | `approvals::an_approval_is_reused_at_most_once…` |
+| `core.hooksPath` pointed at a shared, pre-creatable directory under the temp dir | P1 | Points at the null device (`/dev/null`, `NUL`), which cannot hold hooks | `review_hardening::a_hostile_git_hook_never_runs…` |
+| Unicode look-alikes (`.claude/ſettings.json`, zero-width characters) passed the protected-name check on case-insensitive file systems | P1 (unconfirmed on macOS/Windows) | Protected names are compared after folding characters such file systems fold onto ASCII | `policy::unicode_lookalikes_of_protected_names_are_denied` |
+| `~`, `$VAR`, `%VAR%` in a write path were checked literally | P2 | Denied | `policy::home_and_variable_shorthands_are_denied` |
+| MCP server names with edge underscores made tool names ambiguous; `http://localhost.evil.com` counted as loopback | P2 | Names may not start/end with `_`; URL host parsed exactly | `mcp::tests::dangerous_or_malformed_definitions_are_refused` |
+| Approving without the card's binding skipped the binding check | P2 | Approving a bound request requires the binding; denying does not | `approvals::approving_without_the_cards_binding_is_refused` |
+| A `Read` naming no file was allowed silently | P2 | Asked | `policy::write_without_path_is_denied_and_unknown_tools_ask` |
+
+| Data integrity: a squash merge that reached git before a crash left the mission "approved" forever (every retry: "nothing to commit") | P1 | Merge intent recorded before git runs (migration 13) and reconciled with the repository on restart and on retry | `integrity::a_squash_merge_that_landed…`, `…interrupted_before_its_commit…` |
+| Data integrity: a crash between `git worktree add` and the database write bricked the mission | P1 | An orphaned worktree that is provably the mission's own and untouched is adopted; a failure after `add` undoes it | `integrity::a_worktree_created_before_a_crash_is_adopted_on_start` |
+| Data integrity: a second FORGE on the same data folder "recovered" the first one's live missions, approvals and checks | P1 | Exclusive OS lock on `forge.lock` at startup (released by the OS on exit or crash) | `instance_lock_tests` |
+| Discard/cleanup deleted whatever path the database named: a link to another mission's worktree deleted that worktree's work | P2 | Before deleting: not a link, inside FORGE's worktrees folder, and the registered worktree of this repo on this mission's branch | `integrity::discarding_through_a_link_to_another_worktree_is_refused` |
+| `git worktree remove` silently deleted ignored files (a local `.env`) | P2 | Ignored entries count as potential loss (confirmation required; merge cleanup keeps such worktrees) | `integrity::ignored_files_need_confirmation…` |
+| Recovery only saw the 500 most recently updated missions; a failed write stopped the rest of recovery | P2 | Queried by state; best effort per item, failures audited | `integrity::recovery_finds_active_missions_beyond_any_listing_limit` |
+| Changing the success criteria after approval kept the approval | P2 | Returns the mission to review | `integrity::changing_the_success_criteria_after_approval…` |
+| Discard of a finished mission deleted the worktree before failing | P2 | Refused before anything is deleted | `integrity::a_finished_mission_cannot_be_discarded…` |
+
+| ACP: the agent chooses tool-call ids, and a reused id rode an earlier answer | P1 | Every question the ACP adapter asks gets its own id | `acp.test.ts` "a reused tool-call id is a new question each time" |
+| ACP: a read with no location became a path-less `Read` (allowed); an execute without a command string used its *title* as the command | P1 | Mapped to `acp_read` / `acp_execute` (asked, with the agent's raw input shown) | `acp.test.ts` protocol-review tests |
+| ACP: MCP tool allow-lists could not be enforced for ACP agents (they run MCP tools themselves) | P1 | Servers authorized with an allow-list are withheld from ACP missions | `tests::acp::acp_missions_do_not_receive_mcp_servers…` |
+| ACP: callbacks after the turn ended were still honoured (late permission, late write) | P2 | Client closed at turn end (grants cleared, everything refused); the engine and the core also refuse permission requests after the turn | `acp.test.ts` "grants and writes nothing after the turn has ended" (mutation-checked) |
+| ACP: FORGE-performed writes followed hard links and directory links swapped in after approval; reads were unbounded and not link-checked | P2 | No link or hard link anywhere on the path; final open with `O_NOFOLLOW` and a post-open check; reads ≤ 4 MiB, link-checked inside the worktree | `acp.test.ts` hard-link and ancestor-link tests (mutation-checked) |
+| ACP: an agent ignoring `session/cancel` kept running; pending requests were answered with a standing rejection | P2 | Killed 3 s after cancel; `cancelled` outcome while cancelling (ACP spec) | `acp.test.ts` |
+| ACP: billing-key stripping was case-sensitive and missed other providers | P2 | Case-insensitive; any `*_API_KEY`, `*_AUTH_TOKEN`, `*_BASE_URL` | `acp.test.ts` |
+| A lone UTF-16 surrogate made the core drop a protocol line silently (a dropped permission request hangs the agent) | P2 | Strings made well-formed before serialising; an unreadable or over-long (16 MiB) line now ends the session with the reason | `normalize.test.ts`, `regressions::an_unreadable_engine_line_ends_the_session…` |
+| Codex: a `turn/completed` for another thread/turn ended this session | P2 | Checked against the current thread and turn | `codex.test.ts` |
+
+Not changed, documented: on Linux/macOS the engine kills its direct provider child; the core's process-group kill at finalisation
+covers descendants unless one calls `setsid` (SECURITY limit, proc.rs). Moving agents into their own group would take them *out*
+of that group, which is worse.
+
+Policy revision bumped to `policy-2026-10-23.2`, then `policy-2026-10-24.1` (Glob/Grep patterns that reach outside the worktree now ask, high risk). Approvals requested under an older revision are never reused.
+
+## Execution backends (Stage B; docs/EXECUTION.md)
+
+* Checks and experiment runs execute through the project's **execution backend**. `trusted_local` (the default, unchanged
+  behaviour) is labelled "Not isolated" everywhere. `linux_namespaces` (bubblewrap) is implemented and adversarially tested on
+  Linux: no host files outside the workspace, no home directory, cleared environment, no network, no surviving processes,
+  read-only git directory. Windows Sandbox and isolated WSL are designed and reported **not implemented**.
+* A selected backend that is unavailable is an error; FORGE never falls back to a less isolated one. Changes are audited, and
+  every verification run, experiment run and Proof Pack records the backend it ran on.
+* **Agents** can be contained too (per project, "Agents run: …"; Linux only): the engine, the provider and every command it
+  runs, approved or not, start inside `linux_namespaces` with the worktree read-write, the provider's own state directory
+  read-write in place, the runtime read-only, and nothing else of the user's files. The network and FORGE's environment are
+  **not** restricted for agents. Tested with the scripted agent and with the real Claude Code binary (approved `Bash cat` of a
+  host file fails; host control prints it). On Windows agents still run on the host (limit 1).
 
 ## Known limits (do not assume these are solved)
 
-1. **An approved shell command runs with the user's privileges and no sandbox.** FORGE shows risk warnings but cannot
-   confine it: an approved command could read or modify `~/.forge/forge.db` or files outside the worktree, push to a
+1. **On the default agent backend (`trusted_local`, and always on Windows), an approved agent shell command runs with the
+   user's privileges and no sandbox.** (On Linux a project can contain its agents; see Execution backends. Contained agents
+   still have network access and see their own provider login.) On the host FORGE shows risk warnings but cannot confine it: an approved command could read or modify `~/.forge/forge.db` or files outside the worktree, push to a
    remote using the user's credentials, or run package scripts. Mitigation path: provider sandboxing (Claude `sandbox`
    option, Codex sandbox) and brokered git — not enabled yet.
 2. **Shell-pattern rules (push, destructive commands, protected files via shell) are heuristics**, not a security
@@ -81,8 +229,10 @@ certification, and no remote service. Treat everything below as the implemented 
 3. **Check-then-use races on the filesystem** (e.g. a junction swapped between policy check and tool execution) cannot be
    closed without a brokered file layer or OS sandbox. This now also applies to Harness Studio's write path: FORGE re-verifies the
    path and the previous content immediately before each write/delete and reports a swap afterwards, but a concurrent local
-   process that wins that microsecond window could still redirect a write; closing it needs handle-pinned directory identities.
-4. **Running a verification check executes code from the mission worktree** (including agent-written code, or a
+   process that wins that microsecond window could still redirect a write; closing it needs handle-pinned directory identities. Creating a file
+   that did not exist is an exclusive create (it fails instead of replacing a file that appeared after the check); replacing an existing
+   file is not.
+4. **Running a verification check executes code from the mission worktree** (unsandboxed on `trusted_local`; isolated on `linux_namespaces`) (including agent-written code, or a
    modified `npm test` script) with the user's privileges. Checks only run on an explicit user action and their commands
    come from the user, but the code they invoke is not sandboxed. A check that dirties the worktree is flagged and its
    result is not treated as fresh.
@@ -109,7 +259,7 @@ certification, and no remote service. Treat everything below as the implemented 
     risks, but it cannot judge whether a command is *wise*.
 14. **A hook dry-run executes real code** (the hook command) with the user's privileges in the project folder. Env scrubbing is by name
     pattern and is best-effort; the run is not sandboxed.
-15. Harness backups are not pruned and are stored unencrypted under the FORGE home.
+15. Harness backups are stored unencrypted under the FORGE home. They are kept until the user prunes them (`harness_prune_backups`; `harness_backup_usage` shows the space and what would go). A prune never removes the backup of an unresolved change, of the newest N applied changes per file (default 10), or of any change that can be rolled back right now; a pruned change can no longer be rolled back and says so. There is no automatic pruning and no UI for it yet.
 
 ## Provider authentication
 

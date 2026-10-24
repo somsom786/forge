@@ -5,6 +5,9 @@ import { useStore } from '../lib/store';
 import type { Mission, MissionState } from '../lib/types';
 import { EmptyState, PageHeader, StateBadge, useNow } from '../components/ui';
 
+/** The core returns at most this many missions per listing (store::list_missions). */
+const MISSION_LIST_LIMIT = 500;
+
 /** Dense mission table with j/k + Enter keyboard navigation. */
 export function MissionsTable({ missions, showProject = true, emptyHint }: { missions: Mission[]; showProject?: boolean; emptyHint?: string }) {
   const projects = useStore((s) => s.projects);
@@ -103,7 +106,7 @@ export function MissionsScreen() {
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
         title="Missions"
-        sub={`${rows.length} of ${Object.keys(missions).length} shown. Keys: j / k to move, Enter to open.`}
+        sub={`${rows.length} of ${Object.keys(missions).length} shown${Object.keys(missions).length >= MISSION_LIST_LIMIT ? ` (only the ${MISSION_LIST_LIMIT} most recently updated missions are loaded)` : ''}. Keys: j / k to move, Enter to open.`}
         actions={
           <button className="btn btn-primary" disabled={projects.length === 0} onClick={() => openNew(currentProjectId ?? undefined)}>
             <Plus className="size-3.5" aria-hidden /> New mission
@@ -132,7 +135,7 @@ export function MissionsScreen() {
           {desc ? <ArrowDown className="size-3.5" aria-hidden /> : <ArrowUp className="size-3.5" aria-hidden />} Updated
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto" tabIndex={0} role="region" aria-label="Mission list">
         <MissionsTable missions={rows} emptyHint={Object.keys(missions).length === 0 ? 'Create your first mission to get started.' : 'No missions match the current filters.'} />
       </div>
     </div>

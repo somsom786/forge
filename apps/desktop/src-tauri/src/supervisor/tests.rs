@@ -27,7 +27,7 @@ fn fixture() -> Fixture {
     let ev2 = events.clone();
     let core = Core::new(
         Store::in_memory(),
-        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: None, codex: None, allow_fake: true, max_concurrent: 2, ollama_url: "http://127.0.0.1:11434".into() },
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: None, codex: None, allow_fake: true, max_concurrent: 2, ollama_url: "http://127.0.0.1:11434".into(), engine_env: vec![] },
         Arc::new(move |e| ev2.lock().unwrap().push(e)),
     );
     let project = core.add_project(repo.path()).unwrap();
@@ -277,7 +277,7 @@ fn live_claude_mission_end_to_end() {
     let home = tempfile::tempdir().unwrap();
     let core = Core::new(
         Store::in_memory(),
-        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: Some(claude), codex: None, allow_fake: false, max_concurrent: 1, ollama_url: "http://127.0.0.1:11434".into() },
+        Config { home: home.path().to_path_buf(), node: None, engine_script: Some(engine_script()), claude: Some(claude), codex: None, allow_fake: false, max_concurrent: 1, ollama_url: "http://127.0.0.1:11434".into(), engine_env: vec![] },
         Arc::new(|_| {}),
     );
     let project = core.add_project(repo.path()).unwrap();
@@ -343,3 +343,36 @@ mod phase2;
 mod memory;
 mod review_hardening;
 mod harness;
+mod experiment;
+mod conflicts;
+mod approvals;
+mod mcp;
+mod acp;
+mod evidence;
+mod scanners;
+mod integrity;
+mod claude_real;
+mod agent_sandbox;
+mod storage;
+mod bench;
+mod upgrade;
+#[cfg(windows)]
+mod windows;
+
+#[test]
+fn the_agents_overview_lists_running_and_recent_sessions_with_their_missions() {
+    let f = fixture();
+    let m = new_mission(&f, "FAKE:hang", PermissionProfile::Default);
+    f.core.start_mission(&m.id, None).unwrap();
+    wait_until("running", || state(&f, &m.id) == "running");
+    let o = f.core.agents_overview(7).unwrap();
+    assert_eq!(o.sessions.len(), 1);
+    assert_eq!((o.sessions[0].mission_title.as_str(), o.sessions[0].project_id.as_str()), (m.title.as_str(), f.project.id.as_str()));
+    assert_eq!(o.usage.len(), 1);
+    assert_eq!((o.usage[0].provider.as_str(), o.usage[0].live), ("fake", 1));
+    f.core.stop_mission(&m.id).unwrap();
+    wait_until("interrupted", || state(&f, &m.id) == "interrupted");
+    wait_until("finalised", || f.core.live_session_count() == 0);
+    let o = f.core.agents_overview(7).unwrap();
+    assert_eq!((o.sessions.len(), o.usage[0].live), (1, 0), "an ended session stays listed for the window");
+}

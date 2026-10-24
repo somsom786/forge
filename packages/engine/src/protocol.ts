@@ -2,7 +2,7 @@
 // One engine process hosts exactly one agent session. Transport: newline-delimited JSON
 // on stdin (commands) / stdout (events). stderr is diagnostics only and is never parsed.
 
-export type ProviderId = 'claude' | 'claude-local' | 'codex' | 'fake';
+export type ProviderId = 'claude' | 'claude-local' | 'codex' | 'acp' | 'fake';
 
 /** Honest per-provider capability matrix. `false` means the control must not be shown. */
 export interface Capability {
@@ -46,7 +46,19 @@ export interface StartCommand {
   localEndpoint?: string;
   /** When false (default) ANTHROPIC_API_KEY & co are stripped so a mission can never silently bill the API. */
   allowApiBilling?: boolean;
+  /**
+   * MCP servers the user authorized for this project, built by the core from the stored (reviewed) definitions. The
+   * repository's own `.mcp.json` is never read by the provider (`strictMcpConfig`). Absent or `{}`: no MCP servers.
+   */
+  mcpServers?: Record<string, McpServerConfig>;
+  /** `acp`: the registered ACP agent (absolute command path pinned when the user registered it). */
+  acp?: { name: string; command: string; args?: string[] };
 }
+
+/** The SDK's MCP server shapes FORGE produces (stdio or remote http). Env values are resolved by the core. */
+export type McpServerConfig =
+  | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+  | { type: 'http'; url: string };
 
 export interface PermissionResultCommand {
   t: 'permission_result';

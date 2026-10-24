@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Lightbulb, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { errMsg } from '../lib/format';
 import { useStore } from '../lib/store';
-import type { CheckSpec, Contract } from '../lib/types';
+import type { CheckSpec, Contract, VerificationAdapterInfo } from '../lib/types';
 import { CHECK_KINDS, linesToList, listToLines, slugId } from '../lib/verification';
 
 interface Props {
@@ -19,6 +19,8 @@ export function ContractEditor({ value, onChange, disabled, projectId }: Props) 
   const [suggestions, setSuggestions] = useState<CheckSpec[] | null>(null);
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [adapters, setAdapters] = useState<VerificationAdapterInfo[]>([]);
+  useEffect(() => { void api.verificationAdapters().then(setAdapters).catch(() => setAdapters([])); }, []);
   const set = (patch: Partial<Contract>) => onChange({ ...value, ...patch });
 
   const taken = () => new Set(value.checks.map((c) => c.id).filter(Boolean));
@@ -127,6 +129,24 @@ export function ContractEditor({ value, onChange, disabled, projectId }: Props) 
               <input className="input mono mt-2 text-[12px]" aria-label="Command" placeholder="Command, e.g. npm test" value={c.command} onChange={(e) => updateCheck(i, { command: e.target.value })} />
               <div className="mt-1.5 flex items-center gap-3">
                 <label className="flex items-center gap-1.5 text-muted"><input type="checkbox" checked={c.required} onChange={(e) => updateCheck(i, { required: e.target.checked })} /> Required</label>
+                {adapters.length > 0 && (
+                  <label className="flex items-center gap-1.5 text-muted" title="Reads the tool's JSON report (stdout) into findings; the report, not the exit code, decides the result">
+                    Report
+                    <select
+                      className="input !h-7 !w-auto"
+                      aria-label="Verification adapter"
+                      value={c.adapter ?? ''}
+                      onChange={(e) => {
+                        const a = adapters.find((x) => x.id === e.target.value);
+                        // Choosing an adapter on an empty check fills in its suggested command; an existing command is kept.
+                        updateCheck(i, { adapter: a ? a.id : null, ...(a && !c.command.trim() ? { command: a.command, kind: a.kind, name: c.name || a.label } : {}) });
+                      }}
+                    >
+                      <option value="">exit code only</option>
+                      {adapters.map((a) => <option key={a.id} value={a.id}>{a.id}</option>)}
+                    </select>
+                  </label>
+                )}
                 <button type="button" className="btn btn-sm btn-ghost btn-danger ml-auto" onClick={() => removeCheck(i)} aria-label={`Remove check ${c.name || i + 1}`}>
                   <Trash2 className="size-3.5" aria-hidden /> Remove
                 </button>

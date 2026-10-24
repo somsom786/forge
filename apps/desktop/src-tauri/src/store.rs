@@ -29,6 +29,10 @@ pub struct Project {
     pub root_path: String,
     pub default_branch: String,
     pub created_at: String,
+    /// Where this project's checks and experiments run (see `execution.rs`).
+    pub execution_backend: String,
+    /// Where this project's agent sessions run (the engine and the provider it starts).
+    pub agent_backend: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -69,6 +73,8 @@ pub struct AgentSession {
     pub ended_at: Option<String>,
     pub end_reason: Option<String>,
     pub usage: Option<serde_json::Value>,
+    /// Where the agent process ran: `agent_host` (the user's account, not isolated) or an isolating backend's id.
+    pub executes_on: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -100,6 +106,13 @@ pub struct Approval {
     pub decision_note: Option<String>,
     pub created_at: String,
     pub decided_at: Option<String>,
+    /// Digest of everything the decision is about (see `supervisor::approval_binding`). The UI echoes it back when deciding.
+    pub binding_sha256: Option<String>,
+    pub policy_rev: Option<String>,
+    /// Where the approved action would execute (agents' tool calls run on the host today: `agent_host`).
+    pub executes_on: Option<String>,
+    /// After this, the request can no longer be approved.
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -145,7 +158,7 @@ fn mission_from(r: &Row) -> rusqlite::Result<Mission> {
     })
 }
 
-const APPROVAL_COLS: &str = "id, mission_id, session_id, provider_request_id, tool, summary, detail_json, risk, warnings_json, state, decided_by, decision_note, created_at, decided_at";
+const APPROVAL_COLS: &str = "id, mission_id, session_id, provider_request_id, tool, summary, detail_json, risk, warnings_json, state, decided_by, decision_note, created_at, decided_at, binding_sha256, policy_rev, executes_on, expires_at";
 
 fn approval_from(r: &Row) -> rusqlite::Result<Approval> {
     let detail: String = r.get(6)?;
@@ -165,6 +178,10 @@ fn approval_from(r: &Row) -> rusqlite::Result<Approval> {
         decision_note: r.get(11)?,
         created_at: r.get(12)?,
         decided_at: r.get(13)?,
+        binding_sha256: r.get(14)?,
+        policy_rev: r.get(15)?,
+        executes_on: r.get(16)?,
+        expires_at: r.get(17)?,
     })
 }
 
@@ -203,14 +220,14 @@ impl Store {
     pub fn add_project(&self, name: &str, root: &str, default_branch: &str) -> Result<Project> {
         let c = self.c();
         if let Some(p) = c
-            .query_row("SELECT id, name, root_path, default_branch, created_at FROM project WHERE root_path=?1", [root], project_from)
+            .query_row("SELECT id, name, root_path, default_branch, created_at, execution_backend, agent_backend FROM project WHERE root_path=?1", [root], project_from)
             .optional()?
         {
             // Re-adding an archived or existing project returns it rather than duplicating.
             c.execute("UPDATE project SET archived_at=NULL WHERE id=?1", [&p.id])?;
             return Ok(p);
         }
-        let p = Project { id: new_id(), name: name.into(), root_path: root.into(), default_branch: default_branch.into(), created_at: now() };
+        let p = Project { id: new_id(), name: name.into(), root_path: root.into(), default_branch: default_branch.into(), created_at: now(), execution_backend: "trusted_local".into(), agent_backend: "trusted_local".into() };
         c.execute(
             "INSERT INTO project(id,name,root_path,default_branch,created_at) VALUES (?1,?2,?3,?4,?5)",
             params![p.id, p.name, p.root_path, p.default_branch, p.created_at],
@@ -220,14 +237,30 @@ impl Store {
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let c = self.c();
-        let mut s = c.prepare("SELECT id, name, root_path, default_branch, created_at FROM project WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE")?;
+        let mut s = c.prepare("SELECT id, name, root_path, default_branch, created_at, execution_backend, agent_backend FROM project WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE")?;
         let rows = s.query_map([], project_from)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
+    pub fn set_project_agent_backend(&self, id: &str, backend: &str) -> Result<()> {
+        let n = self.c().execute("UPDATE project SET agent_backend=?2 WHERE id=?1", params![id, backend])?;
+        if n == 0 {
+            return Err(ForgeError::NotFound(format!("project {id}")));
+        }
+        Ok(())
+    }
+
+    pub fn set_project_backend(&self, id: &str, backend: &str) -> Result<()> {
+        let n = self.c().execute("UPDATE project SET execution_backend=?2 WHERE id=?1", params![id, backend])?;
+        if n == 0 {
+            return Err(ForgeError::NotFound(format!("project {id}")));
+        }
+        Ok(())
+    }
+
     pub fn get_project(&self, id: &str) -> Result<Project> {
         self.c()
-            .query_row("SELECT id, name, root_path, default_branch, created_at FROM project WHERE id=?1", [id], project_from)
+            .query_row("SELECT id, name, root_path, default_branch, created_at, execution_backend, agent_backend FROM project WHERE id=?1", [id], project_from)
             .optional()?
             .ok_or_else(|| ForgeError::NotFound(format!("project {id}")))
     }
@@ -275,9 +308,13 @@ impl Store {
         Ok(s.query_map([project_id], mission_from)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Every mission in one of `states`, however old (recovery must not miss a mission beyond any listing limit).
     pub fn missions_in_states(&self, states: &[MissionState]) -> Result<Vec<Mission>> {
-        let all = self.list_missions(None)?;
-        Ok(all.into_iter().filter(|m| MissionState::parse(&m.state).is_some_and(|s| states.contains(&s))).collect())
+        let names: Vec<&str> = states.iter().map(|s| s.as_str()).collect();
+        let placeholders = vec!["?"; names.len()].join(",");
+        let c = self.c();
+        let mut s = c.prepare(&format!("SELECT {MISSION_COLS} FROM mission WHERE state IN ({placeholders}) ORDER BY updated_at DESC"))?;
+        Ok(s.query_map(rusqlite::params_from_iter(names), mission_from)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Enforce the transition table and record the change atomically.
@@ -360,6 +397,11 @@ impl Store {
         self.get_session(&id)
     }
 
+    pub fn set_session_executes_on(&self, id: &str, executes_on: &str) -> Result<()> {
+        self.c().execute("UPDATE agent_session SET executes_on=?2 WHERE id=?1", params![id, executes_on])?;
+        Ok(())
+    }
+
     pub fn get_session(&self, id: &str) -> Result<AgentSession> {
         self.c()
             .query_row(SESSION_SQL_ONE, [id], session_from)
@@ -371,6 +413,22 @@ impl Store {
         let c = self.c();
         let mut s = c.prepare(&format!("{SESSION_SELECT} WHERE mission_id=?1 ORDER BY started_at"))?;
         Ok(s.query_map([mission_id], session_from)?.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Sessions started at or after `since` (RFC 3339), newest first, with their mission's title and project.
+    pub fn sessions_since(&self, since: &str, limit: i64) -> Result<Vec<(AgentSession, String, String)>> {
+        let c = self.c();
+        let mut s = c.prepare(
+            &format!(
+                "SELECT {}, m.title, m.project_id FROM agent_session s JOIN mission m ON m.id = s.mission_id \
+                 WHERE s.started_at >= ?1 OR s.state IN ('starting','live') ORDER BY s.started_at DESC LIMIT ?2",
+                SESSION_COLS.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ")
+            ),
+        )?;
+        // The session's own columns come first, exactly as `session_from` reads them; the mission's follow.
+        let n = SESSION_COLS.split(", ").count();
+        let rows = s.query_map(params![since, limit], |r| Ok((session_from(r)?, r.get::<_, String>(n)?, r.get::<_, String>(n + 1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn live_sessions(&self) -> Result<Vec<AgentSession>> {
@@ -466,6 +524,18 @@ impl Store {
         self.get_approval(&id)
     }
 
+    /// Record what a still-pending request is bound to. Written once, under the session's lifecycle lock, before anyone can see it.
+    pub fn bind_approval(&self, id: &str, binding: &str, policy_rev: &str, executes_on: &str, expires_at: &str) -> Result<Approval> {
+        let n = self.c().execute(
+            "UPDATE approval_request SET binding_sha256=?2, policy_rev=?3, executes_on=?4, expires_at=?5 WHERE id=?1 AND binding_sha256 IS NULL",
+            params![id, binding, policy_rev, executes_on, expires_at],
+        )?;
+        if n != 1 {
+            return Err(ForgeError::InvalidState(format!("approval {id} is already bound")));
+        }
+        self.get_approval(id)
+    }
+
     pub fn get_approval(&self, id: &str) -> Result<Approval> {
         self.c()
             .query_row(&format!("SELECT {APPROVAL_COLS} FROM approval_request WHERE id=?1"), [id], approval_from)
@@ -519,6 +589,12 @@ impl Store {
         )?)
     }
 
+    /// At startup no agent is running, so no pending request can be answered any more, whatever its session's row says
+    /// (a crash between ending a session and expiring its requests leaves exactly that).
+    pub fn expire_all_pending(&self, reason: &str) -> Result<usize> {
+        Ok(self.c().execute("UPDATE approval_request SET state='expired', decision_note=?1, decided_at=?2 WHERE state='pending'", params![reason, now()])?)
+    }
+
     /// Withdraw a single still-pending request (the provider cancelled the tool call it was for).
     pub fn expire_approval(&self, id: &str, reason: &str) -> Result<Option<Approval>> {
         let n = self.c().execute(
@@ -534,11 +610,18 @@ impl Store {
 }
 
 fn project_from(r: &Row) -> rusqlite::Result<Project> {
-    Ok(Project { id: r.get(0)?, name: r.get(1)?, root_path: r.get(2)?, default_branch: r.get(3)?, created_at: r.get(4)? })
+    Ok(Project { id: r.get(0)?, name: r.get(1)?, root_path: r.get(2)?, default_branch: r.get(3)?, created_at: r.get(4)?, execution_backend: r.get(5)?, agent_backend: r.get(6)? })
 }
 
-const SESSION_SELECT: &str = "SELECT id, mission_id, provider, provider_session_id, state, pid, started_at, ended_at, end_reason, usage_json FROM agent_session";
-const SESSION_SQL_ONE: &str = "SELECT id, mission_id, provider, provider_session_id, state, pid, started_at, ended_at, end_reason, usage_json FROM agent_session WHERE id=?1";
+/// Every query that builds an [`AgentSession`] selects exactly these, in this order (`session_from` reads by position).
+macro_rules! session_cols {
+    () => {
+        "id, mission_id, provider, provider_session_id, state, pid, started_at, ended_at, end_reason, usage_json, executes_on"
+    };
+}
+const SESSION_COLS: &str = session_cols!();
+const SESSION_SELECT: &str = concat!("SELECT ", session_cols!(), " FROM agent_session");
+const SESSION_SQL_ONE: &str = concat!("SELECT ", session_cols!(), " FROM agent_session WHERE id=?1");
 
 fn session_from(r: &Row) -> rusqlite::Result<AgentSession> {
     let usage: Option<String> = r.get(9)?;
@@ -553,6 +636,7 @@ fn session_from(r: &Row) -> rusqlite::Result<AgentSession> {
         ended_at: r.get(7)?,
         end_reason: r.get(8)?,
         usage: usage.and_then(|u| serde_json::from_str(&u).ok()),
+        executes_on: r.get(10)?,
     })
 }
 
@@ -659,5 +743,18 @@ mod tests {
         s.end_session(&sess.id, "lost", "late").unwrap();
         let got = s.get_session(&sess.id).unwrap();
         assert_eq!((got.state.as_str(), got.end_reason.as_deref()), ("ended", Some("completed")));
+    }
+
+    /// Reliability review: the Agents listing's query was not updated with the new column, so `executes_on` received the
+    /// mission's title. Every session query now selects the same column list.
+    #[test]
+    fn every_session_query_reads_where_the_session_ran() {
+        let (s, _, m) = seeded();
+        let sess = s.create_session(&m.id, "claude", None).unwrap();
+        s.set_session_executes_on(&sess.id, "linux_namespaces").unwrap();
+        assert_eq!(s.get_session(&sess.id).unwrap().executes_on, "linux_namespaces");
+        assert_eq!(s.sessions_for_mission(&m.id).unwrap()[0].executes_on, "linux_namespaces");
+        let (listed, title, project) = s.sessions_since("2000-01-01T00:00:00.000Z", 10).unwrap().remove(0);
+        assert_eq!((listed.executes_on.as_str(), title, project), ("linux_namespaces", m.title.clone(), m.project_id.clone()));
     }
 }

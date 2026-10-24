@@ -140,3 +140,13 @@ describe('util', () => {
     expect((await it.next()).done).toBe(true);
   });
 });
+
+import { protocolLine } from '../src/util.js';
+
+describe('protocol lines', () => {
+  it('never contain a lone surrogate escape, and keep valid pairs', () => {
+    const line = protocolLine({ path: `a${String.fromCharCode(0xd800)}.txt`, emoji: '😀' });
+    expect(line).not.toMatch(/\\ud8/i);
+    expect(JSON.parse(line)).toEqual({ path: 'a�.txt', emoji: '😀' });
+  });
+});

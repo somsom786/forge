@@ -11,3 +11,7 @@ mod service_tests;
 pub mod lint;
 #[cfg(test)]
 mod hardening_tests;
+#[cfg(test)]
+mod vault_fixture_tests;
+#[cfg(test)]
+mod memory_eval;

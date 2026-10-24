@@ -119,7 +119,9 @@ pub fn set_vault(ctx: Ctx, project_id: &str, path: Option<&Path>, write: bool) -
         None => ctx.store.set_project_vault(project_id, None, false),
         Some(p) => {
             let canon = crate::paths::canonical_dir(p)?;
-            if crate::paths::is_within(ctx.home, &canon) || crate::paths::is_within(&canon, ctx.home) {
+            // Both sides as real paths: a home spelled with an 8.3 alias or another case must not let a vault slip inside it.
+            let home = dunce::canonicalize(ctx.home).unwrap_or_else(|_| ctx.home.to_path_buf());
+            if crate::paths::is_within(&home, &canon) || crate::paths::is_within(&canon, &home) {
                 return Err(ForgeError::PathRejected("the vault may not contain or live inside FORGE's own data directory".into()));
             }
             if canon.parent().is_none() {
@@ -174,6 +176,31 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<PathBuf>, report: &
     }
 }
 
+/// File names sync tools give the losing side of a conflict.
+fn sync_conflict_copy(rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel).to_lowercase();
+    name.contains("conflicted copy") || name.contains(".sync-conflict-") || name.contains("(conflict")
+}
+
+/// A file the user marked read-only is theirs to protect: FORGE neither rewrites nor deletes it, even with vault write access.
+fn refuse_if_read_only(real: &Path) -> Result<()> {
+    // On Unix "read-only" for its owner is the owner's write bit; std's `readonly()` needs every write bit cleared.
+    #[cfg(unix)]
+    let protected = |m: &std::fs::Metadata| {
+        use std::os::unix::fs::PermissionsExt;
+        m.permissions().mode() & 0o200 == 0
+    };
+    #[cfg(not(unix))]
+    let protected = |m: &std::fs::Metadata| m.permissions().readonly();
+    match std::fs::metadata(real) {
+        Ok(m) if protected(&m) => Err(ForgeError::InvalidState(format!(
+            "{} is marked read-only on disk; FORGE does not change or delete files you protected. Clear the read-only flag to allow it.",
+            real.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        ))),
+        _ => Ok(()),
+    }
+}
+
 fn rel_of(root: &Path, p: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/")
 }
@@ -221,6 +248,9 @@ pub fn scan(ctx: Ctx, project_id: &str) -> Result<ScanReport> {
             let parsed = page::parse(&text);
             for w in &parsed.warnings {
                 report.warnings.push(format!("{rel}: {w}"));
+            }
+            if sync_conflict_copy(&rel) {
+                report.warnings.push(format!("{rel}: looks like a sync conflict copy (Dropbox, Syncthing, OneDrive…); imported as a separate note — merge it with the original in your vault"));
             }
             let (pg, changed) = ctx.store.k_index_page(&IndexInput {
                 project_id, root_kind: root.kind, rel_path: &rel, parsed: &parsed, sha256: &sha, size, mtime: mt,
@@ -371,6 +401,7 @@ pub fn apply_revision(ctx: Ctx, revision_id: &str) -> Result<KPage> {
     }
     let _lock = writer_lock(&root.path)?;
     let real = safe_file(&root.path, &pg.rel_path)?;
+    refuse_if_read_only(&real)?;
     let cur_text = String::from_utf8_lossy(&std::fs::read(&real).map_err(|e| ForgeError::Other(format!("cannot read the page: {e}")))?).into_owned();
     let cur_sha = page::content_hash(&cur_text);
     if cur_sha != rev.base_sha256 {
@@ -406,6 +437,7 @@ pub fn forget_page(ctx: Ctx, page_id: &str) -> Result<()> {
         let _lock = writer_lock(&root.path)?;
         if let Ok(real) = safe_file(&root.path, &pg.rel_path) {
             if real.exists() {
+                refuse_if_read_only(&real)?;
                 std::fs::remove_file(&real)?;
             }
         }

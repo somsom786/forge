@@ -6,6 +6,8 @@ import { addProjectViaDialog, removeProject } from '../lib/actions';
 import { errMsg } from '../lib/format';
 import { useStore } from '../lib/store';
 import type { Project, RepoStatus } from '../lib/types';
+import { CodeMapPanel } from '../components/CodeMapPanel';
+import { ExecutionBackendPanel } from '../components/ExecutionBackendPanel';
 import { Badge, EmptyState, PageHeader } from '../components/ui';
 import { MissionsTable } from './Missions';
 
@@ -113,7 +115,7 @@ function ProjectList() {
                 <th>Default branch</th>
                 <th>Git status</th>
                 <th className="w-[80px]">Missions</th>
-                <th className="w-[210px]" />
+                <th className="w-[210px]"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -192,6 +194,7 @@ function ProjectView({ project }: { project: Project }) {
   const openNew = useStore((s) => s.openNewMission);
   const missions = useStore((s) => s.missions);
   const { map, reload } = useProjectStatuses(useMemo(() => [project], [project]));
+  const [tab, setTab] = useState<'missions' | 'code'>('missions');
   const rows = useMemo(
     () => Object.values(missions).filter((m) => m.projectId === project.id).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     [missions, project.id],
@@ -218,9 +221,17 @@ function ProjectView({ project }: { project: Project }) {
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-line px-5 py-2">
         <span className="text-muted">Default branch <span className="mono text-fg">{project.defaultBranch}</span></span>
         <StatusCells s={map[project.id]} />
+        <span className="ml-auto flex gap-2"><ExecutionBackendPanel project={project} scope="agents" /><ExecutionBackendPanel project={project} /></span>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        <MissionsTable missions={rows} showProject={false} emptyHint="No missions in this project yet." />
+      <div role="tablist" aria-label="Project views" className="flex gap-1 border-b border-line px-5">
+        {([['missions', 'Missions'], ['code', 'Code map']] as const).map(([v, label]) => (
+          <button key={v} role="tab" aria-selected={tab === v} onClick={() => setTab(v)} className={`h-8 px-3 ${tab === v ? 'border-b-2 border-accent text-fg' : 'text-muted hover:text-fg'}`}>{label}</button>
+        ))}
+      </div>
+      <div role="tabpanel" className="min-h-0 flex-1 overflow-auto">
+        {tab === 'missions'
+          ? <MissionsTable missions={rows} showProject={false} emptyHint="No missions in this project yet." />
+          : <CodeMapPanel key={project.id} project={project} />}
       </div>
     </div>
   );

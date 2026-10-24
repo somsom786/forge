@@ -23,7 +23,7 @@ fn verdict(f: &Fixture, id: &str, criterion: &str, pass: bool, note: Option<&str
 const FILE_EXISTS: &str = "node -e \"process.exit(require('fs').existsSync('FORGE_TEST.md')?0:1)\"";
 const ALWAYS_FAILS: &str = "node -e \"process.exit(1)\"";
 
-fn contract(required: bool) -> Contract {
+pub(super) fn contract(required: bool) -> Contract {
     Contract {
         version: 1,
         in_scope: vec![],
@@ -33,15 +33,15 @@ fn contract(required: bool) -> Contract {
             Criterion { id: "clean".into(), text: "No unrelated modifications".into(), verified_by: vec![], manual: false, scope_rule: true },
         ],
         checks: vec![
-            CheckSpec { id: "exists".into(), name: "Note exists".into(), command: FILE_EXISTS.into(), kind: CheckKind::Test, timeout_secs: 60, required },
-            CheckSpec { id: "broken".into(), name: "Always fails".into(), command: ALWAYS_FAILS.into(), kind: CheckKind::Custom, timeout_secs: 60, required: false },
+            CheckSpec { id: "exists".into(), name: "Note exists".into(), command: FILE_EXISTS.into(), kind: CheckKind::Test, timeout_secs: 60, required, adapter: None },
+            CheckSpec { id: "broken".into(), name: "Always fails".into(), command: ALWAYS_FAILS.into(), kind: CheckKind::Custom, timeout_secs: 60, required: false, adapter: None },
         ],
         security_constraints: vec![],
         review_expectations: None,
     }
 }
 
-fn mission_in_review(f: &Fixture, objective: &str) -> Mission {
+pub(super) fn mission_in_review(f: &Fixture, objective: &str) -> Mission {
     let m = new_mission(f, objective, PermissionProfile::AcceptEdits);
     f.core.start_mission(&m.id, None).unwrap();
     wait_until("review", || state(f, &m.id) == "awaiting_review");
@@ -49,7 +49,7 @@ fn mission_in_review(f: &Fixture, objective: &str) -> Mission {
     m
 }
 
-fn run_check(f: &Fixture, mid: &str, check: &str) -> crate::store_review::VerificationRun {
+pub(super) fn run_check(f: &Fixture, mid: &str, check: &str) -> crate::store_review::VerificationRun {
     let started = f.core.start_check(mid, check).unwrap();
     assert_eq!(started.state, crate::contract::RunState::Running);
     wait_until("check finished", || f.core.store.get_run(&started.id).unwrap().state != crate::contract::RunState::Running);
@@ -246,7 +246,7 @@ fn checks_refuse_to_run_while_an_agent_is_working_and_agents_refuse_while_a_chec
 
     // Now the reverse: a slow check blocks the agent from restarting on the same files.
     let mut c = contract(false);
-    c.checks.push(CheckSpec { id: "slow".into(), name: "Slow".into(), command: "node -e \"setTimeout(()=>{},30000)\"".into(), kind: CheckKind::Custom, timeout_secs: 60, required: false });
+    c.checks.push(CheckSpec { id: "slow".into(), name: "Slow".into(), command: "node -e \"setTimeout(()=>{},30000)\"".into(), kind: CheckKind::Custom, timeout_secs: 60, required: false, adapter: None });
     f.core.set_contract(&m.id, c).unwrap();
     let slow = f.core.start_check(&m.id, "slow").unwrap();
     let err = f.core.start_mission(&m.id, None).unwrap_err().to_string();
@@ -288,7 +288,7 @@ fn restart_recovery_resolves_checks_that_were_mid_flight() {
     let run = crate::store_review::VerificationRun {
         id: crate::store::new_id(), mission_id: m.id.clone(), check_id: "exists".into(), name: "n".into(), command: "c".into(), kind: "test".into(),
         state: crate::contract::RunState::Running, exit_code: None, started_at: crate::store::now(), ended_at: None, duration_ms: None,
-        fingerprint: "f".into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: String::new(),
+        fingerprint: "f".into(), head_commit: None, mutated: false, output_tail: String::new(), output_truncated: false, log_path: None, spec_rev: String::new(), backend: "trusted_local".into(), evidence: None,
     };
     f.core.store.insert_run(&run).unwrap();
     f.core.recover().unwrap();
@@ -308,4 +308,55 @@ fn a_rejected_missions_leftovers_are_cleaned_only_with_confirmation() {
     f.core.cleanup_workspace(&m.id, true).unwrap();
     assert!(!wt.exists());
     assert_eq!(state(&f, &m.id), "rejected", "cleanup does not rewrite history");
+}
+
+/// Stage B: a project switched to the Linux-namespace backend runs its checks there; the run records where it ran, the Proof
+/// Pack says so, and a check that tries to read a host secret cannot. Backends that cannot run are refused, not downgraded.
+#[cfg(target_os = "linux")]
+#[test]
+fn checks_run_on_the_projects_execution_backend_and_record_it() {
+    let f = fixture();
+    assert_eq!(f.project.execution_backend, "trusted_local", "existing and new projects keep running as before");
+    assert!(f.core.project_set_execution_backend(&f.project.id, "windows_sandbox").unwrap_err().to_string().contains("cannot be used"));
+    assert!(f.core.project_set_execution_backend(&f.project.id, "docker").is_err());
+    if crate::execution::availability(crate::execution::Backend::LinuxNamespaces).is_err() {
+        assert!(std::env::var("FORGE_REQUIRE_SANDBOX_TESTS").as_deref() != Ok("1"), "sandbox required but unavailable");
+        return;
+    }
+    let secret_dir = tempfile::tempdir().unwrap();
+    let secret = secret_dir.path().join("credentials");
+    std::fs::write(&secret, "TOP-SECRET-CREDENTIAL-99").unwrap();
+    let m = mission_in_review(&f, "make a note");
+    let mut contract = f.core.get_contract(&m.id).unwrap();
+    contract.checks.push(crate::contract::CheckSpec { id: "steal".into(), name: "steal".into(), command: format!("cat '{}' || true; echo still-ran", secret.display()), kind: crate::contract::CheckKind::Test, required: false, timeout_secs: 30, adapter: None });
+    f.core.set_contract(&m.id, contract).unwrap();
+    f.core.project_set_execution_backend(&f.project.id, "linux_namespaces").unwrap();
+    let run = run_check(&f, &m.id, "steal");
+    assert_eq!(run.backend, "linux_namespaces");
+    assert!(run.output_tail.contains("still-ran"), "{}", run.output_tail);
+    assert!(!run.output_tail.contains("TOP-SECRET-CREDENTIAL-99"), "the check read a host secret: {}", run.output_tail);
+    assert_eq!(f.core.store.audit_count("project.execution_backend").unwrap(), 1);
+    // Switching back records trusted-local runs as such; nothing is hidden.
+    f.core.project_set_execution_backend(&f.project.id, "trusted_local").unwrap();
+    assert_eq!(run_check(&f, &m.id, "steal").backend, "trusted_local");
+}
+
+/// Final review (D5): a check runner that dies without recording a result used to keep the mission's check slot ("a check
+/// is already running") and leave the run "running" until FORGE restarted.
+#[test]
+fn a_check_runner_that_dies_releases_its_slot_and_marks_the_run_unknown() {
+    let f = fixture();
+    let m = mission_in_review(&f, "make a note");
+    f.core.set_contract(&m.id, contract(false)).unwrap();
+    let run = f.core.start_check(&m.id, "exists").unwrap();
+    wait_until("finished", || f.core.store.get_run(&run.id).unwrap().state != crate::contract::RunState::Running);
+    // Simulate the runner dying on a second run: a slot is held and its run row says running.
+    let second = run_check(&f, &m.id, "exists");
+    f.core.store.c().execute("UPDATE verification_run SET state='running' WHERE id=?1", [&second.id]).unwrap();
+    lock(&f.core.checks).insert(m.id.clone(), Arc::new(AtomicBool::new(false)));
+    assert!(f.core.start_check(&m.id, "exists").unwrap_err().to_string().contains("already running"));
+    f.core.release_check_slot_as_if_the_runner_died(&m.id, &second.id);
+    assert_eq!(f.core.store.get_run(&second.id).unwrap().state, crate::contract::RunState::Error);
+    let again = run_check(&f, &m.id, "exists");
+    assert_eq!(again.state, crate::contract::RunState::Passed, "the slot is free again");
 }

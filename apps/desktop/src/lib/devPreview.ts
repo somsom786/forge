@@ -5,8 +5,10 @@
 import { handleP2 } from './devPreviewP2';
 import { handleP3 } from './devPreviewP3';
 import { handleP4 } from './devPreviewP4';
+import { handleP6 } from './devPreviewP6';
+import { handleP7 } from './devPreviewP7';
 import type {
-  ActivityEvent, AgentSession, Approval, CapabilityMatrix, Mission, MissionDetail, Project, ProviderInfo, RepoStatus,
+  AcpAgent, ActivityEvent, AgentSession, Approval, CapabilityMatrix, Mission, MissionDetail, Project, ProviderInfo, RepoStatus,
 } from './types';
 
 const w = window as any;
@@ -24,8 +26,8 @@ document.documentElement.style.setProperty('--banner-h', '24px');
 
 // ---- dataset --------------------------------------------------------------------------------------
 const projects: Project[] = [
-  { id: 'p1', name: 'atlas-api', rootPath: 'C:\\dev\\atlas-api', defaultBranch: 'main', createdAt: iso(60 * 24 * 12) },
-  { id: 'p2', name: 'docs-site', rootPath: 'C:\\dev\\docs-site', defaultBranch: 'master', createdAt: iso(60 * 24 * 5) },
+  { id: 'p1', name: 'atlas-api', rootPath: 'C:\\dev\\atlas-api', defaultBranch: 'main', createdAt: iso(60 * 24 * 12) , executionBackend: 'trusted_local', agentBackend: 'trusted_local' },
+  { id: 'p2', name: 'docs-site', rootPath: 'C:\\dev\\docs-site', defaultBranch: 'master', createdAt: iso(60 * 24 * 5) , executionBackend: 'trusted_local', agentBackend: 'trusted_local' },
 ];
 
 const mk = (o: Partial<Mission> & Pick<Mission, 'id' | 'projectId' | 'title' | 'state'>): Mission => ({
@@ -64,23 +66,23 @@ const approvals: Approval[] = [
     id: 'a1', missionId: 'm1', sessionId: 's1', providerRequestId: 'r1', tool: 'Bash', summary: 'npm test -- --runInBand src/http',
     detail: { tool: 'Bash', input: { command: 'npm test -- --runInBand src/http', description: 'Run the HTTP client unit tests', timeout: 120000 }, source: 'can_use_tool' },
     risk: 'medium', warnings: ['Runs a project script: package.json scripts can execute arbitrary code.', 'Command is not on the allow-list for this profile.'],
-    state: 'pending', decidedBy: null, decisionNote: null, createdAt: iso(1), decidedAt: null,
+    state: 'pending', decidedBy: null, decisionNote: null, createdAt: iso(1), decidedAt: null, bindingSha256: null, policyRev: null, executesOn: null, expiresAt: null,
   },
   {
     id: 'a0', missionId: 'm1', sessionId: 's1', providerRequestId: 'r0', tool: 'Bash', summary: 'git push --force origin HEAD',
     detail: { tool: 'Bash', input: { command: 'git push --force origin HEAD' }, source: 'hook' },
     risk: 'high', warnings: ['Pushes to a remote.'], state: 'auto_denied', decidedBy: 'policy', decisionNote: 'Blocked by policy: pushing to remotes is not permitted inside a mission worktree.',
-    createdAt: iso(18), decidedAt: iso(18),
+    createdAt: iso(18), decidedAt: iso(18), bindingSha256: null, policyRev: null, executesOn: null, expiresAt: null,
   },
   {
     id: 'a2', missionId: 'm1', sessionId: 's1', providerRequestId: 'r2', tool: 'Edit', summary: 'src/http/client.ts',
     detail: { tool: 'Edit', input: { file_path: 'src/http/client.ts', old_string: 'return fetch(url, init);', new_string: 'return withRetry(() => fetch(url, init), opts.retry);' } },
-    risk: 'low', warnings: [], state: 'approved', decidedBy: 'user', decisionNote: null, createdAt: iso(30), decidedAt: iso(29),
+    risk: 'low', warnings: [], state: 'approved', decidedBy: 'user', decisionNote: null, createdAt: iso(30), decidedAt: iso(29), bindingSha256: null, policyRev: null, executesOn: null, expiresAt: null,
   },
   {
     id: 'a3', missionId: 'm7', sessionId: 's7', providerRequestId: 'r3', tool: 'Bash', summary: 'node scripts/build-index.mjs',
     detail: { tool: 'Bash', input: { command: 'node scripts/build-index.mjs' } },
-    risk: 'low', warnings: [], state: 'pending', decidedBy: null, decisionNote: null, createdAt: iso(50), decidedAt: null,
+    risk: 'low', warnings: [], state: 'pending', decidedBy: null, decisionNote: null, createdAt: iso(50), decidedAt: null, bindingSha256: null, policyRev: null, executesOn: null, expiresAt: null,
   },
 ];
 
@@ -232,6 +234,17 @@ const providers: ProviderInfo[] = [
   { id: 'codex', name: 'Codex', installed: true, path: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd', version: '0.40.0', signedIn: true, authMethod: 'chatgpt', plan: null, adapterAvailable: false, notes: ['Detected, but FORGE has no Codex adapter in this build.'], models: [], capabilities: codexCaps },
 ];
 
+const acpCaps: CapabilityMatrix = {
+  sessionStart: cap(true), resume: cap(false, 'Only if the agent advertises loadSession; negotiated per session.'), streaming: cap(true), interrupt: cap(true), toolEvents: cap(true), fileChanges: cap(true),
+  approvals: cap(true, 'Agent-initiated: FORGE decides every request it receives; a tool run without asking is not seen.'), usageReporting: cap(false, 'ACP defines no usage reporting.'), modelSelection: cap(false), worktreeIntegration: cap(true),
+};
+let acpAgents: AcpAgent[] = [{ id: 'acp1', name: 'gemini', command: 'C:\\Program Files\\nodejs\\node.exe', args: ['C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\@google\\gemini-cli\\dist\\index.js', '--experimental-acp'], addedAt: '2026-10-20T09:00:00Z', removedAt: null }];
+const acpProvider = (): ProviderInfo => ({
+  id: 'acp', name: 'ACP agent', installed: acpAgents.length > 0, path: null, version: null, signedIn: null, authMethod: 'agent-managed', plan: null, adapterAvailable: acpAgents.length > 0,
+  notes: acpAgents.length ? ['Each agent signs in and bills on its own; FORGE never authenticates for it and strips API keys from its environment.'] : ['Register an Agent Client Protocol agent (Agents screen) to run missions with it.'],
+  models: acpAgents.map((a) => a.name), capabilities: acpCaps,
+});
+
 const statusFor = (id: string): RepoStatus =>
   id === 'p1'
     ? { branch: 'main', head: '9c1e4f7', upstream: 'origin/main', ahead: 0, behind: 2, files: [], staged: 0, unstaged: 3, untracked: 1, conflicted: 0, dirty: true }
@@ -255,6 +268,10 @@ async function invoke(cmd: string, args: any = {}): Promise<any> {
   if (p3) return p3;
   const p4 = handleP4(cmd, args);
   if (p4) return p4;
+  const p6 = handleP6(cmd, args);
+  if (p6) return p6;
+  const p7 = handleP7(cmd, args);
+  if (p7) return p7;
   switch (cmd) {
     case 'plugin:event|listen':
       subs.push({ event: args.event, handler: args.handler });
@@ -268,12 +285,25 @@ async function invoke(cmd: string, args: any = {}): Promise<any> {
     case 'recovery_report':
       return { interruptedMissions: ['m4'], lostSessions: 2, expiredApprovals: 0 };
     case 'providers_detect':
-      return providers;
+      return [...providers, acpProvider()];
+    case 'acp_agents':
+      return acpAgents;
+    case 'acp_agent_register': {
+      if (acpAgents.some((a) => a.name === args.name)) throw new Error(`an ACP agent named "${args.name}" is already registered`);
+      const a: AcpAgent = { id: `acp${acpAgents.length + 2}`, name: args.name, command: /^[A-Za-z]:\\/.test(args.command) ? args.command : `C:\\Tools\\${args.command}.exe`, args: args.args, addedAt: new Date().toISOString(), removedAt: null };
+      acpAgents = [...acpAgents, a];
+      return a;
+    }
+    case 'acp_agent_remove': {
+      const a = acpAgents.find((x) => x.id === args.id)!;
+      acpAgents = acpAgents.filter((x) => x.id !== args.id);
+      return { ...a, removedAt: new Date().toISOString() };
+    }
     case 'project_list':
       return projects;
     case 'project_add': {
       const name = String(args.path).split(/[\\/]/).pop() ?? 'repo';
-      const p: Project = { id: `p${projects.length + 1}`, name, rootPath: args.path, defaultBranch: 'main', createdAt: new Date().toISOString() };
+      const p: Project = { id: `p${projects.length + 1}`, name, rootPath: args.path, defaultBranch: 'main', createdAt: new Date().toISOString(), executionBackend: 'trusted_local', agentBackend: 'trusted_local' };
       projects.push(p);
       return p;
     }

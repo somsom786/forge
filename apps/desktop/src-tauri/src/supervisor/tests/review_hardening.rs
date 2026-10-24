@@ -11,7 +11,7 @@ fn contract() -> Contract {
     Contract {
         version: 1,
         criteria: vec![Criterion { id: "file".into(), text: "The note file exists".into(), verified_by: vec!["exists".into()], manual: false, scope_rule: false }],
-        checks: vec![CheckSpec { id: "exists".into(), name: "Note exists".into(), command: FILE_EXISTS.into(), kind: CheckKind::Test, timeout_secs: 60, required: true }],
+        checks: vec![CheckSpec { id: "exists".into(), name: "Note exists".into(), command: FILE_EXISTS.into(), kind: CheckKind::Test, timeout_secs: 60, required: true, adapter: None }],
         ..Default::default()
     }
 }
@@ -211,6 +211,9 @@ fn a_hostile_git_hook_never_runs_during_review_or_merge() {
     f.core.review(&m.id, ReviewDecision::Approve, None, None, Some(&seen(&f, &m.id))).unwrap();
     f.core.merge_mission(&m.id, false).unwrap();
     assert!(!marker.exists(), "a repository hook ran as a side effect of FORGE's own git operations");
+    // Security review F3: the hooks path FORGE points git at is not a directory anyone can put hooks into.
+    let hp = std::path::PathBuf::from(crate::git::empty_hooks_dir());
+    assert!(!hp.is_dir(), "{} must not be a directory", hp.display());
 }
 
 #[test]
