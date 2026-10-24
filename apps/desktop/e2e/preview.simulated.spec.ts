@@ -102,3 +102,19 @@ test('[simulated] choosing where agents run explains the trade-off and reports a
   await page.keyboard.press('Escape');
   await expect(page.getByRole('button', { name: /Agents run: Trusted local/ }).first()).toBeVisible();
 });
+
+test('[simulated] storage clean-up is previewed, explains what is kept, and lists stray worktrees without offering to delete them', async ({ page }) => {
+  await open(page);
+  await go(page, 'Settings');
+  const storage = page.getByRole('region', { name: 'Settings' }).getByLabel('Storage');
+  await expect(storage).toContainText('182,455 transcript events');
+  await expect(storage).toContainText('no mission refers to');
+  await storage.getByRole('button', { name: 'Preview clean-up' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Storage clean-up' });
+  await expect(dialog).toContainText('Kept: each mission');
+  await expect(dialog).toContainText('Bump docusaurus to latest minor');
+  await expectAccessible(page, 'storage clean-up dialog');
+  await dialog.getByRole('button', { name: 'Remove what is listed' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole('status').filter({ hasText: 'Removed 1840 transcript events' })).toBeVisible();
+});

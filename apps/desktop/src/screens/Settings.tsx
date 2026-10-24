@@ -4,6 +4,7 @@ import { providerLabel } from '../lib/format';
 import { useStore } from '../lib/store';
 import type { CapabilityMatrix } from '../lib/types';
 import { Badge, PageHeader } from '../components/ui';
+import { StoragePanel } from '../components/StoragePanel';
 
 const CAPS: { key: keyof CapabilityMatrix; label: string }[] = [
   { key: 'sessionStart', label: 'Start session' },
@@ -64,6 +65,8 @@ export function SettingsScreen() {
             </dl>
           )}
         </section>
+
+        <StoragePanel />
 
         <section aria-label="Providers">
           <h2 className="m-0 mb-2 text-[12px] font-medium uppercase tracking-wide text-muted">Providers</h2>

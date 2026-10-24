@@ -23,7 +23,7 @@ fn verdict(f: &Fixture, id: &str, criterion: &str, pass: bool, note: Option<&str
 const FILE_EXISTS: &str = "node -e \"process.exit(require('fs').existsSync('FORGE_TEST.md')?0:1)\"";
 const ALWAYS_FAILS: &str = "node -e \"process.exit(1)\"";
 
-fn contract(required: bool) -> Contract {
+pub(super) fn contract(required: bool) -> Contract {
     Contract {
         version: 1,
         in_scope: vec![],
@@ -41,7 +41,7 @@ fn contract(required: bool) -> Contract {
     }
 }
 
-fn mission_in_review(f: &Fixture, objective: &str) -> Mission {
+pub(super) fn mission_in_review(f: &Fixture, objective: &str) -> Mission {
     let m = new_mission(f, objective, PermissionProfile::AcceptEdits);
     f.core.start_mission(&m.id, None).unwrap();
     wait_until("review", || state(f, &m.id) == "awaiting_review");
@@ -49,7 +49,7 @@ fn mission_in_review(f: &Fixture, objective: &str) -> Mission {
     m
 }
 
-fn run_check(f: &Fixture, mid: &str, check: &str) -> crate::store_review::VerificationRun {
+pub(super) fn run_check(f: &Fixture, mid: &str, check: &str) -> crate::store_review::VerificationRun {
     let started = f.core.start_check(mid, check).unwrap();
     assert_eq!(started.state, crate::contract::RunState::Running);
     wait_until("check finished", || f.core.store.get_run(&started.id).unwrap().state != crate::contract::RunState::Running);

@@ -3,6 +3,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
+  CleanupPlan,
+  CleanupResult,
+  StorageUsage,
   ActivityEvent, AppInfo, Approval, Mission, MissionChanges, MissionDetail, MissionDiff, NewMissionArgs,
   Project, ProviderInfo, RecoveryReport, RepoStatus, UiEvent,
   ContextPackage, ContextPackageRow, KnowledgePage, KnowledgePageDetail, KnowledgeRevision, KnowledgeStatus, LintIssue, NewKnowledgeArgs, ScanResult,
@@ -131,6 +134,9 @@ export const api = {
   executionBackends: () => invoke<ExecutionBackendInfo[]>('execution_backends'),
   /** Refused for a backend that cannot run on this machine; never downgraded. */
   projectSetExecutionBackend: (projectId: string, backend: ExecutionBackendId) => invoke<Project>('project_set_execution_backend', { projectId, backend }),
+  storageUsage: () => invoke<StorageUsage>('storage_usage'),
+  storageCleanupPreview: (olderThanDays: number) => invoke<CleanupPlan>('storage_cleanup_preview', { olderThanDays }),
+  storageCleanupApply: (olderThanDays: number, token: string) => invoke<CleanupResult>('storage_cleanup_apply', { olderThanDays, token }),
   projectSetAgentBackend: (projectId: string, backend: ExecutionBackendId) => invoke<Project>('project_set_agent_backend', { projectId, backend }),
 
   /** Built on demand from the main checkout (tree-sitter, parse only); cached per HEAD + working-tree state. */

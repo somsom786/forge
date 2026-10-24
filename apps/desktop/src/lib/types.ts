@@ -1115,3 +1115,31 @@ export interface RelevantCode {
   /** Why there is no section (e.g. the code index was unavailable). */
   note: string | null;
 }
+
+// ---- storage (Settings → Storage) ------------------------------------------------------------------
+
+export interface StorageUsage {
+  databaseBytes: number;
+  events: number;
+  runFiles: number;
+  runBytes: number;
+  proofFiles: number;
+  proofBytes: number;
+  experimentBytes: number;
+  worktrees: number;
+  untrackedWorktrees: string[];
+}
+
+export interface CleanupMission { id: string; title: string; state: string; updatedAt: string; events: number; files: string[]; bytes: number }
+
+export interface CleanupPlan {
+  olderThanDays: number;
+  missions: CleanupMission[];
+  orphanFiles: string[];
+  events: number;
+  files: number;
+  bytes: number;
+  token: string;
+}
+
+export interface CleanupResult { eventsDeleted: number; filesDeleted: number; bytesFreed: number; failures: string[] }

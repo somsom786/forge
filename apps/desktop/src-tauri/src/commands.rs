@@ -681,6 +681,21 @@ pub async fn project_set_execution_backend(core: CoreState<'_>, project_id: Stri
 }
 
 #[tauri::command]
+pub async fn storage_usage(core: CoreState<'_>) -> Result<crate::supervisor::storage::StorageUsage> {
+    blocking(&core, move |c| c.storage_usage()).await
+}
+
+#[tauri::command]
+pub async fn storage_cleanup_preview(core: CoreState<'_>, older_than_days: u32) -> Result<crate::supervisor::storage::CleanupPlan> {
+    blocking(&core, move |c| c.storage_cleanup_preview(older_than_days)).await
+}
+
+#[tauri::command]
+pub async fn storage_cleanup_apply(core: CoreState<'_>, older_than_days: u32, token: String) -> Result<crate::supervisor::storage::CleanupResult> {
+    blocking(&core, move |c| c.storage_cleanup_apply(older_than_days, &token)).await
+}
+
+#[tauri::command]
 pub async fn project_set_agent_backend(core: CoreState<'_>, project_id: String, backend: String) -> Result<Project> {
     blocking(&core, move |c| c.project_set_agent_backend(&project_id, &backend)).await
 }

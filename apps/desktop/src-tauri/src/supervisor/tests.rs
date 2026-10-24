@@ -353,6 +353,8 @@ mod scanners;
 mod integrity;
 mod claude_real;
 mod agent_sandbox;
+mod storage;
+mod bench;
 
 #[test]
 fn the_agents_overview_lists_running_and_recent_sessions_with_their_missions() {

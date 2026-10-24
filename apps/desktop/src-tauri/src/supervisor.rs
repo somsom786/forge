@@ -1307,6 +1307,7 @@ mod experiment;
 mod harness;
 mod memory;
 mod review;
+pub mod storage;
 pub use agents::{AgentsOverview, ProviderUsage, SessionRow};
 pub use experiment::ExperimentDetail;
 pub use mcp::{McpAuthorizationStatus, McpPreview};
