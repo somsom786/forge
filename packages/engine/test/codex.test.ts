@@ -1,9 +1,9 @@
 import { EventEmitter } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { CODEX_DISABLED_FEATURES, UNGATED_ITEM_TYPES, codexServerArgs, createCodexAdapter, effectiveSettingsProblems, homeInside, innerCommand, projectCodexConfig, userAllowRules } from '../src/adapters/codex.js';
 import { type CodexRpc, RpcError, sanitizedCodexEnv, spawnCodexServer, windowsTreeKill } from '../src/adapters/codexRpc.js';
 import type { PermissionDecision, PermissionRequest, RunContext } from '../src/adapters/types.js';
@@ -72,6 +72,10 @@ const baseHandlers = (extra: Record<string, Handler> = {}): Record<string, Handl
 const completed = (status = 'completed', error?: string) => ({ turn: { id: 'tu1', status, error: error ? { message: error } : null } });
 
 describe('codex adapter', () => {
+  const temporaryRepositories: string[] = [];
+  afterEach(() => {
+    for (const path of temporaryRepositories.splice(0)) rmSync(path, { recursive: true, force: true });
+  });
   it('disables every effective MCP server by name (including repo-defined ones), hooks and plugins, and asks for approval of everything', async () => {
     const p = peer(baseHandlers());
     const c = context({ appendSystemPrompt: 'guidance' });
@@ -296,7 +300,9 @@ describe('codex adapter', () => {
   // ---- effective settings (review 5, finding 8) -------------------------------------------------------------------------
 
   it('records the settings Codex actually applied, and refuses anything broader before a turn starts', async () => {
-    const wt = join(tmpdir(), 'forge-wt');
+    const wt = mkdtempSync(join(tmpdir(), 'forge-wt-'));
+    temporaryRepositories.push(wt);
+    mkdirSync(join(wt, '.git'));
     const broader: Array<[string, (p: any) => Record<string, unknown>]> = [ // eslint-disable-line @typescript-eslint/no-explicit-any
       ['dangerFullAccess', (p) => ({ ...effective(p), sandbox: { type: 'dangerFullAccess' } })],
       ['externalSandbox', (p) => ({ ...effective(p), sandbox: { type: 'externalSandbox', networkAccess: 'restricted' } })],
