@@ -49,8 +49,8 @@ the commit log, not here.
 
 | # | Issue | Kind | Where | Notes / fix |
 |---|---|---|---|---|
-| D1 | The database file never shrinks after a clean-up (no `VACUUM`) | Limitation | `supervisor/storage.rs` | Freed pages are reused; an explicit "compact" action could run `VACUUM` with the app idle |
-| D2 | Experiment folders are not covered by the storage clean-up | Confirmed gap | `supervisor/storage.rs`, `supervisor/experiment.rs` | Extend the clean-up to finished experiments |
+| D1 | SQLite compaction can be slow on a large database | Limitation | `supervisor/storage.rs` | Explicit idle-only action, never automatic; temporary-database reclamation and busy refusal tested on Windows |
+| D2 | Leftover experiment worktrees and unexpected files need manual inspection | Limitation | `supervisor/storage.rs` | Finished experiment logs and empty folders are previewed and cleaned; linked or unexpected entries are preserved and explained |
 | D3 | Mission lists load the 500 most recent missions | Limitation | `store.rs` `list_missions` | The screen says so; recovery and clean-up are not limited |
 | D4 | No power-loss test of SQLite itself | Not run | — | Relies on SQLite WAL + `synchronous=NORMAL` (a power cut can lose the last transactions, not corrupt the database) |
 

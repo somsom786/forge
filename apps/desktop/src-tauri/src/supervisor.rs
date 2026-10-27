@@ -1260,6 +1260,7 @@ impl Core {
         self.recover_knowledge();
         self.recover_harness();
         self.recover_experiments();
+        self.recover_storage_cleanup();
         let orphaned = self.store.fail_orphaned_runs()?;
         if orphaned > 0 {
             self.store.audit("system", "recovery.checks", None, &json!({"orphanedRuns": orphaned}));

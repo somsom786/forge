@@ -196,6 +196,12 @@ impl Store {
         Ok(s.query_map([project_id], exp_from)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    pub(crate) fn exp_finished_before(&self, cutoff: &str) -> Result<Vec<Experiment>> {
+        let c = self.c();
+        let mut s = c.prepare(&format!("SELECT {EXP_COLS} FROM experiment WHERE state IN ('completed','failed','cancelled','interrupted') AND finished_at < ?1 ORDER BY finished_at,id"))?;
+        Ok(s.query_map([cutoff], exp_from)?.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn exp_variants(&self, experiment_id: &str) -> Result<Vec<ExperimentVariant>> {
         let c = self.c();
         let mut s = c.prepare("SELECT id, experiment_id, position, label, is_baseline, git_ref, commit_sha FROM experiment_variant WHERE experiment_id=?1 ORDER BY position")?;

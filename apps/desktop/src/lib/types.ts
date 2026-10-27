@@ -1138,6 +1138,8 @@ export interface CleanupMission { id: string; title: string; state: string; upda
 export interface CleanupPlan {
   olderThanDays: number;
   missions: CleanupMission[];
+  experiments: { id: string; name: string; state: string; attempt: number; finishedAt: string | null; files: { path: string; bytes: number; modified: string }[]; directories: string[]; bytes: number }[];
+  skippedExperiments: string[];
   orphanFiles: string[];
   events: number;
   files: number;

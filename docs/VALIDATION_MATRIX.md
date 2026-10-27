@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-27
 
+Storage follow-up: `cargo test --lib --locked storage::` on Windows: 10 passed. Includes experiment artifacts, active-run exclusion, unexpected worktree preservation, junction refusal, locked log retry, durable audit failure, interrupted cleanup, and explicit idle-only SQLite compaction on a real temporary database. UI 127 passed and typecheck passed. No real user artifacts were deleted.
+
 Schema v16 follow-up: review-hardening tests 12 passed; database tests 5 passed on Windows. New migration preserves legacy review notes while defaulting explicit instruction acknowledgement to false. Older schemas are tested through every forward migration; newer schemas continue to be refused.
 
 Execution hardening follow-up: Windows targeted `execution::tests`: 4 passed; UI 127 passed; typecheck and engine build passed. Linux end-to-end environment isolation regression added but NOT RUN locally (the existing WSL distribution has no bubblewrap or Rust). The test is required through the existing sandbox CI setting. Agent capability reporting now distinguishes shared network/provider state from isolated checks.

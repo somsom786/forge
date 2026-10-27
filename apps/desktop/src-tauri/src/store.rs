@@ -211,6 +211,12 @@ impl Store {
         }
     }
 
+    /// Destructive maintenance must record its intent before touching files; an audit failure refuses the operation.
+    pub(crate) fn audit_required(&self, actor: &str, action: &str, subject: Option<&str>, detail: &serde_json::Value) -> Result<()> {
+        self.c().execute("INSERT INTO audit_event(at,actor,action,subject,detail_json) VALUES (?1,?2,?3,?4,?5)", params![now(), actor, action, subject, detail.to_string()])?;
+        Ok(())
+    }
+
     pub fn audit_count(&self, action: &str) -> Result<i64> {
         Ok(self.c().query_row("SELECT count(*) FROM audit_event WHERE action=?1", [action], |r| r.get(0))?)
     }

@@ -15,6 +15,128 @@ fn old_file(p: &Path) {
 }
 
 #[test]
+fn explicit_compaction_reclaims_pages_and_refuses_active_work() {
+    let f = fixture();
+    let store = Store::open(&f.core.cfg.home.join("compact-fixture.db")).unwrap();
+    let core = Core::new(store, f.core.cfg.clone(), Arc::new(|_| {}));
+    core.store.c().execute_batch("CREATE TABLE compact_fixture(payload BLOB); INSERT INTO compact_fixture VALUES (zeroblob(1048576)); DELETE FROM compact_fixture;").unwrap();
+    let result = core.storage_compact().unwrap();
+    assert!(result.free_pages_before > 0 && result.pages_after < result.pages_before);
+    assert_eq!(core.store.audit_count("storage.compact_finished").unwrap(), 1);
+    let m = new_mission(&f, "FAKE:hang", PermissionProfile::Default);
+    f.core.start_mission(&m.id, None).unwrap();
+    assert!(f.core.storage_compact().unwrap_err().to_string().contains("idle"));
+    f.core.stop_mission(&m.id).unwrap();
+    wait_until("stopped", || f.core.live_session_count() == 0);
+}
+
+fn finished_experiment(f: &Fixture) -> (String, PathBuf) {
+    use crate::experiment::{Metric, NewExperiment, VariantSpec};
+    let e = f.core.experiment_create(&f.project.id, NewExperiment {
+        name: "cleanup fixture".into(), objective: None, command: "node -e 0".into(), correctness_command: None,
+        metric: Metric::Duration, repetitions: 3, warmup: 0, timeout_secs: 10, baseline_ref: "main".into(),
+        variants: vec![VariantSpec { label: "variant".into(), git_ref: "main".into(), mission_id: None }],
+    }).unwrap();
+    f.core.store.exp_begin_attempt(&e.id, &json!({})).unwrap();
+    f.core.store.exp_finish_attempt(&e.id, "completed", None, None).unwrap();
+    f.core.store.c().execute("UPDATE experiment SET finished_at='2020-01-01T00:00:00.000Z' WHERE id=?1", [&e.id]).unwrap();
+    let dir = f.core.cfg.home.join("experiments").join(&e.id);
+    std::fs::create_dir_all(dir.join("1/logs")).unwrap();
+    std::fs::write(dir.join("1/logs/fixture.log"), "fixture output").unwrap();
+    (e.id, dir)
+}
+
+#[test]
+fn experiment_cleanup_is_previewed_and_rejects_changes_before_removing_logs_and_empty_folders() {
+    let f = fixture();
+    let (id, dir) = finished_experiment(&f);
+    let preview = f.core.storage_cleanup_preview(30).unwrap();
+    assert_eq!(preview.experiments.len(), 1);
+    assert_eq!(preview.experiments[0].files[0].path, "1/logs/fixture.log");
+    std::fs::write(dir.join("1/logs/later.log"), "new output").unwrap();
+    assert!(f.core.storage_cleanup_apply(30, &preview.token).is_err());
+    assert!(dir.join("1/logs/fixture.log").exists());
+    let preview = f.core.storage_cleanup_preview(30).unwrap();
+    let result = f.core.storage_cleanup_apply(30, &preview.token).unwrap();
+    assert!(result.failures.is_empty(), "{result:?}");
+    assert_eq!(result.files_deleted, 2);
+    assert!(!dir.exists());
+    assert_eq!(f.core.store.exp_get(&id).unwrap().state, "completed");
+    assert_eq!(f.core.store.audit_count("storage.cleanup_started").unwrap(), 1);
+    assert_eq!(f.core.store.audit_count("storage.cleanup_finished").unwrap(), 1);
+}
+
+#[test]
+fn cleanup_preserves_active_experiments_and_leftover_worktrees() {
+    let f = fixture();
+    let (id, dir) = finished_experiment(&f);
+    lock(&f.core.experiments).insert(id.clone(), Arc::new(AtomicBool::new(false)));
+    assert!(f.core.storage_cleanup_preview(30).unwrap().experiments.is_empty());
+    lock(&f.core.experiments).remove(&id);
+    std::fs::create_dir_all(dir.join("1/leftover")).unwrap();
+    std::fs::write(dir.join("1/leftover/.git"), "unowned worktree marker").unwrap();
+    let preview = f.core.storage_cleanup_preview(30).unwrap();
+    assert!(preview.experiments.is_empty());
+    assert!(!preview.skipped_experiments.is_empty());
+    f.core.storage_cleanup_apply(30, &preview.token).unwrap();
+    assert!(dir.join("1/logs/fixture.log").exists());
+    assert!(dir.join("1/leftover/.git").exists());
+}
+
+#[test]
+fn experiment_cleanup_refuses_links_and_requires_a_durable_intent() {
+    let f = fixture();
+    let (_, dir) = finished_experiment(&f);
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("keep.log"), "personal fixture").unwrap();
+    crate::paths::test_dir_link(&dir.join("1").join("linked"), outside.path());
+    let preview = f.core.storage_cleanup_preview(30).unwrap();
+    assert!(preview.experiments.is_empty());
+    f.core.storage_cleanup_apply(30, &preview.token).unwrap();
+    assert!(outside.path().join("keep.log").exists());
+    let (_, safe) = finished_experiment(&f);
+    let preview = f.core.storage_cleanup_preview(30).unwrap();
+    f.core.store.c().execute_batch("CREATE TRIGGER no_cleanup_audit BEFORE INSERT ON audit_event WHEN NEW.action='storage.cleanup_started' BEGIN SELECT RAISE(FAIL,'audit unavailable'); END;").unwrap();
+    assert!(f.core.storage_cleanup_apply(30, &preview.token).is_err());
+    assert!(safe.join("1/logs/fixture.log").exists());
+}
+
+#[test]
+fn interrupted_cleanup_is_recorded_without_claiming_completion_and_can_be_previewed_again() {
+    let f = fixture();
+    let (_, dir) = finished_experiment(&f);
+    std::fs::write(dir.join("1/logs/second.log"), "second").unwrap();
+    let preview = f.core.storage_cleanup_preview(30).unwrap();
+    f.core.store.audit_required("user", "storage.cleanup_started", Some("interrupted-fixture"), &json!(preview)).unwrap();
+    std::fs::remove_file(dir.join("1/logs/fixture.log")).unwrap();
+    f.core.recover_storage_cleanup();
+    f.core.recover_storage_cleanup();
+    assert_eq!(f.core.store.audit_count("storage.cleanup_interrupted").unwrap(), 1);
+    assert_eq!(f.core.store.audit_count("storage.cleanup_finished").unwrap(), 0);
+    let remaining = f.core.storage_cleanup_preview(30).unwrap();
+    assert_eq!(remaining.experiments[0].files.len(), 1);
+    assert!(f.core.storage_cleanup_apply(30, &remaining.token).unwrap().failures.is_empty());
+    assert!(!dir.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn a_locked_experiment_log_is_reported_and_cleanup_can_be_retried() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let f = fixture();
+    let (_, dir) = finished_experiment(&f);
+    let held = std::fs::OpenOptions::new().read(true).share_mode(3).open(dir.join("1/logs/fixture.log")).unwrap();
+    let preview = f.core.storage_cleanup_preview(30).unwrap();
+    let result = f.core.storage_cleanup_apply(30, &preview.token).unwrap();
+    assert!(!result.failures.is_empty());
+    assert!(dir.exists());
+    drop(held);
+    let preview = f.core.storage_cleanup_preview(30).unwrap();
+    assert!(f.core.storage_cleanup_apply(30, &preview.token).unwrap().failures.is_empty());
+    assert!(!dir.exists());
+}
+
+#[test]
 fn a_cleanup_removes_only_old_finished_missions_raw_data_and_keeps_the_record() {
     let f = fixture();
     // An old, discarded mission with a transcript and a check run (log + captured output on disk).

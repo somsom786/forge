@@ -686,6 +686,11 @@ pub async fn storage_usage(core: CoreState<'_>) -> Result<crate::supervisor::sto
 }
 
 #[tauri::command]
+pub async fn storage_compact(core: CoreState<'_>) -> Result<crate::supervisor::storage::CompactResult> {
+    blocking(&core, move |c| c.storage_compact()).await
+}
+
+#[tauri::command]
 pub async fn storage_cleanup_preview(core: CoreState<'_>, older_than_days: u32) -> Result<crate::supervisor::storage::CleanupPlan> {
     blocking(&core, move |c| c.storage_cleanup_preview(older_than_days)).await
 }
