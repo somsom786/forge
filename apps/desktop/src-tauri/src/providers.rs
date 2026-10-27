@@ -28,6 +28,39 @@ pub struct ProviderInfo {
     pub models: Vec<String>,
 }
 
+pub const CLAUDE_SDK_VERSION: &str = "0.3.309";
+
+pub fn claude_sdk_install_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")));
+    base.filter(|p| p.is_absolute()).map(|p| p.join("FORGEProviderDeps").join("claude-sdk"))
+}
+
+fn valid_claude_sdk(path: &Path) -> bool {
+    let p = std::fs::read_to_string(path.join("package.json")).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    p.is_some_and(|p| p["name"] == "@anthropic-ai/claude-agent-sdk" && p["version"] == CLAUDE_SDK_VERSION) && path.join("sdk.mjs").is_file()
+}
+
+/// Metadata only; never executes code or reads provider credentials. Explicit overrides never fall back.
+pub fn locate_claude_sdk(engine: Option<&Path>) -> std::result::Result<PathBuf, String> {
+    if let Some(p) = std::env::var_os("FORGE_CLAUDE_SDK_PATH") {
+        let p = PathBuf::from(p);
+        if p.is_absolute() && valid_claude_sdk(&p) { return dunce::canonicalize(p).map_err(|e| e.to_string()); }
+        return Err(format!("FORGE_CLAUDE_SDK_PATH must name an installed @anthropic-ai/claude-agent-sdk {CLAUDE_SDK_VERSION} package directory"));
+    }
+    let mut candidates = vec![];
+    if let Some(dir) = claude_sdk_install_dir() { candidates.push(dir.join("node_modules/@anthropic-ai/claude-agent-sdk")); }
+    if let Some(engine) = engine {
+        for parent in engine.ancestors().skip(1) { candidates.push(parent.join("node_modules/@anthropic-ai/claude-agent-sdk")); }
+    }
+    candidates.into_iter().find(|p| valid_claude_sdk(p)).and_then(|p| dunce::canonicalize(p).ok()).ok_or_else(|| {
+        let dir = claude_sdk_install_dir().map(|p| p.display().to_string()).unwrap_or_else(|| "<provider-dependencies>".into());
+        format!("Claude requires a separately installed SDK. Run npm install --prefix \"{dir}\" --save-exact @anthropic-ai/claude-agent-sdk@{CLAUDE_SDK_VERSION}, then refresh providers. FORGE does not install it automatically.")
+    })
+}
+
 fn run_timeout(program: &Path, args: &[&str], secs: u64) -> Option<(bool, String)> {
     let mut cmd = Command::new(program);
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -274,6 +307,18 @@ pub fn detect_claude_local(claude: Option<&PathBuf>, ollama_url: &str) -> Provid
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn separately_installed_sdk_metadata_is_version_pinned() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("sdk.mjs"), "throw new Error('must never execute during detection')").unwrap();
+        std::fs::write(d.path().join("package.json"), json!({"name": "@anthropic-ai/claude-agent-sdk", "version": CLAUDE_SDK_VERSION}).to_string()).unwrap();
+        assert!(valid_claude_sdk(d.path()));
+        std::fs::write(d.path().join("package.json"), json!({"name": "@anthropic-ai/claude-agent-sdk", "version": "0.0.1"}).to_string()).unwrap();
+        assert!(!valid_claude_sdk(d.path()));
+        let package: Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../packages/engine/package.json"))).unwrap();
+        assert_eq!(package["devDependencies"]["@anthropic-ai/claude-agent-sdk"], CLAUDE_SDK_VERSION);
+    }
 
     #[test]
     fn codex_not_logged_in_is_not_signed_in() {

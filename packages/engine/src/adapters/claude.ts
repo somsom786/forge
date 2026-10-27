@@ -2,6 +2,7 @@ import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import type { CapabilityMatrix, StartCommand } from '../protocol.js';
 import { AsyncQueue, errMessage } from '../util.js';
 import { ClaudeNormalizer, type TurnResult } from './claudeNormalize.js';
+import { loadClaudeSdk } from './claudeSdk.js';
 import type { PermissionDecision, ProviderAdapter, RunContext } from './types.js';
 
 export const CLAUDE_CAPABILITIES: CapabilityMatrix = {
@@ -21,6 +22,8 @@ export const CLAUDE_CAPABILITIES: CapabilityMatrix = {
 const BILLING_ENV = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_CUSTOM_HEADERS',
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_FOUNDRY',
@@ -47,7 +50,11 @@ export function sanitizedEnv(
   local?: { endpoint: string; model: string },
 ): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...base };
-  if (!allowApiBilling || local) for (const k of BILLING_ENV) delete env[k];
+  // A spread creates a plain, case-sensitive object even on Windows. Strip every spelling before spawn, where
+  // environment names become case-insensitive again; duplicate endpoint spellings must not override the local endpoint.
+  for (const k of Object.keys(env)) {
+    if (((!allowApiBilling || local) && BILLING_ENV.includes(k.toUpperCase())) || k.toUpperCase() === 'CLAUDE_AGENT_SDK_CLIENT_APP') delete env[k];
+  }
   env.CLAUDE_AGENT_SDK_CLIENT_APP = 'forge/0.1';
   if (local) {
     const u = assertLoopbackEndpoint(local.endpoint);
@@ -185,7 +192,7 @@ export const claudeAdapter: ProviderAdapter = {
 
   async run(ctx: RunContext): Promise<void> {
     const s = ctx.start;
-    const sdk = await import('@anthropic-ai/claude-agent-sdk');
+    const sdk = await loadClaudeSdk();
     const input = new AsyncQueue<import('@anthropic-ai/claude-agent-sdk').SDKUserMessage>();
     input.push({ type: 'user', message: { role: 'user', content: s.prompt }, parent_tool_use_id: null });
 

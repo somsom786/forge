@@ -548,13 +548,23 @@ impl Core {
         // Where the agent runs: the project's agent backend, required (never a silent fallback to the host). Decided, and
         // what a contained agent may see checked, before a session is recorded: a refusal here leaves no session behind.
         let project = self.store.get_project(&m.project_id)?;
+        let sdk_dir = if matches!(m.provider.as_str(), "claude" | "claude-local") {
+            Some(crate::providers::locate_claude_sdk(Some(&script)).map_err(ForgeError::Provider)?)
+        } else { None };
         let backend = crate::execution::Backend::parse(&project.agent_backend)?;
         let executes_on = if backend == crate::execution::Backend::TrustedLocal { AGENT_EXECUTES_ON.to_string() } else { backend.as_str().to_string() };
-        let (read_only, read_write) = if backend == crate::execution::Backend::TrustedLocal {
+        let (mut read_only, read_write) = if backend == crate::execution::Backend::TrustedLocal {
             (vec![], vec![])
         } else {
             (self.agent_read_only_paths(&node, &script, worktree, acp_agent.as_ref(), &mcp_servers)?, self.agent_state_paths(&m.provider, worktree)?)
         };
+        if backend != crate::execution::Backend::TrustedLocal {
+            if let Some(sdk) = &sdk_dir {
+                let root = sdk.ancestors().find(|p| p.file_name().is_some_and(|n| n == "node_modules")).unwrap_or(sdk);
+                self.narrow_enough(root, worktree).map_err(ForgeError::Provider)?;
+                read_only.push(root.to_path_buf());
+            }
+        }
         let session = self.store.create_session(&m.id, &m.provider, resume)?;
         let fail_session = |reason: String| {
             let _ = self.store.end_session(&session.id, "lost", &reason);
@@ -570,6 +580,7 @@ impl Core {
         } else {
             cmd.envs(self.cfg.engine_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         }
+        if let Some(sdk) = sdk_dir { cmd.env("FORGE_CLAUDE_SDK_PATH", sdk); }
         cmd.current_dir(worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

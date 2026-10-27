@@ -232,7 +232,7 @@ try {
     }
 
     # ---- 4. installed files ------------------------------------------------------------------------------------------
-    $filesName = 'Installed files: app exe, uninstall.exe, engine\main.js, node\node.exe; uninstall entry'
+    $filesName = 'Installed files and manifest checksums; uninstall entry'
     if (-not $installed) {
         Add-CheckResult -Context $ctx -Name $filesName -Status BLOCKED -Detail 'not installed'
     }
@@ -242,11 +242,23 @@ try {
         if ($preferred.Count -ge 1) { $appExe = $preferred[0].FullName } elseif ($exes.Count -eq 1) { $appExe = $exes[0].FullName }
         $missing = New-Object System.Collections.Generic.List[string]
         if ($null -eq $appExe) { $missing.Add('app executable (found: ' + (($exes | ForEach-Object { $_.Name }) -join ', ') + ')') }
-        foreach ($rel in @('uninstall.exe', 'engine\main.js', 'node\node.exe')) {
+        foreach ($rel in @('uninstall.exe', 'engine\main.js', 'engine\inputs.json', 'node\node.exe', 'THIRD_PARTY_NOTICES.txt', 'BUILD_MANIFEST.json', 'CLAUDE_SDK_SETUP.txt')) {
             if (-not (Test-Path -LiteralPath (Join-Path $installDir $rel) -PathType Leaf)) { $missing.Add($rel) }
         }
         $entries = @((Get-UninstallEntry -ProductName $productName) | Where-Object { Test-EntryPointsAt -Entry $_ -Directory $installDir })
         if ($entries.Count -eq 0) { $missing.Add('uninstall registry entry pointing at ' + $installDir) }
+        if ($missing.Count -eq 0) {
+            try {
+                $manifest = Get-Content -LiteralPath (Join-Path $installDir 'BUILD_MANIFEST.json') -Raw | ConvertFrom-Json
+                foreach ($pair in @(@('engine\main.js', $manifest.engineSha256), @('engine\inputs.json', $manifest.engineInputsSha256), @('node\node.exe', $manifest.node.sha256))) {
+                    $actual = (Get-FileHash -LiteralPath (Join-Path $installDir $pair[0]) -Algorithm SHA256).Hash.ToLowerInvariant()
+                    if ($actual -ne $pair[1]) { $missing.Add('build manifest hash mismatch: ' + $pair[0]) }
+                }
+                $inputs = @(Get-Content -LiteralPath (Join-Path $installDir 'engine\inputs.json') -Raw | ConvertFrom-Json)
+                if (@($inputs | Where-Object { $_ -match 'node_modules[/\\]@anthropic-ai[/\\]' }).Count -gt 0) { $missing.Add('Anthropic SDK code included in engine inputs') }
+            }
+            catch { $missing.Add('invalid build manifest: ' + $_.Exception.Message) }
+        }
         if ($missing.Count -eq 0) {
             Add-CheckResult -Context $ctx -Name $filesName -Status PASS -Detail ($appExe + '; uninstall entry ' + $entries[0].Key + ' (version ' + $entries[0].Version + ')')
         }
@@ -275,7 +287,7 @@ try {
             # The launched app inherits these: a fresh FORGE home and WebView2 profile inside the temporary folder.
             $env:FORGE_HOME = $forgeHome
             $env:WEBVIEW2_USER_DATA_FOLDER = $webviewData
-            $proc = Start-Process -FilePath $appExe -PassThru
+            $proc = Start-Process -FilePath $appExe -WindowStyle Hidden -PassThru
             $null = $proc.Handle
         }
         finally {

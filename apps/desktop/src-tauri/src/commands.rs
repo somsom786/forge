@@ -71,6 +71,12 @@ pub async fn providers_detect(core: CoreState<'_>) -> Result<Vec<ProviderInfo>> 
             providers::detect_codex(c.cfg.codex.clone()),
             crate::acp::provider_info(&c.acp_agents()?),
         ];
+        if let Err(reason) = providers::locate_claude_sdk(c.cfg.engine_script.as_deref()) {
+            for p in v.iter_mut().filter(|p| matches!(p.id.as_str(), "claude" | "claude-local")) {
+                p.adapter_available = false;
+                p.notes.push(reason.clone());
+            }
+        }
         if c.cfg.allow_fake {
             v.push(ProviderInfo {
                 id: "fake".into(),

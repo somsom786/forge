@@ -47,6 +47,12 @@ describe('repo-defined execution surfaces are locked down', () => {
     expect(o.env!.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
     expect(o.env!.PATH).toBe('x');
   });
+
+  it('strips case-variant credentials and endpoint overrides before subscription missions', () => {
+    const { o } = opts(undefined, {}, { PATH: 'fixture', anthropic_api_key: 'fixture-only', Anthropic_Auth_Token: 'fixture-only', claude_code_use_bedrock: '1', anthropic_base_url: 'https://example.invalid', ANTHROPIC_BASE_URL: 'https://example.invalid' });
+    expect(Object.keys(o.env!).some((k) => ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'ANTHROPIC_BASE_URL'].includes(k.toUpperCase()))).toBe(false);
+    expect(o.env!.PATH).toBe('fixture');
+  });
 });
 
 describe('PreToolUse hook (the enforcement point)', () => {
@@ -117,7 +123,11 @@ describe('local model endpoint (claude-local)', () => {
 
   it('strips real credentials even if API billing was (mis)configured as allowed', async () => {
     const { sanitizedEnv } = await import('../src/adapters/claude.js');
-    expect(sanitizedEnv(base, true, local).ANTHROPIC_API_KEY).toBeUndefined();
+    const env = sanitizedEnv({ ...base, anthropic_base_url: 'https://example.invalid', anthropic_custom_headers: 'fixture' }, true, local);
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.anthropic_base_url).toBeUndefined();
+    expect(env.anthropic_custom_headers).toBeUndefined();
+    expect(env.ANTHROPIC_BASE_URL).toBe(local.endpoint);
   });
 
   it('refuses anything that is not plain-http loopback', async () => {

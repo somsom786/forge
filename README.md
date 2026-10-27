@@ -82,6 +82,8 @@ npm run dev -w forge-desktop     # UI only, in a browser, against built-in previ
 npm run package                  # Windows: NSIS installer (unsigned), with THIRD_PARTY_NOTICES.txt
 ```
 
+Packaged Claude integration requires a separately installed Agent SDK `0.3.309`; the Providers screen gives the installation command. The installer ships setup instructions and a build manifest, and excludes the SDK's code. Codex and ACP do not require it. Details and remaining terms decisions: `docs/LICENSING_DECISION.md`.
+
 ## Tests
 
 ```sh
