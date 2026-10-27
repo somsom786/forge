@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-27
 
+- Review acknowledgement now has a dedicated boolean in schema v16, bound to its review row's fingerprint. Legacy note text is never authorization; old instruction approvals return to review. Windows: review regressions 12 passed; migration tests 5 passed (including v15 data with a forged marker note).
+
 - Execution hardening: contained agents receive an explicit runtime/provider/proxy environment allow-list. Loader injection, SSH agents and unrelated environment secrets are removed before the engine starts. Backend capabilities now distinguish agent and check behavior. Linux network access and provider-state exposure remain explicit limitations. Windows targeted tests: 4 passed; UI 127 passed; typecheck passed. Linux enforcement regression awaits CI.
 
 - Based `codex/overhaul-continuation` on `origin/cloud/overhaul` at `8c3bcc9`; PR #8 remains open. The two commits after `6626706` were documentation-only. Existing main and worktrees were preserved.

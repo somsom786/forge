@@ -470,6 +470,9 @@ pub fn render_markdown(c: &Value) -> String {
         o.push_str("_No review decision recorded yet._\n");
     }
     for d in ds {
+        if d["agentInstructionsReviewed"] == true {
+            o.push_str("- Explicitly acknowledged agent instruction/configuration changes for this review fingerprint.\n");
+        }
         o.push_str(&format!(
             "- {} at {}{}{}\n",
             d["decision"].as_str().unwrap_or(""),

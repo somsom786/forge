@@ -308,11 +308,7 @@ impl Core {
                         report.unresolved.join(" | ")
                     )));
                 }
-                if !report.agent_instruction_files.is_empty() {
-                    self.store.add_review_decision(mission_id, decision.as_str(), Some("Explicitly acknowledged agent instruction/configuration changes"), if report.needs_override() { override_reason } else { None }, &report.fingerprint, report.head_commit.as_deref())?;
-                } else {
-                    record(if report.needs_override() { override_reason } else { None })?;
-                }
+                self.store.add_review_decision_with_instruction_review(mission_id, decision.as_str(), note, if report.needs_override() { override_reason } else { None }, &report.fingerprint, report.head_commit.as_deref(), !report.agent_instruction_files.is_empty() && seen.agent_instructions_reviewed)?;
                 self.store.audit("user", "review.approve", Some(mission_id), &json!({"unresolved": report.unresolved.len(), "override": override_reason, "agentInstructionFiles": report.agent_instruction_files, "fingerprint": report.fingerprint}));
                 self.set_state(mission_id, MissionState::Approved, "approved by reviewer")
             }
@@ -369,7 +365,7 @@ impl Core {
         }
         // Approvals recorded by older versions did not require this acknowledgement.
         let sensitive = git::changed_files_in_tree(&wt, &base, &tree)?.iter().any(|f| proof::is_agent_instruction_file(&f.path));
-        if sensitive && approved.as_ref().and_then(|d| d.note.as_deref()) != Some("Explicitly acknowledged agent instruction/configuration changes") {
+        if sensitive && !approved.as_ref().is_some_and(|d| d.agent_instructions_reviewed) {
             self.settle(mission_id, MissionState::AwaitingReview, "agent instruction changes need explicit review");
             return Err(ForgeError::InvalidState("agent instruction changes need explicit acknowledgement; review them again".into()));
         }

@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-27
 
+Schema v16 follow-up: review-hardening tests 12 passed; database tests 5 passed on Windows. New migration preserves legacy review notes while defaulting explicit instruction acknowledgement to false. Older schemas are tested through every forward migration; newer schemas continue to be refused.
+
 Execution hardening follow-up: Windows targeted `execution::tests`: 4 passed; UI 127 passed; typecheck and engine build passed. Linux end-to-end environment isolation regression added but NOT RUN locally (the existing WSL distribution has no bubblewrap or Rust). The test is required through the existing sandbox CI setting. Agent capability reporting now distinguishes shared network/provider state from isolated checks.
 
 Local Windows environment (not CI; whether the host is physical was not independently established): Node 24.19.0, npm 12.2.0, Rust 1.92.0 MSVC. `codex/overhaul-continuation` starts at `8c3bcc9`. No GPU workloads or live paid provider missions were run.

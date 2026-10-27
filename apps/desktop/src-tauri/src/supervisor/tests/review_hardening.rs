@@ -56,7 +56,7 @@ fn instruction_changes_require_acknowledgement_bound_to_the_current_fingerprint(
     current.agent_instructions_reviewed = true;
     f.core.review(&m.id, ReviewDecision::Approve, None, Some("reviewed"), Some(&current)).unwrap();
     let decisions = f.core.store.review_decisions(&m.id).unwrap();
-    assert!(decisions.iter().any(|d| d.note.as_deref().unwrap_or("").contains("Explicitly acknowledged")));
+    assert!(decisions.iter().any(|d| d.agent_instructions_reviewed));
     std::fs::write(&file, "changed again after approval\n").unwrap();
     assert!(f.core.merge_mission(&m.id, false).is_err());
 }
@@ -67,7 +67,8 @@ fn legacy_approval_of_instruction_changes_returns_to_review() {
     let m = in_review(&f);
     std::fs::write(worktree(&f, &m.id).join("CLAUDE.md"), "future instructions\n").unwrap();
     let reviewed = seen(&f, &m.id);
-    f.core.store.add_review_decision(&m.id, "approve", None, None, &reviewed.fingerprint, None).unwrap();
+    // Legacy free-form note text must never be interpreted as the new authorization field.
+    f.core.store.add_review_decision(&m.id, "approve", Some("Explicitly acknowledged agent instruction/configuration changes"), None, &reviewed.fingerprint, None).unwrap();
     f.core.set_state(&m.id, MissionState::Approved, "legacy approval").unwrap();
     let err = f.core.merge_mission(&m.id, false).unwrap_err().to_string();
     assert!(err.contains("explicit acknowledgement"), "{err}");
