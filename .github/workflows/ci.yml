@@ -300,7 +300,7 @@ jobs:
           $dir = 'apps/desktop/src-tauri/target/release/bundle/nsis'
           $setup = @(Get-ChildItem -Path $dir -Filter '*-setup.exe' -File)
           if ($setup.Count -ne 1) { throw "expected one installer, found $($setup.Count)" }
-          & ./scripts/windows/test-release.ps1 -InstallerPath $setup[0].FullName -Launch -LaunchSeconds 90
+          & ./scripts/windows/test-release.ps1 -InstallerPath $setup[0].FullName -Launch -LaunchSeconds 180
           if ($LASTEXITCODE -ne 0) { throw "installer validation failed with exit code $LASTEXITCODE" }
 
       - name: Upload installer validation report
