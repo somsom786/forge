@@ -196,6 +196,7 @@ pub fn is_agent_instruction_file(path: &str) -> bool {
     let name = parts.last().copied().unwrap_or("");
     matches!(name, "claude.md" | "claude.local.md" | "agents.md" | "agents.override.md" | "gemini.md" | ".mcp.json")
         || parts.iter().any(|part| matches!(*part, ".claude" | ".codex" | ".gemini" | ".cursor"))
+        || parts.windows(2).any(|p| p == [".agents", "skills"])
         || p == ".github/copilot-instructions.md"
         || p.starts_with(".github/instructions/")
         || p.starts_with(".github/agents/")
@@ -491,7 +492,7 @@ mod tests {
 
     #[test]
     fn agent_instruction_paths_include_nested_and_case_variants() {
-        for path in ["AGENTS.md", "src/AGENTS.override.md", "src/CLAUDE.md", ".claude/rules/review.md", "nested/.codex/config.toml", ".github/copilot-instructions.md", ".github/instructions/a.md", ".github/agents/reviewer.md", ".mcp.json", "x\\.gemini\\settings.json"] {
+        for path in ["AGENTS.md", "src/AGENTS.override.md", "src/CLAUDE.md", ".claude/rules/review.md", "nested/.codex/config.toml", ".agents/skills/release/SKILL.md", "nested/.AGENTS/skills/release/scripts/run.sh", ".github/copilot-instructions.md", ".github/instructions/a.md", ".github/agents/reviewer.md", ".mcp.json", "x\\.gemini\\settings.json"] {
             assert!(is_agent_instruction_file(path), "{path}");
         }
         for path in ["src/agents.rs", "docs/claude.md.txt", ".github/workflows/ci.yml", "claude/file.md"] {

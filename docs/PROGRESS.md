@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-27
 
+- Sensitive instruction detection includes `.agents/skills/**`, including scripts and nested or case-varied paths, so the existing fingerprint-bound review gate covers project skills. Windows path classification regression passed locally.
+
 - Worktree cleanup no longer performs the Windows lock-probe rename on Unix, where it could replace an existing empty sibling directory. On Windows it refuses an already-existing probe destination. The new Windows regression passed locally with hidden, below-normal-priority processes; Linux coverage is included in CI.
 
 - Claude packaging: engine bundle excludes Anthropic SDK code and loads a separately installed, exact-pinned SDK. Provider readiness explains the installation command; invalid explicit overrides never fall back. Bundle input provenance and staged-file hashes are shipped. Engine 90 passed, 5 skipped, including a real bundle smoke test without SDK; real Claude Code against a scripted loopback model: 4 passed with the tool required. An intermediate unsigned installer passed six install/uninstall checks. No provider account or paid inference used. Terms review and the owner's license decision remain open.
