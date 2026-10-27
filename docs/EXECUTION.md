@@ -94,12 +94,17 @@ profile), a `<LogonCommand>` that copies in, runs the command, writes results an
 run at a time**, so concurrent missions would queue. Toolchains must be installed inside each run (slow) or mapped read-only.
 
 ### `isolated_wsl` — designed, **not implemented**
-A FORGE-owned WSL 2 distribution imported from a known image (`wsl --import`), with `/etc/wsl.conf`:
-`[automount] enabled=false`, `[interop] enabled=false appendWindowsPath=false`, `[user] default=forge`, so no Windows drive and no
-Windows executables are reachable; the workspace copied in (or one explicit mount) and results copied out; the
+A proposed FORGE-owned WSL 2 distribution imported from a known image (`wsl --import`), with `/etc/wsl.conf`:
+`[automount] enabled=false`, `mountFsTab=false`, `[interop] enabled=false appendWindowsPath=false`, and `[user] default=forge`.
+These settings are only prerequisites: [Microsoft documents](https://learn.microsoft.com/en-us/windows/wsl/wsl-config)
+that disabling automount does not prevent manual mounts. They do not by themselves establish that Windows files or processes
+are unreachable. An implementation must verify the effective configuration, deny guest elevation and mount capabilities,
+test interop and manual-mount bypasses, and fail closed if enforcement cannot be demonstrated. The workspace would be copied
+in (or one explicit mount) and results copied out; the
 `linux_namespaces` backend running **inside** the distribution per command (this is why that backend exists). Requires explicit
 user consent to install WSL/the distribution; networking control relies on the inner network namespace because WSL's own
-networking is shared with the host. Not a VM per command: one utility VM is shared by all WSL distributions.
+networking is shared with the host. Not a VM per command: one utility VM is shared by all WSL distributions. Neither the
+proposed backend nor its host isolation has been implemented or security-tested.
 
 ## Selection rules
 
