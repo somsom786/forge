@@ -284,6 +284,8 @@ pub fn toolchain_roots(path_var: &str, home: Option<&Path>) -> Vec<PathBuf> {
 
 fn toolchain_roots_excluding(path_var: &str, home: Option<&Path>, system: &[&Path]) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = vec![];
+    // Without a verifiable home, we cannot prove that a path alias does not expose it.
+    let Some(resolved_home) = home.and_then(|h| std::fs::canonicalize(h).ok()) else { return out };
     for d in std::env::split_paths(path_var) {
         if !d.is_absolute() || !d.is_dir() {
             continue;
@@ -295,6 +297,12 @@ fn toolchain_roots_excluding(path_var: &str, home: Option<&Path>, system: &[&Pat
         let root = if d.file_name().is_some_and(|n| n == "bin") { d.parent().map(Path::to_path_buf).unwrap_or(d.clone()) } else { d.clone() };
         if root.components().count() < 3 {
             continue; // never a top-level directory such as /opt or /nix itself
+        }
+        // PATH entries and installation roots may be symlinks. A lexical check alone could bind a user's entire home
+        // through an alias outside it, or bind an ancestor that contains the home. Fail closed if resolution fails.
+        let Ok(resolved_root) = std::fs::canonicalize(&root) else { continue };
+        if resolved_root.components().count() < 3 || resolved_root.starts_with(&resolved_home) || resolved_home.starts_with(&resolved_root) {
+            continue;
         }
         if !out.iter().any(|o| root.starts_with(o)) {
             out.retain(|o| !o.starts_with(&root));
@@ -481,6 +489,21 @@ mod tests {
         let path = std::env::join_paths([d.path().join("opt/node22/bin"), d.path().join("opt/tools"), home.join(".cargo/bin"), PathBuf::from("/usr/bin"), PathBuf::from("relative")]).unwrap();
         let roots = toolchain_roots_excluding(&path.to_string_lossy(), Some(&home), &[Path::new("/usr")]);
         assert_eq!(roots, vec![d.path().join("opt/node22"), d.path().join("opt/tools")]);
+        assert!(toolchain_roots_excluding(&path.to_string_lossy(), None, &[]).is_empty(), "unknown home cannot be protected from aliases");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn toolchain_aliases_cannot_mount_home_or_its_ancestor() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home/user");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::create_dir_all(d.path().join("aliases")).unwrap();
+        symlink(&home, d.path().join("aliases/home-alias")).unwrap();
+        symlink(home.parent().unwrap(), d.path().join("aliases/parent-alias")).unwrap();
+        let path = std::env::join_paths([d.path().join("aliases/home-alias/bin"), d.path().join("aliases/parent-alias")]).unwrap();
+        assert!(toolchain_roots_excluding(&path.to_string_lossy(), Some(&home), &[]).is_empty());
     }
 
     #[test]
