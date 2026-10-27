@@ -1404,14 +1404,24 @@ impl Core {
         git::worktree_remove(root, wt, confirm_loss)
     }
 
-    /// On Windows a folder cannot be renamed while a program holds a file in it open, and git would delete part of the
-    /// worktree before failing on that file. Renaming it aside and back first turns that into a clean refusal. (On Unix
-    /// the rename always succeeds and nothing changes.)
+    /// On Windows, renaming aside and back can detect a file held open before git partially removes the worktree.
+    /// Unix does not need this probe: renaming there can replace an existing empty directory at the destination.
+    #[cfg(not(windows))]
+    fn ensure_not_in_use(_wt: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(windows)]
     fn ensure_not_in_use(wt: &Path) -> Result<()> {
         if !wt.exists() {
             return Ok(());
         }
         let probe = wt.with_file_name(format!("{}.forge-in-use-check", wt.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        match std::fs::symlink_metadata(&probe) {
+            Ok(_) => return Err(ForgeError::InvalidState(format!("cannot check {} while {} already exists; inspect it before retrying", wt.display(), probe.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(ForgeError::Other(format!("cannot inspect {} before checking the worktree: {e}", probe.display()))),
+        }
         match std::fs::rename(wt, &probe) {
             Ok(()) => std::fs::rename(&probe, wt).map_err(|e| ForgeError::Other(format!("FORGE moved {} to {} to check it was not in use and could not move it back: {e}", wt.display(), probe.display()))),
             Err(e) => Err(ForgeError::InvalidState(format!(

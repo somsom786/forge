@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-27
 
+Worktree lock-probe collision regression: PASS — Windows, 1 targeted test in a temporary directory; no test subprocess window or GPU was used. The Unix no-rename branch requires the corresponding Linux CI result.
+
 External Claude SDK follow-up: engine 90 passed, 5 skipped; copied bundle runs its scripted provider without SDK, and a Claude start with a missing SDK fails visibly. SDK metadata/version test: 1 passed. Real Claude Code against a scripted local model with `FORGE_REQUIRE_CLAUDE_REAL_TESTS=1`: 4 passed on Windows (no account/quota/GPU). Package staging succeeded; esbuild inputs exclude Anthropic SDK code. An intermediate unsigned installer built, installed and uninstalled in a temporary location (6 checks passed); it predates subsequent code changes. Installer launch/upgrade with separately installed SDK remains NOT RUN.
 
 Storage follow-up: `cargo test --lib --locked storage::` on Windows: 11 passed. Includes experiment artifacts, active-run exclusion, unexpected worktree preservation, junction refusal, locked log retry, durable audit failure, interrupted cleanup, explicit idle-only SQLite compaction on a real temporary database, and lock-order regression. UI 127 passed and typecheck passed. No real user artifacts were deleted.
