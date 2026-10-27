@@ -26,6 +26,8 @@ GitHub PR #8 checks queried 2026-10-27: Linux and Windows tests, Windows unsigne
 
 Continuation PR #9, commit `c1aa777`: PASS — Linux CI (451 Rust passed, 6 ignored; required sandbox, scanner and scripted Claude CLI checks enabled), PASS — Windows CI (439 Rust passed, 6 ignored), and PASS — unsigned installer build and Windows script checks. Security, dependency and SBOM jobs passed. Follow-up commit `50c17a9`: PASS — Windows CI installed the unsigned app into temporary storage, kept it running for 90 seconds with GPU disabled, then uninstalled it. This does not explain or invalidate the earlier local 180-second failure.
 
+Continuation PR #9, commit `77b088c`: PASS — Linux CI, Windows CI, security and dependency checks, and unsigned installer build. The clean Windows runner installed, launched for 180 seconds with GPU disabled, and uninstalled the application. The earlier local early exit remains unexplained; this CI pass is not evidence of a real provider, signing, or physical-desktop interoperability.
+
 | Check | Result | Evidence and limits |
 |---|---|---|
 | Initial Windows script | FAIL | First attempt: npm cache EPERM; dependent suites blocked. Retried with a worktree-local cache: one Codex fixture failed due to parent configuration; 425 Rust passed, 6 ignored, and 126 UI passed. Source changed during this run, so it is not a clean final-revision baseline. |

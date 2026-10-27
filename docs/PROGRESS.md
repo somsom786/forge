@@ -20,6 +20,8 @@
 
 - GitHub PR #9 at `c1aa777`: Linux and Windows CI, unsigned installer build, script checks, audits and SBOM passed. Linux CI required sandbox and scanner tests. At `50c17a9`, an independent 90-second installer launch and uninstall test passed on the disposable Windows runner with GPU acceleration disabled. The earlier local exit during a 180-second test is still unexplained.
 
+- GitHub PR #9 at `77b088c`: Linux and Windows suites and all security jobs passed; the disposable Windows runner also passed a 180-second installer launch and uninstall with GPU disabled. The earlier clean local exit at 63.5 seconds still has no established cause.
+
 - Review acknowledgement now has a dedicated boolean in schema v16, bound to its review row's fingerprint. Legacy note text is never authorization; old instruction approvals return to review. Windows: review regressions 12 passed; migration tests 5 passed (including v15 data with a forged marker note).
 
 - Execution hardening: contained agents receive an explicit runtime/provider/proxy environment allow-list. Loader injection, SSH agents and unrelated environment secrets are removed before the engine starts. Backend capabilities now distinguish agent and check behavior. Linux network access and provider-state exposure remain explicit limitations. Windows targeted tests: 4 passed; UI 127 passed; typecheck passed. Linux enforcement regression awaits CI.
