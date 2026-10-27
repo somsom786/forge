@@ -212,8 +212,9 @@ Policy revision bumped to `policy-2026-10-23.2`, then `policy-2026-10-24.1` (Glo
   every verification run, experiment run and Proof Pack records the backend it ran on.
 * **Agents** can be contained too (per project, "Agents run: …"; Linux only): the engine, the provider and every command it
   runs, approved or not, start inside `linux_namespaces` with the worktree read-write, the provider's own state directory
-  read-write in place, the runtime read-only, and nothing else of the user's files. The network and FORGE's environment are
-  **not** restricted for agents. Tested with the scripted agent and with the real Claude Code binary (approved `Bash cat` of a
+  read-write in place, the runtime read-only, and nothing else of the user's files. The network remains available to agents;
+  the engine receives an allow-list of runtime, provider and proxy environment variables, and provider state may contain
+  credentials and transcripts. This is not a credential-isolation guarantee. Historically tested with the scripted agent and with the real Claude Code binary (approved `Bash cat` of a
   host file fails; host control prints it). On Windows agents still run on the host (limit 1).
 
 ## Known limits (do not assume these are solved)

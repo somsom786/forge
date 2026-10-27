@@ -6,6 +6,8 @@ FORGE's engine bundle now excludes the Claude Agent SDK. The SDK is an exact-pin
 
 On Windows, install it yourself with `npm install --prefix "$env:LOCALAPPDATA\FORGEProviderDeps\claude-sdk" --save-exact @anthropic-ai/claude-agent-sdk@0.3.309`. Refresh providers afterward. An alternative install location can be selected with `FORGE_CLAUDE_SDK_PATH` set to the absolute package directory (`.../node_modules/@anthropic-ai/claude-agent-sdk`); restart FORGE after changing environment variables. FORGE performs no automatic package installation or credential copying.
 
+On Linux, the corresponding user-controlled installation is `npm install --prefix "${XDG_DATA_HOME:-$HOME/.local/share}/FORGEProviderDeps/claude-sdk" --save-exact @anthropic-ai/claude-agent-sdk@0.3.309`. The package directory override works there as well. Provider detection verifies the version and entry file; the actual module and its dependencies are loaded when a Claude session starts.
+
 This removes the SDK's code from the shipped engine; it is not a legal conclusion about commercial service use. The [official SDK README](https://github.com/anthropics/claude-agent-sdk-typescript#license-and-terms) points to Anthropic's Commercial Terms for SDK use, including customer-facing products. The owner must still verify the integration's terms and decide FORGE's own license. The table below describes the **previous bundled design**; its SDK redistribution blocker is superseded by the external-dependency implementation.
 
 FORGE has no licence today: there is no `LICENSE` file, `forge-desktop` declares none (cargo-deny reports it as

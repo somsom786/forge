@@ -1,6 +1,8 @@
 # Windows validation handoff (cloud/overhaul)
 
-> Continuation update 2026-10-27: `codex/overhaul-continuation` starts at `8c3bcc9` and contains later fixes; validate its actual HEAD, not only `6626706`. The automated results on the available Windows host are in `VALIDATION_MATRIX.md`. Host physicality and real WebView2/provider workflows have not been established in this continuation. Agent instruction changes now require explicit fingerprint-bound acknowledgement; test editing, deletion, rename, stale approval and legacy approval before merge. Windows agent execution remains trusted-local, not isolated. The earlier instructions below describe the original handoff and its historical revision.
+> Continuation update 2026-10-27: `codex/overhaul-continuation` starts at `8c3bcc9` and contains later fixes; validate its actual HEAD, not only `6626706`. The automated results on the available Windows host are in `VALIDATION_MATRIX.md`. A real WebView2 scripted mission completed using disposable data, but the independent installer longevity check failed after the app exited cleanly at 63.5 seconds; investigate before release. Host physicality and real provider workflows have not been established in this continuation. Agent instruction changes now require explicit fingerprint-bound acknowledgement; test editing, deletion, rename, stale approval and legacy approval before merge. Windows agent execution remains trusted-local, not isolated. The installer no longer bundles the Claude SDK: install the exact pinned SDK separately as described in `README.md`. The earlier instructions and table below describe the original handoff and its historical revision, not current installer contents.
+
+The portable Linux component probe can be run in a disposable Linux environment with Node, a working bubblewrap binary, and the built engine: `node scripts/linux/probe-isolation.mjs /path/to/bwrap /path/to/bundle/main.js`. It uses temporary harmless fixtures and tests host controls, check containment, agent network behavior and cancellation. It does not validate the Rust supervisor or create a Windows isolation backend. Do not modify an existing personal WSL distribution to turn this into a security claim. Validate filesystem and credential access, children, Git metadata, network, environment, resource limits, cancellation, crashes, provider operation and recovery against any future Windows backend before enabling or describing it as isolated.
 
 For the person validating this branch on the physical Windows 11 PC, helped by Codex. Everything here was built and
 tested in a Linux cloud container and on GitHub's `windows-2022` runner. **Nothing on this branch has run on the physical
@@ -17,7 +19,7 @@ PC yet.** Status labels and evidence: `docs/VALIDATION_MATRIX.md`. Open risks: `
 | Contains | PRs #1–#7 plus the overhaul commits. Merging PR 8 supersedes them; do not merge them separately |
 | Migrations | 7–15, forward-only. 1–6 are pinned to what `main` ships. A database written by a newer FORGE is refused |
 | New dependencies | npm: `@agentclientprotocol/sdk` 1.8.0 (Apache-2.0); dev-only `@playwright/test` 1.56.1 and `@axe-core/playwright` 4.13.0. Rust: tree-sitter 0.27.1 and grammars (MIT), `unicode-normalization` 0.1.26 (MIT/Apache-2.0 + Unicode-3.0). Never bundled: bubblewrap, gitleaks, osv-scanner, trivy, playwright (user-chosen checks). See `docs/OSS_ADOPTION.md` |
-| Installer contents | `forge-desktop.exe`, `engine\main.js` (includes the Claude Agent SDK JavaScript), `node\node.exe`, `THIRD_PARTY_NOTICES.txt` (new) |
+| Original installer contents | Historical only: `forge-desktop.exe`, `engine\main.js` (then included the Claude SDK), `node\node.exe`, `THIRD_PARTY_NOTICES.txt`. See the continuation update above for current packaging. |
 
 ## B. What changed since the last physical validation
 
@@ -129,7 +131,7 @@ licence choice (`docs/LICENSING_DECISION.md`).
 - **Proof Engine:** Trivy and Playwright reports are parsed from real output, but the tools are not run in CI.
 - **Release:**
   - The installer is unsigned and its upgrade path is untested.
-  - The bundled Claude Agent SDK is proprietary, with redistribution unconfirmed.
+  - The original installer bundled the Claude Agent SDK; continuation packaging excludes it. Vendor terms and use of a separately installed SDK still require review.
   - FORGE has no licence.
 - **Linux note:** Ubuntu 24.04 restricts user namespaces for unconfined programs. CI lifts that restriction on its runner; users need an AppArmor profile for `bwrap`, or the backend reports itself unavailable.
 

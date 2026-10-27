@@ -2,13 +2,21 @@
 
 ## Continuation, 2026-10-27
 
-Storage follow-up: `cargo test --lib --locked storage::` on Windows: 10 passed. Includes experiment artifacts, active-run exclusion, unexpected worktree preservation, junction refusal, locked log retry, durable audit failure, interrupted cleanup, and explicit idle-only SQLite compaction on a real temporary database. UI 127 passed and typecheck passed. No real user artifacts were deleted.
+External Claude SDK follow-up: engine 90 passed, 5 skipped; copied bundle runs its scripted provider without SDK, and a Claude start with a missing SDK fails visibly. SDK metadata/version test: 1 passed. Real Claude Code against a scripted local model with `FORGE_REQUIRE_CLAUDE_REAL_TESTS=1`: 4 passed on Windows (no account/quota/GPU). Package staging succeeded; esbuild inputs exclude Anthropic SDK code. An intermediate unsigned installer built, installed and uninstalled in a temporary location (6 checks passed); it predates subsequent code changes. Installer launch/upgrade with separately installed SDK remains NOT RUN.
+
+Storage follow-up: `cargo test --lib --locked storage::` on Windows: 11 passed. Includes experiment artifacts, active-run exclusion, unexpected worktree preservation, junction refusal, locked log retry, durable audit failure, interrupted cleanup, explicit idle-only SQLite compaction on a real temporary database, and lock-order regression. UI 127 passed and typecheck passed. No real user artifacts were deleted.
 
 Schema v16 follow-up: review-hardening tests 12 passed; database tests 5 passed on Windows. New migration preserves legacy review notes while defaulting explicit instruction acknowledgement to false. Older schemas are tested through every forward migration; newer schemas continue to be refused.
 
 Execution hardening follow-up: Windows targeted `execution::tests`: 4 passed; UI 127 passed; typecheck and engine build passed. Linux end-to-end environment isolation regression added but NOT RUN locally (the existing WSL distribution has no bubblewrap or Rust). The test is required through the existing sandbox CI setting. Agent capability reporting now distinguishes shared network/provider state from isolated checks.
 
+Linux component probe: PASS on Ubuntu 24.04.4 under WSL using a temporarily extracted Ubuntu bubblewrap 0.9.0-1ubuntu0.3. Harmless host-control and isolated read/write/environment/network fixtures and scripted engine cancellation passed. This is not the Rust supervisor test and is not a Windows isolation backend. Simulated browser E2E: 6 passed using headless Chrome with GPU disabled; not a real Tauri integration test.
+
+Full Rust suite: PASS on the available Windows host, 439 passed and 6 ignored, `FORGE_REQUIRE_CLAUDE_REAL_TESTS=1` with scripted local model. Some platform-specific cases return early and are not Windows/Linux enforcement evidence. Installed Windows app scripted mission: PASS for mission creation, approval, actual diff, check, review, merge and Proof Pack using isolated temporary data and WebView2, with no console errors. Installer test: FAIL overall: six checks passed, including unsigned build, hashes, temporary install, manifest and uninstall, but the 180-second launch check observed a clean process exit after 63.5 seconds. Cause unknown. The test artifact was built from commit `0531e67` with uncommitted documentation/workflow changes; installer SHA-256 `95795d785d28624ff90a0fbbac3a48cb57cbe0b167a2f2178fccd0c297a40259`. It is not a signed or published release.
+
 Local Windows environment (not CI; whether the host is physical was not independently established): Node 24.19.0, npm 12.2.0, Rust 1.92.0 MSVC. `codex/overhaul-continuation` starts at `8c3bcc9`. No GPU workloads or live paid provider missions were run.
+
+GitHub PR #8 checks queried 2026-10-27: Linux and Windows tests, Windows unsigned build, Windows script checks, dependency/security scans and SBOM jobs reported PASS on the PR's existing revision. These are stale for the local continuation commits; CI for this continuation is NOT RUN.
 
 | Check | Result | Evidence and limits |
 |---|---|---|
@@ -94,7 +102,7 @@ A Linux pass is never a Windows pass. **Simulated** marks tests whose counterpar
 | # | Threat | Main tests | Linux | Windows CI | Gap |
 |---|---|---|---|---|---|
 | 1 | Host-file access from agent-executed code | `agent_sandbox::*`, `claude_real::…when_contained`, `execution_tests::*`, policy | PASS — Linux | PASS (policy; isolation refused) | On Windows, approved actions run on the host |
-| 2 | Secrets via environment or mounts | `execution_tests::secrets…`, `acp.test.ts` env stripping, `dryrun::secret…`, `hardening_tests::secrets…` | PASS — Linux | partial | Contained agents and trusted-local checks inherit the environment |
+| 2 | Secrets via environment or mounts | `execution_tests::secrets…`, `acp.test.ts` env stripping, `dryrun::secret…`, `hardening_tests::secrets…` | PASS — Linux | partial | Contained agents use an environment allow-list but have provider state and configured proxy values; trusted-local checks inherit the environment |
 | 3 | Network egress | `execution_tests::…network…`, `providers::non_loopback…` | PASS — Linux | partial | No egress control for agents |
 | 4 | Project hooks and MCP at startup | `claude_real::a_hostile_repository…` (mutation-checked), `claudeOptions.test.ts`, `mcp::*`, `review_hardening::a_hostile_git_hook…` | PASS — Linux | PASS — Windows CI | — |
 | 5 | Approval replay or request mutation | `approvals::*`, `regressions::a_reask…` | PASS — Linux | PASS — Windows CI | — |

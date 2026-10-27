@@ -9,7 +9,7 @@ the commit log, not here.
 
 | # | Risk | Kind | Where | What would close it |
 |---|---|---|---|---|
-| R1 | The installer bundles the Claude Agent SDK's JavaScript, whose terms read "© Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements". Redistribution inside a third-party installer is not confirmed | Confirmed (licence) | `packages/engine/scripts/bundle.mjs`; `THIRD_PARTY_NOTICES.txt` "Needs a decision" | Owner confirms with Anthropic's terms, or the engine loads the SDK from the user's own installation (`docs/LICENSING_DECISION.md`) |
+| R1 | Commercial use of the Claude integration still needs an owner/vendor terms review | Unresolved decision | `docs/LICENSING_DECISION.md` | SDK code is now excluded from the bundle and loaded from a separately installed, pinned package. This closes the bundled-code issue but is not permission for every commercial integration |
 | R2 | No licence for FORGE itself | Confirmed | repository root | Owner's decision (`docs/LICENSING_DECISION.md`) |
 | R3 | This branch has not run on a physical Windows PC: WebView2 rendering, real provider logins, Obsidian, Windows Defender interaction, installer upgrade over an older install, unsigned-installer SmartScreen flow | Not run | — | `docs/CODEX_WINDOWS_HANDOFF.md` |
 | R4 | Installer is unsigned; no update channel | Confirmed | `.github/workflows/ci.yml` (tauri windows build) | Code-signing certificate and a signed update feed (design only; not started) |
@@ -53,14 +53,15 @@ the commit log, not here.
 | D2 | Leftover experiment worktrees and unexpected files need manual inspection | Limitation | `supervisor/storage.rs` | Finished experiment logs and empty folders are previewed and cleaned; linked or unexpected entries are preserved and explained |
 | D3 | Mission lists load the 500 most recent missions | Limitation | `store.rs` `list_missions` | The screen says so; recovery and clean-up are not limited |
 | D4 | No power-loss test of SQLite itself | Not run | — | Relies on SQLite WAL + `synchronous=NORMAL` (a power cut can lose the last transactions, not corrupt the database) |
+| D5 | Installed app exited cleanly after 63.5 seconds during a 180-second launch check | Unexplained failure | Windows installer validation | A concurrent scripted desktop mission completed successfully; investigate the exit and rerun longevity independently before release |
 
 ## Product quality
 
 | # | Issue | Kind | Evidence |
 |---|---|---|---|
-| Q1 | Memory retrieval is lexical: questions that use different words from the note are missed (ripgrep FAQ: right answer in the package 82%, first 57%) | Measured | `docs/EVALUATION.md` |
-| Q2 | Code index sees declarations only: tasks that name an API used *inside* functions are missed; test files rank high | Measured | `docs/EVALUATION.md` |
+| Q1 | Memory retrieval remains lexical with limited terminology expansion: differing words can still be missed (ripgrep FAQ: right answer in the package 86%, first 57%) | Measured | `docs/EVALUATION.md` |
+| Q2 | Code index records bounded syntactic mentions but does not resolve references; individual repositories regress and indexing costs more | Measured | `docs/EVALUATION.md` |
 | Q3 | No live comparison of FORGE against native agents; no claim of benefit can be made | Not run | `docs/EVALUATION.md` |
-| Q4 | UI verified only in Chromium against mock data; WebView2 and real data not exercised by automation | Limitation | `apps/desktop/e2e` |
+| Q4 | Real WebView2 scripted mission exercised with disposable data; real provider and broader interactive workflows remain untested | Limitation | `docs/VALIDATION_MATRIX.md` |
 | Q5 | Codex: real `workspace-write` sandbox behaviour on Windows, and live missions, not run on this branch | Not run | `docs/VALIDATION_MATRIX.md` |
 | Q6 | Third-party ACP agents other than `claude-agent-acp` untested; agents that keep their login outside `~/.claude`/`~/.codex` fail when contained | Limitation | `docs/EXECUTION.md` |

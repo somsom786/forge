@@ -1,6 +1,6 @@
 # Evaluation
 
-Continuation 2026-10-27: no retrieval or productivity benchmark was rerun or changed in this increment. The figures below remain historical; held-out measurements and a native-agent comparison are still outstanding.
+Continuation 2026-10-27: new retrieval and held-out measurements are recorded near the end of this document; the earlier tables remain historical. A native-agent productivity comparison is still outstanding.
 
 What has been measured about FORGE's retrieval, how, and what it does **not** show. Nothing here compares FORGE missions
 with native Claude Code or Codex sessions: that needs live missions on a provider account and has not been run (see
