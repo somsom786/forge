@@ -292,6 +292,26 @@ jobs:
           $lines | Set-Content -LiteralPath (Join-Path $dir 'SHA256SUMS.txt') -Encoding ascii
           $lines | Write-Host
 
+      - name: Install, launch and uninstall in disposable storage
+        shell: pwsh
+        env:
+          WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: --disable-gpu
+        run: |
+          $dir = 'apps/desktop/src-tauri/target/release/bundle/nsis'
+          $setup = @(Get-ChildItem -Path $dir -Filter '*-setup.exe' -File)
+          if ($setup.Count -ne 1) { throw "expected one installer, found $($setup.Count)" }
+          & ./scripts/windows/test-release.ps1 -InstallerPath $setup[0].FullName -Launch -LaunchSeconds 90
+          if ($LASTEXITCODE -ne 0) { throw "installer validation failed with exit code $LASTEXITCODE" }
+
+      - name: Upload installer validation report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installer-validation-${{ github.sha }}
+          path: validation-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Upload the installer (workflow artifact only, 7 days)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
