@@ -561,6 +561,7 @@ export interface ContextPackage {
   items: ContextItem[];
   omitted: ContextOmitted[];
   query: string;
+  queryExpansion?: string | null;
   charBudget: number;
   /** Exactly what is appended to the agent's first prompt ('' when nothing qualified). */
   text: string;
@@ -576,7 +577,7 @@ export interface ContextPackageRow {
   createdAt: string;
   query: string;
   /** `relevantCode` is absent in packages recorded before code intelligence existed. */
-  params: { budgetChars?: number; pathHints?: string[]; relevantCode?: RelevantCode };
+  params: { budgetChars?: number; pathHints?: string[]; relevantCode?: RelevantCode; queryExpansion?: string | null };
   items: ContextItem[];
   omitted: ContextOmitted[];
   injectedText: string;
@@ -1053,7 +1054,7 @@ export interface CodeSymbol {
   /** Enclosing class / impl type / trait / module; null at top level. */
   container: string | null;
 }
-export interface SymbolHit { symbol: CodeSymbol; score: number }
+export interface SymbolHit { symbol: CodeSymbol; score: number; relationship?: 'declaration' | 'syntactic_mention' }
 
 export interface IndexedFile {
   path: string;

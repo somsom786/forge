@@ -103,3 +103,22 @@ Not run. A fair comparison needs the same tasks given to native Claude Code / Co
 model and account, with outcome checks (tests passing, diff review) and cost/time recorded. The cloud environment has no
 provider account by design, so this is on the owner's machine (docs/CODEX_WINDOWS_HANDOFF.md). **No claim that FORGE
 outperforms native agents is made anywhere in this repository.**
+
+## Continuation measurements (2026-10-27, Windows)
+
+The debug-build measurements below compare the previous selector with the candidate on the same pinned checkouts and commit-derived tasks. They are not productivity measurements. Runs used local clones and no provider or GPU. The nine original repositories are the projects above; the additional held-out repositories were ItsDangerous (`672971d66a2ef9f85151e53283113f33d642dabd`), p-limit (`a8a6fbec4e0e866d6d779b10889bb4f5567e70eb`), and WalkDir (`6fd031c82ba5a4204b4ce6eae73dacb00dc072ec`). There were 30 tasks per repository except p-limit's 24. The selector records bounded identifier mentions inside syntax trees; these are **unresolved syntactic mentions**, not resolved references or a call graph.
+
+| Set, macro mean across repositories | P@3 | Hit@3 | MRR@10 | Context hit | Mean context bytes | Mean median build / query |
+|---|---:|---:|---:|---:|---:|---:|
+| Original nine, before | .217 | .589 | .493 | .752 | 1,644 | 916.8 / 11.64 ms |
+| Original nine, candidate | .232 | .619 | .535 | .811 | 1,762 | 1,065.2 / 15.23 ms |
+| New held-out three, before | .235 | .461 | .313 | .417 | 440 | 330 / .695 ms |
+| New held-out three, candidate | .287 | .564 | .450 | .564 | 639 | 370 / .937 ms |
+
+Individual regressions include Zod Hit@3 .667 to .567, Click MRR .600 to .568, and Flask Hit@3 .467 to .400. These small samples and debug timings do not establish universal improvement; identifier storage and parsing cost additional memory and time. Run `FORGE_CODEINTEL_EVAL` as described in `codeintel/eval_oss.rs` against the pinned local clones to reproduce; measure release-build latency and resident memory on a representative user's repository before making performance claims.
+
+A subsequent Zod rerun after a memory-allocation refactor reproduced Hit@3 .567 (30 tasks). The median lower-bound estimate for retained identifier strings and their vector/map entries was 1,674,522 bytes; it excludes allocator overhead and transient memory, so it is not peak or process memory. Its debug median build time was 2,573 ms while other tests and packaging ran concurrently, and is not comparable to the quieter runs above.
+
+Memory retrieval compares the existing lexical channel with a separate, lower-weight, bounded related-terminology FTS channel; exact matches retain their original ranking signal. For ripgrep's 28 FAQ questions, Hit@3 stayed .786, MRR rose .661 to .667, precision@3 stayed .262, and answer inclusion rose .821 to .857; mean package size fell from 6,159 to 6,140 characters. Click's six questions were unchanged (Hit@1 .833, Hit@3 1.0, MRR .917). A held-out Black FAQ at `9485ad42045c3b4384beabec7841a7d1b7da27ce`, with headings normalized for the existing FAQ parser, had 13 questions and was unchanged (.769, 1.0, .872 respectively). A lower expansion weight of .45 produced no improvement and was rejected; .9 produced the small measured gain. These sets are small, package sizes include the context frame, and retrieval memory consumption was not measured. See `knowledge/memory_eval.rs` for baseline/candidate evaluation and latency output. This is local lexical expansion, not semantic retrieval; verified-only injection and provenance are unchanged.
+
+On this Windows debug run, median per-query memory retrieval was 250.1 to 245.1 ms for ripgrep, 218.1 to 227.0 ms for Click, and 236.7 to 226.4 ms for Black. Maxima were 366.5 to 305.3 ms, 343.2 to 279.8 ms, and 316.8 to 244.1 ms respectively. These single-run timings are noisy and include fixture/database work; they are not a performance claim.

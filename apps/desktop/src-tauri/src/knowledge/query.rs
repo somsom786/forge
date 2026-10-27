@@ -70,7 +70,10 @@ pub fn terms(text: &str) -> Vec<String> {
 
 /// `"term1" OR "term2" ...` — or None when nothing searchable remains.
 pub fn fts_match(text: &str) -> Option<String> {
-    let t = terms(text);
+    fts_terms(&terms(text))
+}
+
+fn fts_terms(t: &[String]) -> Option<String> {
     if t.is_empty() {
         return None;
     }
@@ -85,6 +88,33 @@ pub fn fts_match(text: &str) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" OR "),
     )
+}
+
+/// Bounded technical terminology expansion, kept separate from the exact lexical channel so it cannot replace it.
+/// These are heuristic language relationships, not resolved code references or semantic embeddings.
+pub fn expanded_match(text: &str) -> Option<String> {
+    const GROUPS: &[&[&str]] = &[
+        &["utf", "utf8", "unicode", "encoding", "encodings"],
+        &["cancel", "cancellation", "terminate", "termination", "interrupt"],
+        &["concurrent", "concurrency", "parallel", "simultaneous"],
+        &["sandbox", "sandboxed", "isolation", "isolated", "containment"],
+        &["credential", "credentials", "login", "signin", "authentication"],
+        &["timeout", "deadline"],
+        &["cache", "caching", "memoization"],
+        &["dependency", "dependencies", "package", "packages"],
+        &["symlink", "junction", "reparse"],
+    ];
+    let original = terms(text);
+    let mut added = vec![];
+    for group in GROUPS {
+        if group.iter().any(|w| original.iter().any(|t| t.as_str() == *w)) {
+            for &w in *group {
+                if !original.iter().any(|t| t == w) && !added.iter().any(|t| t == w) { added.push(w.to_string()); }
+            }
+        }
+    }
+    added.truncate(12);
+    fts_terms(&added)
 }
 
 /// Strings in `text` that look like repo file paths (`src/auth/reset.rs`, `docs\\ARCH.md`, `Cargo.toml`).
@@ -140,6 +170,15 @@ pub fn index_text(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn related_terminology_is_bounded_and_quoted_separately_from_lexical_terms() {
+        let q = expanded_match("UTF-8 deadline").unwrap();
+        assert!(q.contains("encoding") && q.contains("timeout"));
+        assert!(!q.contains("\"deadline\""));
+        assert!(expanded_match("unrelated exactIdentifier").is_none());
+        assert!(expanded_match("UTF cancel parallel isolation login deadline cache package junction").unwrap().split(" OR ").count() <= 12);
+    }
 
     #[test]
     fn identifiers_are_split_into_searchable_words() {
