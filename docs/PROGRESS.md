@@ -2,7 +2,7 @@
 
 ## Continuation, 2026-10-27
 
-- Linux toolchain mount selection now resolves installation roots and refuses aliases into the user's home or its ancestors. If the home cannot be resolved it omits extra toolchain mounts; system paths remain available. Windows portable selection test passed; the new Unix symlink regression and real sandbox execution require CI.
+- Linux toolchain mount selection now resolves installation roots and refuses aliases into the user's home, its ancestors, or system directories normally excluded from toolchain mounts. If the home cannot be resolved it omits extra toolchain mounts; system paths remain available. Windows portable selection test passed; the Unix symlink regression and real sandbox execution require CI for the latest change.
 
 - Sensitive instruction detection includes `.agents/skills/**`, including scripts and nested or case-varied paths, so the existing fingerprint-bound review gate covers project skills. Windows path classification regression passed locally.
 

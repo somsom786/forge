@@ -301,7 +301,8 @@ fn toolchain_roots_excluding(path_var: &str, home: Option<&Path>, system: &[&Pat
         // PATH entries and installation roots may be symlinks. A lexical check alone could bind a user's entire home
         // through an alias outside it, or bind an ancestor that contains the home. Fail closed if resolution fails.
         let Ok(resolved_root) = std::fs::canonicalize(&root) else { continue };
-        if resolved_root.components().count() < 3 || resolved_root.starts_with(&resolved_home) || resolved_home.starts_with(&resolved_root) {
+        if resolved_root.components().count() < 3 || resolved_root.starts_with(&resolved_home) || resolved_home.starts_with(&resolved_root)
+            || system.iter().any(|p| resolved_root.starts_with(p)) {
             continue;
         }
         if !out.iter().any(|o| root.starts_with(o)) {
@@ -502,8 +503,11 @@ mod tests {
         std::fs::create_dir_all(d.path().join("aliases")).unwrap();
         symlink(&home, d.path().join("aliases/home-alias")).unwrap();
         symlink(home.parent().unwrap(), d.path().join("aliases/parent-alias")).unwrap();
-        let path = std::env::join_paths([d.path().join("aliases/home-alias/bin"), d.path().join("aliases/parent-alias")]).unwrap();
-        assert!(toolchain_roots_excluding(&path.to_string_lossy(), Some(&home), &[]).is_empty());
+        let system = d.path().join("system");
+        std::fs::create_dir(&system).unwrap();
+        symlink(&system, d.path().join("aliases/system-alias")).unwrap();
+        let path = std::env::join_paths([d.path().join("aliases/home-alias/bin"), d.path().join("aliases/parent-alias"), d.path().join("aliases/system-alias")]).unwrap();
+        assert!(toolchain_roots_excluding(&path.to_string_lossy(), Some(&home), &[system.as_path()]).is_empty());
     }
 
     #[test]
