@@ -53,7 +53,7 @@ the commit log, not here.
 | D2 | Leftover experiment worktrees and unexpected files need manual inspection | Limitation | `supervisor/storage.rs` | Finished experiment logs and empty folders are previewed and cleaned; linked or unexpected entries are preserved and explained |
 | D3 | Mission lists load the 500 most recent missions | Limitation | `store.rs` `list_missions` | The screen says so; recovery and clean-up are not limited |
 | D4 | No power-loss test of SQLite itself | Not run | — | Relies on SQLite WAL + `synchronous=NORMAL` (a power cut can lose the last transactions, not corrupt the database) |
-| D5 | Installed app exited cleanly after 63.5 seconds during a 180-second launch check | Unexplained failure | Windows installer validation | A concurrent scripted desktop mission completed successfully; investigate the exit and rerun longevity independently before release |
+| D5 | Installed app exited cleanly after 63.5 seconds during a 180-second launch check | Unexplained failure | Windows installer validation | A concurrent scripted desktop mission completed successfully; an independent 90-second GitHub Windows CI launch passed. Investigate the local exit and repeat the 180-second check before release |
 
 ## Product quality
 

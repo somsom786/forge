@@ -10,6 +10,8 @@
 
 - Real installed Windows app: a scripted mission completed through approval, diff, contract check, review, merge and Proof Pack with an isolated temporary home and WebView profile, GPU disabled, and no console errors. The unsigned installer installed and uninstalled successfully, but the separate 180-second launch check FAILED when the app exited cleanly after 63.5 seconds; its cause has not been established. Full Rust run: 439 passed, 6 ignored, including four real Claude CLI tests against a local scripted server. Some platform-specific tests return early on Windows; they do not prove Linux enforcement.
 
+- GitHub PR #9 at `c1aa777`: Linux and Windows CI, unsigned installer build, script checks, audits and SBOM passed. Linux CI required sandbox and scanner tests. At `50c17a9`, an independent 90-second installer launch and uninstall test passed on the disposable Windows runner with GPU acceleration disabled. The earlier local exit during a 180-second test is still unexplained.
+
 - Review acknowledgement now has a dedicated boolean in schema v16, bound to its review row's fingerprint. Legacy note text is never authorization; old instruction approvals return to review. Windows: review regressions 12 passed; migration tests 5 passed (including v15 data with a forged marker note).
 
 - Execution hardening: contained agents receive an explicit runtime/provider/proxy environment allow-list. Loader injection, SSH agents and unrelated environment secrets are removed before the engine starts. Backend capabilities now distinguish agent and check behavior. Linux network access and provider-state exposure remain explicit limitations. Windows targeted tests: 4 passed; UI 127 passed; typecheck passed. Linux enforcement regression awaits CI.

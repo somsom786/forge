@@ -16,7 +16,9 @@ Full Rust suite: PASS on the available Windows host, 439 passed and 6 ignored, `
 
 Local Windows environment (not CI; whether the host is physical was not independently established): Node 24.19.0, npm 12.2.0, Rust 1.92.0 MSVC. `codex/overhaul-continuation` starts at `8c3bcc9`. No GPU workloads or live paid provider missions were run.
 
-GitHub PR #8 checks queried 2026-10-27: Linux and Windows tests, Windows unsigned build, Windows script checks, dependency/security scans and SBOM jobs reported PASS on the PR's existing revision. These are stale for the local continuation commits; CI for this continuation is NOT RUN.
+GitHub PR #8 checks queried 2026-10-27: Linux and Windows tests, Windows unsigned build, Windows script checks, dependency/security scans and SBOM jobs reported PASS on the PR's existing revision. These are stale for the continuation commits.
+
+Continuation PR #9, commit `c1aa777`: PASS — Linux CI (451 Rust passed, 6 ignored; required sandbox, scanner and scripted Claude CLI checks enabled), PASS — Windows CI (439 Rust passed, 6 ignored), and PASS — unsigned installer build and Windows script checks. Security, dependency and SBOM jobs passed. Follow-up commit `50c17a9`: PASS — Windows CI installed the unsigned app into temporary storage, kept it running for 90 seconds with GPU disabled, then uninstalled it. This does not explain or invalidate the earlier local 180-second failure.
 
 | Check | Result | Evidence and limits |
 |---|---|---|
