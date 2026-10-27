@@ -367,6 +367,7 @@ export interface CheckReport {
 export interface Seen {
   fingerprint: string;
   contractSha256: string;
+  agentInstructionsReviewed?: boolean;
 }
 
 export interface ScopeReport { outsideInScope: string[]; inOutOfScope: string[] }
@@ -377,6 +378,7 @@ export interface VerificationReport {
   contractSha256: string;
   headCommit: string | null;
   files: ChangedFile[];
+  agentInstructionFiles: string[];
   scope: ScopeReport;
   scopeConfigured: boolean;
   criteria: CriterionReport[];

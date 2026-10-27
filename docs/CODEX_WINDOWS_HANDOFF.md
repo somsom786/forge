@@ -1,5 +1,7 @@
 # Windows validation handoff (cloud/overhaul)
 
+> Continuation update 2026-10-27: `codex/overhaul-continuation` starts at `8c3bcc9` and contains later fixes; validate its actual HEAD, not only `6626706`. The automated results on the available Windows host are in `VALIDATION_MATRIX.md`. Host physicality and real WebView2/provider workflows have not been established in this continuation. Agent instruction changes now require explicit fingerprint-bound acknowledgement; test editing, deletion, rename, stale approval and legacy approval before merge. Windows agent execution remains trusted-local, not isolated. The earlier instructions below describe the original handoff and its historical revision.
+
 For the person validating this branch on the physical Windows 11 PC, helped by Codex. Everything here was built and
 tested in a Linux cloud container and on GitHub's `windows-2022` runner. **Nothing on this branch has run on the physical
 PC yet.** Status labels and evidence: `docs/VALIDATION_MATRIX.md`. Open risks: `docs/REMAINING_RISKS.md`.
@@ -122,7 +124,7 @@ licence choice (`docs/LICENSING_DECISION.md`).
   - The webview is trusted by the core.
   - Shell rules are heuristics.
   - Authorized MCP stdio servers run as you.
-  - Edits to `CLAUDE.md`, `.claude/commands` and similar files are not flagged for review.
+  - Instruction-file review uses a path heuristic; unsupported provider conventions may not be flagged.
 - **Providers:** no live mission on this branch. Claude Code was tested with a scripted model, ACP with a real agent and a scripted model, and Codex with a scripted app-server only.
 - **Proof Engine:** Trivy and Playwright reports are parsed from real output, but the tools are not run in CI.
 - **Release:**

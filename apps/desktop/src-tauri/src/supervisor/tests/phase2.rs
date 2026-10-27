@@ -8,7 +8,7 @@ use crate::supervisor::{ReviewDecision, Seen};
 /// What a reviewer's screen would hold right now: the current fingerprint and contract revision.
 fn seen(f: &Fixture, id: &str) -> Seen {
     let r = f.core.verification_report(id).unwrap();
-    Seen { fingerprint: r.fingerprint, contract_sha256: r.contract_sha256 }
+    Seen { fingerprint: r.fingerprint, contract_sha256: r.contract_sha256, agent_instructions_reviewed: false }
 }
 
 fn approve(f: &Fixture, id: &str, note: Option<&str>, override_reason: Option<&str>) -> Result<Mission> {

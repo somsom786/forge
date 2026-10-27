@@ -29,11 +29,11 @@ the commit log, not here.
    injection (`SafeMarkdown`), minimal Tauri capabilities. There is no second factor for approvals.
 4. **Shell rules are heuristics** (limitation; `policy.rs`). `git p""ush`-style obfuscation defeats pattern rules;
    every shell call asks, and the person reading it is the control.
-5. **Changes to agent configuration are not singled out for review** (hypothetical persistence path). An agent can
-   edit `CLAUDE.md`, `AGENTS.md`, `.claude/commands/**` or `.claude/rules/**` inside its worktree (only
-   settings/hooks/agents/skills are protected; `policy.rs` `protected_reason`). After merge these steer future
-   sessions. They appear in the diff like any change, but neither the Review bar nor the Proof Pack flags them.
-   Fix: list such files as "needs explicit review" in the Proof Pack.
+5. **Agent instruction detection is path-based and cannot detect every provider convention** (limitation). The review
+   gate and Proof Pack flag supported instruction and configuration paths, and approval requires an explicit acknowledgement
+   bound to the changes fingerprint. Older approvals of such changes return to review before merge. The exact diff is in
+   the Changes view and the Proof Pack's saved diff. A differently named instruction file may not be recognized; the
+   trusted webview can still submit acknowledgements, and a checkbox cannot establish that a person actually read a diff.
 6. **A file write by the provider itself, after approval, has a microsecond check-then-use window** (limitation;
    `docs/SECURITY.md` limit 3). Decision-time re-checks close the human-latency window (tested with Unix links; Windows
    junction test added this round, result in CI); the provider's own write is outside FORGE's control.

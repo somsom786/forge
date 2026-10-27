@@ -1,5 +1,9 @@
 # FORGE — Engineering Reviews
 
+## Continuation: agent instruction review (2026-10-27)
+
+Agent-controlled instruction files can steer later sessions. The review report identifies supported paths from the same immutable Git tree as the changes fingerprint; approvals require a separate acknowledgement and older approvals without it return to review before merge. The Proof Pack records the paths, acknowledgement in the review decision, and the exact-diff artifact. The diff is now rendered from the fingerprinted tree rather than a separate worktree snapshot. Renames are treated as deletion plus addition. This remains a path heuristic and uses the existing trusted-webview model; it does not attest that a person read the diff or detect arbitrary provider-specific conventions. Existing OS isolation limitations remain unchanged.
+
 Independent reviews by GPT-6 Astra (High reasoning, via the user's locally authenticated Codex CLI with a read-only,
 ephemeral sandbox and no API billing). Claude remains the implementing engineer: every finding below was evaluated
 independently, reproduced or checked against the code, and only then adopted, adapted or declined.

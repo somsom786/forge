@@ -39,6 +39,8 @@ impl ReviewDecision {
 pub struct Seen {
     pub fingerprint: String,
     pub contract_sha256: String,
+    #[serde(default)]
+    pub agent_instructions_reviewed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -124,14 +126,15 @@ impl Core {
         for r in &runs {
             *counts.entry(r.check_id.clone()).or_default() += 1;
         }
+        let (fingerprint, tree) = git::fingerprint_and_tree(&wt, &base)?;
         proof::build_report(ReportInput {
             contract: &contract,
             latest_runs: &self.store.latest_runs(mission_id)?,
             run_counts: &counts,
             verdicts: &self.store.latest_manual_verdicts(mission_id)?,
-            fingerprint: git::fingerprint(&wt, &base)?,
+            fingerprint,
             head_commit: git::head_commit(&wt).ok(),
-            files: git::changed_files(&wt, &base)?,
+            files: git::changed_files_in_tree(&wt, &base, &tree)?,
             pending_approvals: self.store.pending_count_for_mission(mission_id)? as usize,
             agent_running: self.is_running(mission_id),
         })
@@ -292,6 +295,9 @@ impl Core {
                 if seen.fingerprint != report.fingerprint || seen.contract_sha256 != report.contract_sha256 {
                     return Err(ForgeError::InvalidState("the changes (or the success criteria) are not the ones you reviewed; reload and review the current state before approving".into()));
                 }
+                if !report.agent_instruction_files.is_empty() && !seen.agent_instructions_reviewed {
+                    return Err(ForgeError::InvalidState("review and explicitly acknowledge the agent instruction/configuration changes before approving".into()));
+                }
                 if !report.can_approve() {
                     return Err(ForgeError::InvalidState(format!("cannot approve yet: {}", report.hard_blockers.join("; "))));
                 }
@@ -302,8 +308,12 @@ impl Core {
                         report.unresolved.join(" | ")
                     )));
                 }
-                record(if report.needs_override() { override_reason } else { None })?;
-                self.store.audit("user", "review.approve", Some(mission_id), &json!({"unresolved": report.unresolved.len(), "override": override_reason}));
+                if !report.agent_instruction_files.is_empty() {
+                    self.store.add_review_decision(mission_id, decision.as_str(), Some("Explicitly acknowledged agent instruction/configuration changes"), if report.needs_override() { override_reason } else { None }, &report.fingerprint, report.head_commit.as_deref())?;
+                } else {
+                    record(if report.needs_override() { override_reason } else { None })?;
+                }
+                self.store.audit("user", "review.approve", Some(mission_id), &json!({"unresolved": report.unresolved.len(), "override": override_reason, "agentInstructionFiles": report.agent_instruction_files, "fingerprint": report.fingerprint}));
                 self.set_state(mission_id, MissionState::Approved, "approved by reviewer")
             }
             ReviewDecision::Reject => {
@@ -356,6 +366,12 @@ impl Core {
         if approved.as_ref().map(|d| d.fingerprint.as_str()) != Some(fp.as_str()) {
             self.settle(mission_id, MissionState::AwaitingReview, "changes were made after approval");
             return Err(ForgeError::InvalidState("the changes differ from what was approved; review them again".into()));
+        }
+        // Approvals recorded by older versions did not require this acknowledgement.
+        let sensitive = git::changed_files_in_tree(&wt, &base, &tree)?.iter().any(|f| proof::is_agent_instruction_file(&f.path));
+        if sensitive && approved.as_ref().and_then(|d| d.note.as_deref()) != Some("Explicitly acknowledged agent instruction/configuration changes") {
+            self.settle(mission_id, MissionState::AwaitingReview, "agent instruction changes need explicit review");
+            return Err(ForgeError::InvalidState("agent instruction changes need explicit acknowledgement; review them again".into()));
         }
         git::ensure_no_external_programs(&wt)?;
         merge::ensure_ready(&root, &target)?;
@@ -491,7 +507,11 @@ Branch: {}", m.title, m.id, branch);
     pub fn generate_proof_pack(&self, mission_id: &str) -> Result<ProofPackRow> {
         let (m, project, wt, base) = self.workspace(mission_id)?;
         let report = self.verification_report(mission_id)?;
-        let diff = git::diff(&wt, &base)?;
+        let (fingerprint, tree) = git::fingerprint_and_tree(&wt, &base)?;
+        if fingerprint != report.fingerprint {
+            return Err(ForgeError::InvalidState("the changes moved while generating the Proof Pack; try again".into()));
+        }
+        let diff = git::diff_tree(&wt, &base, &tree)?;
         let sha = proof::sha256_hex(diff.as_bytes());
         let dir = self.cfg.home.join("proofs");
         std::fs::create_dir_all(&dir)?;

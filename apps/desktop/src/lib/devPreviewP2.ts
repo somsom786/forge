@@ -75,7 +75,7 @@ function reportFor(id: string): VerificationReport {
   const files = ctxRef.changesFor(id).files;
   if (id !== 'm2') {
     return {
-      fingerprint: 'none', contractSha256: CSHA, headCommit: null, files, scope: { outsideInScope: [], inOutOfScope: [] }, scopeConfigured: false,
+      fingerprint: 'none', contractSha256: CSHA, headCommit: null, files, agentInstructionFiles: [], scope: { outsideInScope: [], inOutOfScope: [] }, scopeConfigured: false,
       criteria: [], checks: [], blockingChecks: [], unresolved: [], contract,
       hardBlockers: ctxRef.isRunning(id) ? ['The agent is still running.'] : [],
     };
@@ -104,7 +104,7 @@ function reportFor(id: string): VerificationReport {
     '1 changed file is outside the in-scope paths: docs/dates.md',
   ];
   return {
-    fingerprint: CUR + 'e1', contractSha256: CSHA, headCommit: null, files, scope: { outsideInScope: ['docs/dates.md'], inOutOfScope: [] }, scopeConfigured: true,
+    fingerprint: CUR + 'e1', contractSha256: CSHA, headCommit: null, files, agentInstructionFiles: [], scope: { outsideInScope: ['docs/dates.md'], inOutOfScope: [] }, scopeConfigured: true,
     criteria, checks, blockingChecks: ['typecheck'], unresolved, hardBlockers: [], contract,
   };
 }

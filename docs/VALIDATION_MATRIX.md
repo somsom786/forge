@@ -1,5 +1,21 @@
 # Validation matrix
 
+## Continuation, 2026-10-27
+
+Local Windows environment (not CI; whether the host is physical was not independently established): Node 24.19.0, npm 12.2.0, Rust 1.92.0 MSVC. `codex/overhaul-continuation` starts at `8c3bcc9`. No GPU workloads or live paid provider missions were run.
+
+| Check | Result | Evidence and limits |
+|---|---|---|
+| Initial Windows script | FAIL | First attempt: npm cache EPERM; dependent suites blocked. Retried with a worktree-local cache: one Codex fixture failed due to parent configuration; 425 Rust passed, 6 ignored, and 126 UI passed. Source changed during this run, so it is not a clean final-revision baseline. |
+| Engine after fixture fix | PASS — Windows (host type unconfirmed) | 86 passed, 5 skipped; simulated Codex app-server, ACP interoperability not required in this run. |
+| UI after review change | PASS — Windows (host type unconfirmed) | 127 passed; unit/component tests, not WebView2 integration. |
+| Typecheck | PASS — Windows (host type unconfirmed) | `npm run typecheck`, engine and desktop. |
+| Rust core | PASS — Windows (host type unconfirmed) | 427 passed, 6 ignored, 0 failed with four test threads after the tree/diff change. A subsequent path-list expansion was checked by its targeted test (1 passed); the full suite was not repeated after that small expansion. Optional tool tests may return early when tools are unavailable. |
+| Instruction review regression | PASS — Windows (host type unconfirmed) | 3 passed; 1 unrelated live test ignored. Includes denial, stale acknowledgement, merge refusal and legacy approval. |
+| Formatting | FAIL | `cargo fmt --check` reports extensive repository-wide pre-existing differences; no wholesale formatting applied. `git diff --check` passed. |
+| Linux / new Windows CI | NOT RUN | Existing PR #8 CI at `8c3bcc9` was green on 2026-10-24; those results do not cover this continuation. |
+| Desktop, actual providers, Windows isolation, installer upgrade | NOT RUN | Automated tests do not establish real UI or provider interoperability; Windows agent isolation remains unimplemented. |
+
 What has been run, where, and with what result, for `cloud/overhaul` (PR https://github.com/somsom786/forge/pull/8).
 
 Labels:

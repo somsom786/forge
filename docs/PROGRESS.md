@@ -1,5 +1,12 @@
 # FORGE — Progress
 
+## Continuation, 2026-10-27
+
+- Based `codex/overhaul-continuation` on `origin/cloud/overhaul` at `8c3bcc9`; PR #8 remains open. The two commits after `6626706` were documentation-only. Existing main and worktrees were preserved.
+- Fixed a Codex adapter test fixture that unintentionally inspected parent-level user configuration on Windows. Engine: 86 passed, 5 skipped on this Windows environment; the app-server is scripted.
+- Added path-based agent instruction/configuration review, a fingerprint-bound acknowledgement, legacy-approval merge guard, and Proof Pack warning. The saved diff is generated from the fingerprinted tree. This is a review control, not a new isolation boundary. Targeted Rust regressions: 3 passed, 1 ignored. UI: 127 passed. Full continuation results and limitations are in `VALIDATION_MATRIX.md`.
+- Next: finish Windows isolation design and enforcement validation, inspect the trusted-webview boundary, measure memory/code retrieval against held-out fixtures, and address experiment cleanup. No live providers, real desktop flow, GPU workload, or release was run in this continuation.
+
 Evidence levels: **A** = verified by a real run against the real thing (real window / real agent / real git); **B** = automated tests only;
 **C** = implemented, not verified; **—** = not built. Last full run: 2026-10-23. Rust 295 passing (6 live tests ignored by default), engine 45,
 UI 100 (vitest); `npm run typecheck` clean. Live tests that spend provider quota are never run in bulk (see `codex-handoff.md`).
