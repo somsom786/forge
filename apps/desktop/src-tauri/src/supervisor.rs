@@ -564,12 +564,17 @@ impl Core {
         let script_arg = [script.clone().into_os_string()];
         let spec = crate::execution::AgentSpec { program: &node, args: &script_arg, workspace: worktree, read_only, read_write };
         let mut cmd = crate::execution::agent_command(backend, &spec).map_err(|e| fail_session(e.to_string()))?;
+        if backend != crate::execution::Backend::TrustedLocal {
+            let base = std::env::vars_os().chain(self.cfg.engine_env.iter().map(|(k, v)| (k.into(), v.into())));
+            cmd.env_clear().envs(crate::execution::contained_agent_env(base)).env("TMPDIR", "/tmp");
+        } else {
+            cmd.envs(self.cfg.engine_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        }
         cmd.current_dir(worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("FORGE_ALLOW_FAKE_PROVIDER", if self.cfg.allow_fake { "1" } else { "0" })
-            .envs(self.cfg.engine_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+            .env("FORGE_ALLOW_FAKE_PROVIDER", if self.cfg.allow_fake { "1" } else { "0" });
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

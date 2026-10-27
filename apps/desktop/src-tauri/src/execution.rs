@@ -100,6 +100,7 @@ pub struct BackendInfo {
     pub available: bool,
     pub unavailable_reason: Option<String>,
     pub capabilities: Capabilities,
+    pub agent_capabilities: Capabilities,
 }
 
 pub fn capabilities(b: Backend) -> Capabilities {
@@ -201,7 +202,31 @@ pub fn info(b: Backend) -> BackendInfo {
         available: a.is_ok(),
         unavailable_reason: a.err(),
         capabilities: capabilities(b),
+        agent_capabilities: agent_capabilities(b),
     }
+}
+
+/// Agent sessions need provider connectivity and persistent login state; checks do not.
+pub fn agent_capabilities(b: Backend) -> Capabilities {
+    let mut c = capabilities(b);
+    if b == Backend::LinuxNamespaces {
+        c.network_control = prop(Level::None, "Network shared with the host so the provider can connect. Anything the agent can read can be sent over the network.");
+        c.credential_exposure = prop(Level::Partial, "Environment restricted to runtime, provider-state and proxy settings. The selected provider's login directory remains readable and writable, including its other-project transcripts. SSH agents, cloud tokens and unrelated environment secrets are not inherited.");
+        c.persistent_state = prop(Level::Partial, "Workspace and selected provider state persist. Other home files are not mounted; temporary files are discarded.");
+    }
+    c
+}
+
+/// Explicit allow-list for contained sessions. Never forward loader injection, shell startup configuration, SSH agents,
+/// cloud credentials or arbitrary FORGE environment variables. Provider authentication remains in its mounted state.
+pub fn contained_agent_env<I>(base: I) -> Vec<(std::ffi::OsString, std::ffi::OsString)>
+where I: IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)> {
+    const ALLOWED: &[&str] = &[
+        "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM",
+        "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+    ];
+    base.into_iter().filter(|(k, _)| k.to_str().is_some_and(|s| ALLOWED.contains(&s))).collect()
 }
 
 pub fn all() -> Vec<BackendInfo> {
@@ -345,7 +370,7 @@ pub struct AgentSpec<'a> {
 /// The process to spawn for an agent session on backend `b`. `trusted_local` is the plain process (today's behaviour).
 ///
 /// `linux_namespaces` for agents differs from checks in two deliberate ways: the network is shared (the agent must reach its
-/// model), and the environment is inherited (the engine already removed billing credentials). Everything else is the same
+/// model). The supervisor restricts the environment before spawning this process. Everything else is the same
 /// empty root: no home directory except the provider's own state, no other repositories, read-only system and toolchains,
 /// the git directory read-only, a private /tmp, no new privileges, and the whole tree dies with FORGE.
 pub fn agent_command(b: Backend, spec: &AgentSpec) -> Result<Command> {
@@ -418,6 +443,16 @@ fn host_shell(spec: &RunSpec) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contained_environment_drops_secrets_and_loader_injection_but_keeps_provider_runtime() {
+        let base = ["PATH", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HTTPS_PROXY", "NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "BASH_ENV", "SSH_AUTH_SOCK", "GH_TOKEN", "AWS_SESSION_TOKEN", "unusual_private_value", "FORGE_ALLOW_FAKE_PROVIDER"];
+        let kept: Vec<_> = contained_agent_env(base.map(|k| (k.into(), "fixture".into()))).into_iter().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
+        assert_eq!(kept, vec!["PATH", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HTTPS_PROXY"]);
+        assert_eq!(capabilities(Backend::LinuxNamespaces).network_control.level, Level::Enforced);
+        assert_eq!(agent_capabilities(Backend::LinuxNamespaces).network_control.level, Level::None);
+        assert_eq!(agent_capabilities(Backend::LinuxNamespaces).credential_exposure.level, Level::Partial);
+    }
 
     #[test]
     fn unimplemented_backends_are_never_available_and_say_so() {

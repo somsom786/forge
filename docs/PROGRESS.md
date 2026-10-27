@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-27
 
+- Execution hardening: contained agents receive an explicit runtime/provider/proxy environment allow-list. Loader injection, SSH agents and unrelated environment secrets are removed before the engine starts. Backend capabilities now distinguish agent and check behavior. Linux network access and provider-state exposure remain explicit limitations. Windows targeted tests: 4 passed; UI 127 passed; typecheck passed. Linux enforcement regression awaits CI.
+
 - Based `codex/overhaul-continuation` on `origin/cloud/overhaul` at `8c3bcc9`; PR #8 remains open. The two commits after `6626706` were documentation-only. Existing main and worktrees were preserved.
 - Fixed a Codex adapter test fixture that unintentionally inspected parent-level user configuration on Windows. Engine: 86 passed, 5 skipped on this Windows environment; the app-server is scripted.
 - Added path-based agent instruction/configuration review, a fingerprint-bound acknowledgement, legacy-approval merge guard, and Proof Pack warning. The saved diff is generated from the fingerprinted tree. This is a review control, not a new isolation boundary. Targeted Rust regressions: 3 passed, 1 ignored. UI: 127 passed. Full continuation results and limitations are in `VALIDATION_MATRIX.md`.

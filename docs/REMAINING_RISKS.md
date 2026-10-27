@@ -20,10 +20,11 @@ the commit log, not here.
    backend is `linux_namespaces`** (limitation; `docs/SECURITY.md` limit 1). Approval prompts and policy reduce, not
    remove, the risk. Windows isolation (Windows Sandbox / isolated WSL) is designed in `docs/EXECUTION.md`, not
    implemented.
-2. **Contained agents (Linux) keep network access and FORGE's environment** (limitation; `execution.rs`
+2. **Contained agents (Linux) keep network access and provider state** (limitation; `execution.rs`
    `agent_command`). Anything the agent can read (the worktree, its own provider login and transcripts of the user's
-   other projects in `~/.claude`/`~/.codex`) can leave the machine; secrets present in FORGE's environment are visible
-   to it. Directory arguments of MCP servers are not exposed, so filesystem-style servers do not work when contained.
+   other projects in `~/.claude`/`~/.codex`) can leave the machine. Runtime/provider/proxy settings are allow-listed;
+   arbitrary inherited environment secrets and loader injection are removed. Proxy settings can contain credentials.
+   Directory arguments of MCP servers are not exposed, so filesystem-style servers do not work when contained.
 3. **The webview is trusted by the core** (limitation, from the first security review, F9). Any script running in the
    UI can call every command, including approving requests. Mitigations: strict CSP, no remote content, no HTML
    injection (`SafeMarkdown`), minimal Tauri capabilities. There is no second factor for approvals.

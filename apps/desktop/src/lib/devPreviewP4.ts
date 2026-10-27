@@ -83,7 +83,7 @@ export function handleP4(cmd: string, args: any): Promise<any> | undefined {
         { id: 'linux_namespaces', label: 'Isolated: Linux namespaces (bubblewrap)', implemented: true, available: false, unavailableReason: 'Linux only. On Windows this backend is the planned inner layer of the isolated-WSL backend.', capabilities: caps('enforced', 'Enforced by namespaces.') },
         { id: 'windows_sandbox', label: 'Isolated: Windows Sandbox', implemented: false, available: false, unavailableReason: 'Not implemented in this build. See docs/EXECUTION.md for the design.', capabilities: caps('none', 'Not implemented.') },
         { id: 'isolated_wsl', label: 'Isolated: dedicated WSL distribution', implemented: false, available: false, unavailableReason: 'Not implemented in this build. See docs/EXECUTION.md for the design.', capabilities: caps('none', 'Not implemented.') },
-      ]);
+      ].map((b) => ({ ...b, agentCapabilities: b.id === 'linux_namespaces' ? { ...b.capabilities, networkControl: p('none', 'Network shared with the host for provider connectivity.'), credentialExposure: p('partial', 'Provider login and transcripts are reachable; environment is restricted.') } : b.capabilities })));
     }
     case 'project_set_execution_backend': return Promise.reject('"Isolated: Windows Sandbox" cannot be used on this machine: Not implemented in this build.');
     case 'storage_usage': return done({ databaseBytes: 48_300_000, events: 182_455, runFiles: 412, runBytes: 96_500_000, proofFiles: 37, proofBytes: 1_900_000, experimentBytes: 12_400_000, worktrees: 6, untrackedWorktrees: ['C:\\Users\\dev\\.forge\\worktrees\\atlas-api\\old-spike-3f2a'] });

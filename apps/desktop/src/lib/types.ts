@@ -1004,6 +1004,7 @@ export interface ExecutionBackendInfo {
     interactiveTerminal: boolean;
     concurrentInstances: boolean;
   };
+  agentCapabilities: ExecutionBackendInfo['capabilities'];
 }
 
 // ---- Agents overview ----

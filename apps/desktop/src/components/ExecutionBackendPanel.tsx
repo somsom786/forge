@@ -22,7 +22,7 @@ const COPY: Record<Scope, { button: string; tip: string; title: (n: string) => s
     button: 'Agents run',
     tip: "Where this project's agents, and every command they run, execute",
     title: (n) => `Where agents run in ${n}`,
-    intro: "The agent process and everything it runs, including commands you approve, start inside this backend. When isolated, they see the worktree, the agent's own login state and the toolchain, and nothing else of your files. The network stays open (the agent must reach its provider), and the agent keeps FORGE's environment variables.",
+    intro: "The agent process and everything it runs, including commands you approve, start inside this backend. Contained Linux agents can reach the worktree, runtime and provider state, including the provider's other-project transcripts. Their environment is restricted to runtime and provider settings. The network stays open so the provider can connect.",
     done: (n, l) => `Agents in ${n} now run on: ${l}. Missions already running keep the backend they started with.`,
   },
 };
@@ -78,8 +78,8 @@ export function ExecutionBackendPanel({ project, scope = 'checks' }: { project: 
                 {PROPERTY_ROWS.map((r) => (
                   <tr key={r.key} className="align-top">
                     <td className="w-[90px] py-0.5 pr-2 text-muted">{r.label}</td>
-                    <td className="w-[80px] py-0.5 pr-2"><Badge tone={levelTone(b.capabilities[r.key])}>{b.capabilities[r.key].level}</Badge></td>
-                    <td className="py-0.5">{b.capabilities[r.key].detail}</td>
+                    <td className="w-[80px] py-0.5 pr-2"><Badge tone={levelTone((scope === 'agents' ? b.agentCapabilities : b.capabilities)[r.key])}>{(scope === 'agents' ? b.agentCapabilities : b.capabilities)[r.key].level}</Badge></td>
+                    <td className="py-0.5">{(scope === 'agents' ? b.agentCapabilities : b.capabilities)[r.key].detail}</td>
                   </tr>
                 ))}
               </tbody>
