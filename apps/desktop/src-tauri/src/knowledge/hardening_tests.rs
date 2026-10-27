@@ -105,7 +105,8 @@ fn recovery_leaves_read_only_vaults_and_links_alone() {
     std::fs::remove_dir_all(&real_pages).unwrap();
     #[cfg(windows)]
     {
-        let o = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&real_pages).arg(outside.path()).output().unwrap();
+        use std::os::windows::process::CommandExt;
+        let o = std::process::Command::new("cmd").creation_flags(0x0800_0000).args(["/C", "mklink", "/J"]).arg(&real_pages).arg(outside.path()).output().unwrap();
         assert!(o.status.success(), "{o:?}");
     }
     #[cfg(unix)]

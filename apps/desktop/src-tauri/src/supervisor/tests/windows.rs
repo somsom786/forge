@@ -3,9 +3,10 @@
 
 use super::*;
 use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::process::CommandExt;
 
 fn junction(link: &Path, target: &Path) -> bool {
-    let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
+    let out = std::process::Command::new("cmd").creation_flags(0x0800_0000).args(["/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
     if !out.status.success() {
         eprintln!("SKIPPED: could not create a junction: {}", String::from_utf8_lossy(&out.stderr));
     }

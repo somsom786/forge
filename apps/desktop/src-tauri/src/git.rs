@@ -87,7 +87,14 @@ pub fn run(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 pub fn version() -> Result<String> {
-    let out = Command::new(git_binary()?).arg("--version").output()?;
+    let mut command = Command::new(git_binary()?);
+    command.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = command.output()?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 

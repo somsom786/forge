@@ -198,7 +198,8 @@ mod tests {
         let link = r.path().join("pages").join("shortcut");
         #[cfg(windows)]
         {
-            let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(outside.path()).output().unwrap();
+            use std::os::windows::process::CommandExt;
+            let out = std::process::Command::new("cmd").creation_flags(0x0800_0000).args(["/C", "mklink", "/J"]).arg(&link).arg(outside.path()).output().unwrap();
             assert!(out.status.success(), "{out:?}");
         }
         #[cfg(unix)]
@@ -216,7 +217,8 @@ mod tests {
         let alias = r.path().join("pages").join("alias");
         #[cfg(windows)]
         {
-            let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&alias).arg(r.path().join("pages").join("real")).output().unwrap();
+            use std::os::windows::process::CommandExt;
+            let out = std::process::Command::new("cmd").creation_flags(0x0800_0000).args(["/C", "mklink", "/J"]).arg(&alias).arg(r.path().join("pages").join("real")).output().unwrap();
             assert!(out.status.success(), "{out:?}");
         }
         #[cfg(unix)]
