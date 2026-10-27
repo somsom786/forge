@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-27
 
+Obsidian opening: PASS — Windows URI encoding regression. Linux desktop-handler lookup fixture (success, missing, failure, timeout) is included in CI but NOT RUN locally; real Linux Obsidian/desktop-handler integration is NOT RUN.
+
 Toolchain mount path filtering: PASS — Windows, 1 portable targeted test including an unverifiable home; Unix symlink-to-home and ancestor regression is present but NOT RUN locally and must pass Linux CI. The change may omit custom toolchains when the home is unset or cannot be resolved.
 
 Agent skill path classification: PASS — Windows, 1 targeted regression including skill instructions and helper scripts under nested, case-varied `.agents/skills` paths. It feeds the existing fingerprint-bound review gate.

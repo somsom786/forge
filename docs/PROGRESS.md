@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-27
 
+- On Linux, Obsidian detection checks the registered `obsidian://` desktop handler, and opening a note invokes `xdg-open` with the URI as a single argument. The lookup is time-limited; Linux fixture tests are included in CI. A Windows URI encoding regression passed locally; opening a real Linux Obsidian installation remains untested.
+
 - Windows Git version detection and junction/mock-model test subprocesses now request hidden console windows. A junction escape regression passed locally through a hidden, below-normal-priority runner. Full cross-platform validation is tracked by PR checks.
 
 - Linux toolchain mount selection now resolves installation roots and refuses aliases into the user's home, its ancestors, or system directories normally excluded from toolchain mounts. If the home cannot be resolved it omits extra toolchain mounts; system paths remain available. Windows portable selection test passed; the Unix symlink regression and real sandbox execution require CI for the latest change.

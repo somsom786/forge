@@ -485,14 +485,25 @@ pub async fn knowledge_forget(core: CoreState<'_>, page_id: String) -> Result<()
 pub async fn knowledge_open_in_obsidian(core: CoreState<'_>, page_id: String) -> Result<()> {
     blocking(&core, move |c| {
         let uri = c.knowledge_open_in_obsidian(&page_id)?;
-        // rundll32 hands the URI to the registered handler without any shell parsing of `%` or `&`.
+        // Pass the encoded URI as one argument; never interpret it as a shell command.
+        #[cfg(windows)]
         let mut cmd = std::process::Command::new("rundll32");
+        #[cfg(windows)]
         cmd.args(["url.dll,FileProtocolHandler", &uri]);
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000);
         }
+        #[cfg(target_os = "linux")]
+        let mut cmd = std::process::Command::new("xdg-open");
+        #[cfg(target_os = "macos")]
+        let mut cmd = std::process::Command::new("open");
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+        return Err(crate::error::ForgeError::Other("opening Obsidian is not supported on this platform".into()));
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        cmd.arg(&uri);
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         cmd.spawn()?;
         Ok(())
     })

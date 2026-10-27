@@ -156,15 +156,65 @@ pub fn obsidian_installed() -> bool {
                 .map(|o| o.status.success())
                 .unwrap_or(false)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        obsidian_handler_registered(std::path::Path::new("xdg-mime"))
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         false
+    }
+}
+
+/// Check the desktop handler without launching Obsidian. Bound the wait and amount of output read.
+#[cfg(target_os = "linux")]
+fn obsidian_handler_registered(program: &std::path::Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    // A regular temporary file avoids waiting forever for EOF if a descendant inherits stdout after the lookup exits.
+    let Ok(mut output) = tempfile::tempfile() else { return false };
+    let Ok(writer) = output.try_clone() else { return false };
+    let Ok(mut child) = Command::new(program).args(["query", "default", "x-scheme-handler/obsidian"])
+        .stdin(Stdio::null()).stdout(Stdio::from(writer)).stderr(Stdio::null()).spawn() else { return false };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut result = String::new();
+                if output.seek(SeekFrom::Start(0)).is_err() { return false }
+                let _ = output.take(4096).read_to_string(&mut result);
+                return status.success() && !result.trim().is_empty();
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
+            _ => { let _ = child.kill(); let _ = child.wait(); return false; }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn obsidian_handler_detection_checks_the_registered_scheme_and_times_out() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("xdg-mime");
+        let write = |body: &str| {
+            std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        write("test \"$1 $2 $3\" = 'query default x-scheme-handler/obsidian' || exit 1; printf 'obsidian.desktop\\n'");
+        assert!(obsidian_handler_registered(&script));
+        write("exit 0");
+        assert!(!obsidian_handler_registered(&script), "an empty association is not an installed handler");
+        write("printf 'obsidian.desktop\\n'; exit 1");
+        assert!(!obsidian_handler_registered(&script), "a failed lookup is not an installed handler");
+        write("exec sleep 10");
+        assert!(!obsidian_handler_registered(&script), "an unresponsive lookup must not hang FORGE");
+    }
 
     fn root() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
