@@ -30,6 +30,29 @@ fn explicit_compaction_reclaims_pages_and_refuses_active_work() {
     wait_until("stopped", || f.core.live_session_count() == 0);
 }
 
+#[test]
+fn cleanup_does_not_hold_the_experiment_lock_while_waiting_for_the_registry() {
+    let f = fixture();
+    let (_, dir) = finished_experiment(&f);
+    let preview = f.core.storage_cleanup_preview(30).unwrap();
+    let reg = f.core.reg();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let core = f.core.clone();
+    std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        done_tx.send(core.storage_cleanup_apply(30, &preview.token)).unwrap();
+    });
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+    let experiment_lock_was_free = f.core.experiments.try_lock().is_ok();
+    drop(reg);
+    let result = done_rx.recv_timeout(Duration::from_secs(10)).expect("cleanup did not finish").unwrap();
+    assert!(experiment_lock_was_free, "cleanup must acquire the registry before experiments, as compaction does");
+    assert!(result.failures.is_empty(), "{result:?}");
+    assert!(!dir.exists());
+}
+
 fn finished_experiment(f: &Fixture) -> (String, PathBuf) {
     use crate::experiment::{Metric, NewExperiment, VariantSpec};
     let e = f.core.experiment_create(&f.project.id, NewExperiment {

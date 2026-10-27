@@ -248,11 +248,15 @@ impl Core {
 
     /// What a clean-up of finished missions older than `older_than_days` would remove. Read-only.
     pub fn storage_cleanup_preview(&self, older_than_days: u32) -> Result<CleanupPlan> {
+        let reg = self.reg();
+        let mut active_missions: HashSet<String> = reg.reserved.iter().cloned().collect();
+        active_missions.extend(reg.sessions.values().map(|s| s.mission_id.clone()));
+        active_missions.extend(lock(&self.checks).keys().cloned());
         let active = lock(&self.experiments).keys().cloned().collect();
-        self.storage_cleanup_plan(older_than_days, &active)
+        self.storage_cleanup_plan(older_than_days, &active, &active_missions)
     }
 
-    fn storage_cleanup_plan(&self, older_than_days: u32, active: &HashSet<String>) -> Result<CleanupPlan> {
+    fn storage_cleanup_plan(&self, older_than_days: u32, active: &HashSet<String>, active_missions: &HashSet<String>) -> Result<CleanupPlan> {
         // A century is "everything"; beyond that the date arithmetic would overflow.
         let older_than_days = older_than_days.min(MAX_AGE_DAYS);
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(older_than_days as i64)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -260,7 +264,7 @@ impl Core {
         let runs = self.runs_dir();
         let mut missions = vec![];
         for m in finished.into_iter().filter(|m| m.updated_at < cutoff) {
-            if self.is_running(&m.id) { continue; }
+            if active_missions.contains(&m.id) { continue; }
             let events: i64 = self.store.c().query_row(
                 "SELECT COUNT(*) FROM activity_event WHERE mission_id=?1 AND NOT (kind='status' AND json_extract(payload_json, '$.retention') IS NOT NULL)",
                 [&m.id],
@@ -319,10 +323,18 @@ impl Core {
     /// Apply a previewed clean-up. Refused if anything changed since the preview (the token no longer matches).
     pub fn storage_cleanup_apply(&self, older_than_days: u32, token: &str) -> Result<CleanupResult> {
         let older_than_days = older_than_days.min(MAX_AGE_DAYS);
-        // Hold the same reservation used by experiment startup until cleanup finishes; no restart can race deletion.
+        // Lock in the same order as compaction and check startup: registry, checks, then experiments.
+        // Hold the experiment reservation until cleanup finishes; no experiment restart can race deletion.
+        let reg = self.reg();
+        let mut active_missions: HashSet<String> = reg.reserved.iter().cloned().collect();
+        active_missions.extend(reg.sessions.values().map(|s| s.mission_id.clone()));
+        active_missions.extend(lock(&self.checks).keys().cloned());
         let running = lock(&self.experiments);
         let active = running.keys().cloned().collect();
-        let plan = self.storage_cleanup_plan(older_than_days, &active)?;
+        let plan = self.storage_cleanup_plan(older_than_days, &active, &active_missions)?;
+        // The selected missions are terminal and cannot start again. Release the registry before deleting artifacts so
+        // live sessions do not wait for filesystem cleanup, and cleanup never waits for the registry while holding experiments.
+        drop(reg);
         if plan.token != token {
             return Err(ForgeError::InvalidState("what would be removed changed since the preview; preview again and confirm what it lists".into()));
         }
