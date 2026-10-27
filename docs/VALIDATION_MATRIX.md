@@ -2,7 +2,7 @@
 
 ## Continuation, 2026-10-27
 
-Obsidian opening: PASS — Windows URI encoding regression. Linux desktop-handler lookup fixture (success, missing, failure, timeout) is included in CI but NOT RUN locally; real Linux Obsidian/desktop-handler integration is NOT RUN.
+Obsidian opening: PASS — Windows URI encoding regression; PASS — Linux CI desktop-handler lookup fixture (success, missing, failure, timeout), NOT RUN locally. Real Linux Obsidian/desktop-handler integration is NOT RUN.
 
 Toolchain mount path filtering: PASS — Windows, 1 portable targeted test including an unverifiable home; Unix symlink-to-home and ancestor regression is present but NOT RUN locally and must pass Linux CI. The change may omit custom toolchains when the home is unset or cannot be resolved.
 
@@ -29,6 +29,8 @@ GitHub PR #8 checks queried 2026-10-27: Linux and Windows tests, Windows unsigne
 Continuation PR #9, commit `c1aa777`: PASS — Linux CI (451 Rust passed, 6 ignored; required sandbox, scanner and scripted Claude CLI checks enabled), PASS — Windows CI (439 Rust passed, 6 ignored), and PASS — unsigned installer build and Windows script checks. Security, dependency and SBOM jobs passed. Follow-up commit `50c17a9`: PASS — Windows CI installed the unsigned app into temporary storage, kept it running for 90 seconds with GPU disabled, then uninstalled it. This does not explain or invalidate the earlier local 180-second failure.
 
 Continuation PR #9, commit `77b088c`: PASS — Linux CI (453 Rust passed, 6 ignored), Windows CI (440 Rust passed, 6 ignored), security and dependency checks, and unsigned installer build. The clean Windows runner installed, launched for 180 seconds with GPU disabled, and uninstalled the application. The earlier local early exit remains unexplained; this CI pass is not evidence of a real provider, signing, or physical-desktop interoperability.
+
+Continuation PR #9, commit `714679b`: PASS — Linux CI (454 Rust passed, 6 ignored), Windows CI (440 Rust passed, 6 ignored), security and dependency checks, and the 180-second unsigned Windows installer launch and uninstall.
 
 | Check | Result | Evidence and limits |
 |---|---|---|

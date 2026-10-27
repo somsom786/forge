@@ -2,7 +2,7 @@
 
 ## Continuation, 2026-10-27
 
-- On Linux, Obsidian detection checks the registered `obsidian://` desktop handler, and opening a note invokes `xdg-open` with the URI as a single argument. The lookup is time-limited; Linux fixture tests are included in CI. A Windows URI encoding regression passed locally; opening a real Linux Obsidian installation remains untested.
+- On Linux, Obsidian detection checks the registered `obsidian://` desktop handler, and opening a note invokes `xdg-open` with the URI as a single argument. The time-limited lookup fixture passed in Linux CI. A Windows URI encoding regression passed locally; opening a real Linux Obsidian installation remains untested.
 
 - Windows Git version detection and junction/mock-model test subprocesses now request hidden console windows. A junction escape regression passed locally through a hidden, below-normal-priority runner. Full cross-platform validation is tracked by PR checks.
 
