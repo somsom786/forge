@@ -1,5 +1,9 @@
 # Validation matrix
 
+## Continuation, 2026-10-28
+
+2026-10-28: PASS — Windows, 12 storage tests, including a real locked mission-log fixture. Before the fix the new regression failed because the transcript was deleted despite the locked log; after the fix it passed, preserved the log reference, and succeeded after release and a fresh preview. Temporary repositories only; hidden, below-normal-priority subprocesses; no GPU or provider account used. Linux CI for this change is pending.
+
 ## Continuation, 2026-10-27
 
 Obsidian opening: PASS — Windows URI encoding regression; PASS — Linux CI desktop-handler lookup fixture (success, missing, failure, timeout), NOT RUN locally. Real Linux Obsidian/desktop-handler integration is NOT RUN.

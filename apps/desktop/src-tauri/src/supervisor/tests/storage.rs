@@ -159,6 +159,32 @@ fn a_locked_experiment_log_is_reported_and_cleanup_can_be_retried() {
     assert!(!dir.exists());
 }
 
+#[cfg(windows)]
+#[test]
+fn a_locked_mission_log_preserves_its_transcript_until_cleanup_can_be_retried() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let f = fixture();
+    let mission = mission_in_review(&f, "make a note");
+    f.core.set_contract(&mission.id, contract(false)).unwrap();
+    let run = run_check(&f, &mission.id, "exists");
+    f.core.discard_mission(&mission.id, true).unwrap();
+    age(&f, &mission.id);
+    let log = PathBuf::from(run.log_path.as_ref().unwrap());
+    let before = f.core.store.events(&mission.id, 0, 10_000).unwrap().len();
+    assert!(before > 0);
+    let held = std::fs::OpenOptions::new().read(true).share_mode(3).open(&log).unwrap();
+    let plan = f.core.storage_cleanup_preview(30).unwrap();
+    let result = f.core.storage_cleanup_apply(30, &plan.token).unwrap();
+    assert!(!result.failures.is_empty(), "locked log must be reported");
+    assert_eq!(f.core.store.events(&mission.id, 0, 10_000).unwrap().len(), before, "transcript must remain on failed log removal");
+    assert!(f.core.store.get_run(&run.id).unwrap().log_path.is_some(), "the still-existing log must remain referenced");
+    drop(held);
+    let plan = f.core.storage_cleanup_preview(30).unwrap();
+    assert!(f.core.storage_cleanup_apply(30, &plan.token).unwrap().failures.is_empty());
+    assert!(!log.exists());
+    assert!(f.core.store.get_run(&run.id).unwrap().log_path.is_none());
+}
+
 #[test]
 fn a_cleanup_removes_only_old_finished_missions_raw_data_and_keeps_the_record() {
     let f = fixture();

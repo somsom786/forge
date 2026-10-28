@@ -1,5 +1,9 @@
 # FORGE — Progress
 
+## Continuation, 2026-10-28
+
+- Mission cleanup now retains the transcript and log references if any listed log cannot be removed. A Windows locked-file regression reproduced the original loss (8 events reduced to the retention marker) before the fix, then passed after releasing and retrying. All 12 Windows storage tests passed with hidden, low-priority subprocesses. Earlier successful file removals remain reported as partial work; a fresh preview is required for retry.
+
 ## Continuation, 2026-10-27
 
 - On Linux, Obsidian detection checks the registered `obsidian://` desktop handler, and opening a note invokes `xdg-open` with the URI as a single argument. The time-limited lookup fixture passed in Linux CI. A Windows URI encoding regression passed locally; opening a real Linux Obsidian installation remains untested.

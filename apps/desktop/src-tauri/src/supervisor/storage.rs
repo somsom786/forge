@@ -367,8 +367,13 @@ impl Core {
         // is always audited below.
         let mut done: Vec<&str> = vec![];
         for m in &plan.missions {
+            let failures_before = res.failures.len();
             for f in &m.files {
                 remove(f, &mut res);
+            }
+            if res.failures.len() != failures_before {
+                res.failures.push(format!("mission {}: transcript and log references retained because a log could not be removed; preview and retry", m.id));
+                continue;
             }
             match self.forget_transcript(m) {
                 Ok(n) => {
