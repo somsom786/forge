@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-28
 
+Cleanup preview freshness: PASS — Windows, 13 storage tests and 1 focused desktop component test; PASS — TypeScript type checking. The new same-size orphan rewrite failed before the fix and passed afterward; a modified mission log also invalidates its preview. The token checks metadata, not file contents, and cannot prevent concurrent path swaps. Linux CI is pending for this revision.
+
 Cleanup preview detail: PASS — Windows targeted component test and TypeScript type checking; fixture checks that mission and unreferenced log paths are present before confirmation. This is a mock-backend UI test, not a real-desktop cleanup run.
 
 Storage failure display: PASS — Windows desktop tests, 128 passed, including a fixture exercising visible failure details and their removal after successful retry; PASS — TypeScript type checking. No GPU or visible subprocess window used.

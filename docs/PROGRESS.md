@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-28
 
+- Cleanup preview tokens now include per-file size and modification time for mission and unreferenced logs. A same-size orphan-log rewrite was reproduced as being deleted under an old preview before the fix; after the fix it is refused. All 13 Windows storage tests passed, including a changed mission log and locked-file retry; focused UI test and type checking passed. Metadata is not a content hash and concurrent path swaps remain a limitation.
+
 - Cleanup preview exposes every listed mission log and unreferenced log file, rather than only counts or the first 50 missions. The Windows component regression checks both file lists before applying cleanup; type checking and the focused test passed.
 
 - Storage now displays individual cleanup failures and retry guidance instead of only a count, limiting the display to 100 issues while preserving the full audit record. The failed-cleanup/successful-retry component test passed; all 128 desktop tests and type checking passed on Windows with hidden, low-priority subprocesses.

@@ -15,6 +15,23 @@ fn old_file(p: &Path) {
 }
 
 #[test]
+fn cleanup_preview_rejects_same_size_changes_to_an_orphan_log() {
+    let f = fixture();
+    let runs = f.core.cfg.home.join("runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    let log = runs.join("old-orphan.log");
+    old_file(&log);
+    let plan = f.core.storage_cleanup_preview(30).unwrap();
+    assert_eq!(plan.orphan_files, vec!["old-orphan.log"]);
+    std::fs::write(&log, "change").unwrap(); // Same length as the original fixture.
+    let file = std::fs::File::options().write(true).open(&log).unwrap();
+    file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(91 * 86_400)).unwrap();
+    drop(file);
+    assert!(f.core.storage_cleanup_apply(30, &plan.token).unwrap_err().to_string().contains("changed since the preview"));
+    assert_eq!(std::fs::read_to_string(log).unwrap(), "change");
+}
+
+#[test]
 fn explicit_compaction_reclaims_pages_and_refuses_active_work() {
     let f = fixture();
     let store = Store::open(&f.core.cfg.home.join("compact-fixture.db")).unwrap();
@@ -173,6 +190,11 @@ fn a_locked_mission_log_preserves_its_transcript_until_cleanup_can_be_retried() 
     let before = f.core.store.events(&mission.id, 0, 10_000).unwrap().len();
     assert!(before > 0);
     let held = std::fs::OpenOptions::new().read(true).share_mode(3).open(&log).unwrap();
+    let plan = f.core.storage_cleanup_preview(30).unwrap();
+    let writer = std::fs::OpenOptions::new().write(true).open(&log).unwrap();
+    writer.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(86_400)).unwrap();
+    drop(writer);
+    assert!(f.core.storage_cleanup_apply(30, &plan.token).unwrap_err().to_string().contains("changed since the preview"));
     let plan = f.core.storage_cleanup_preview(30).unwrap();
     let result = f.core.storage_cleanup_apply(30, &plan.token).unwrap();
     assert!(!result.failures.is_empty(), "locked log must be reported");

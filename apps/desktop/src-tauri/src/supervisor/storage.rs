@@ -316,7 +316,26 @@ impl Core {
         let events = missions.iter().map(|m| m.events).sum();
         let files = missions.iter().map(|m| m.files.len()).sum::<usize>() + orphan_files.len() + experiments.iter().map(|e| e.files.len()).sum::<usize>();
         let bytes = missions.iter().map(|m| m.bytes).sum::<u64>() + orphan_files.iter().map(|f| file_len(&runs.join(f))).sum::<u64>() + experiments.iter().map(|e| e.bytes).sum::<u64>();
-        let token = sha256_hex(serde_json::to_string(&json!([older_than_days, missions, orphan_files, experiments])).unwrap_or_default().as_bytes());
+        // The visible plan lists these names, but counts and total bytes alone do not notice a same-size rewrite.
+        // Bind per-file metadata as well. This is a freshness check, not a content hash or a defense against a
+        // concurrent actor that can restore timestamps or swap paths after the check.
+        let mut run_metadata = vec![];
+        for name in missions.iter().flat_map(|m| m.files.iter()).chain(orphan_files.iter()) {
+            if name.contains(['/', '\\']) || name.starts_with('.') {
+                return Err(ForgeError::PathRejected("cleanup log name is not a plain file name".into()));
+            }
+            let path = runs.join(name);
+            owned_artifact(&self.cfg.home, &path)?;
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if !metadata.is_file() { return Err(ForgeError::PathRejected(format!("cleanup log is not a regular file: {}", path.display()))); }
+            let modified = metadata.modified()?;
+            let stamp = match modified.duration_since(std::time::UNIX_EPOCH) {
+                Ok(d) => d.as_nanos().to_string(),
+                Err(e) => format!("-{}", e.duration().as_nanos()),
+            };
+            run_metadata.push((name, metadata.len(), stamp));
+        }
+        let token = sha256_hex(serde_json::to_string(&json!([older_than_days, missions, orphan_files, experiments, run_metadata])).unwrap_or_default().as_bytes());
         Ok(CleanupPlan { older_than_days, missions, experiments, skipped_experiments, orphan_files, events, files, bytes, token })
     }
 

@@ -55,6 +55,7 @@ the commit log, not here.
 | D4 | No power-loss test of SQLite itself | Not run | — | Relies on SQLite WAL + `synchronous=NORMAL` (a power cut can lose the last transactions, not corrupt the database) |
 | D5 | Installed app exited cleanly after 63.5 seconds during a 180-second launch check | Unexplained failure | Windows installer validation | A concurrent scripted desktop mission completed successfully; an independent 180-second GitHub Windows CI launch passed. Investigate the local exit before release |
 | D6 | A cleanup can remove some mission logs before a later log deletion or database operation fails | Limitation | `supervisor/storage.rs` | Failures are reported and audited. A failed log removal preserves the transcript and its references; re-preview remaining artifacts before retrying. Cleanup is not an atomic filesystem transaction |
+| D7 | Cleanup preview binds listed files' names, sizes and modification times, not their content | Limitation | `supervisor/storage.rs` | Same-size edits with restored timestamps and concurrent path swaps may evade this freshness check; do not treat it as a security boundary |
 
 ## Product quality
 

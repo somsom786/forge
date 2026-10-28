@@ -111,7 +111,7 @@ export function StoragePanel() {
               Removes the check logs and agent transcripts of {plan.missions.length} finished mission(s) last changed more than {plan.olderThanDays} days ago
               {plan.orphanFiles.length ? `, and ${plan.orphanFiles.length} log file(s) no check refers to` : ''}, plus raw logs and empty folders for {plan.experiments.length} finished experiment(s): {plan.events.toLocaleString()} events, {plan.files} files, {bytes(plan.bytes)}.
             </p>
-            <Callout tone="info">Kept: each mission, its state history, approvals, review decisions, check results with their output tail, Proof Packs, memory and the audit log. If anything changes before you confirm, nothing is removed and you are asked to preview again.</Callout>
+            <Callout tone="info">Kept: each mission, its state history, approvals, review decisions, check results with their output tail, Proof Packs, memory and the audit log. FORGE checks the listed items and file metadata again before cleanup. Content changes that leave the metadata unchanged, or concurrent changes during cleanup, may not be detected.</Callout>
             {plan.missions.length > 0 && <details>
               <summary>Inspect all {plan.missions.length} mission(s) and their log files</summary>
               <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all text-[12px]">{plan.missions.map((m) => `${m.title} (${m.id}; ${m.state}; ${m.events} events; ${bytes(m.bytes)})${m.files.map((f) => `\n  runs/${f}`).join('')}`).join('\n\n')}</pre>
