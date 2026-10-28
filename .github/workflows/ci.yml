@@ -183,6 +183,14 @@ jobs:
           }
           if ($failed -gt 0) { exit 1 }
 
+      - name: Uninstall polling fixture (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./scripts/windows/tests/test-uninstall-wait.ps1
+
+      - name: Uninstall polling fixture (PowerShell 7)
+        shell: pwsh
+        run: ./scripts/windows/tests/test-uninstall-wait.ps1
+
       - name: PSScriptAnalyzer (severity Error and 5.1 syntax compatibility fail the job)
         shell: pwsh
         run: |

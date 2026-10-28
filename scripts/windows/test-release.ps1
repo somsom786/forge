@@ -51,6 +51,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module "$PSScriptRoot\lib\ForgeValidation.psm1" -Force
+. "$PSScriptRoot\lib\WaitUninstall.ps1"
 
 function Get-UninstallEntry {
     <# Uninstall registry entries whose DisplayName is the product name (per-user and per-machine views). #>
@@ -214,7 +215,7 @@ try {
         $argLine = '/S /D=' + $installDir
         $cmdText = '"' + $installer + '" ' + $argLine
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $p = Start-Process -FilePath $installer -ArgumentList $argLine -PassThru
+        $p = Start-Process -FilePath $installer -ArgumentList $argLine -WindowStyle Hidden -PassThru
         $null = $p.Handle  # keep a handle so ExitCode is available after the process ends
         $finished = $p.WaitForExit(600000)
         $sw.Stop()
@@ -328,13 +329,21 @@ try {
         }
         else {
             # The NSIS uninstaller copies itself to %TEMP% and returns at once, so removal is polled for afterwards.
-            $u = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru
+            $u = Start-Process -FilePath $uninstaller -ArgumentList '/S' -WindowStyle Hidden -PassThru
             $null = $u.Handle
             [void]$u.WaitForExit(300000)
             $target = $uninstaller
             if ($null -ne $appExe) { $target = $appExe }
-            $gone = Wait-PathGone -Path $target -TimeoutSeconds 180
-            $left = @((Get-UninstallEntry -ProductName $productName) | Where-Object { Test-EntryPointsAt -Entry $_ -Directory $installDir })
+            # The copied NSIS uninstaller removes files before shortcuts and the registry entry. Wait for both,
+            # not only the executable, so a still-running uninstall is not misclassified as a failure.
+            $removal = Wait-UninstallState -TimeoutSeconds 180 -Inspect {
+                [pscustomobject]@{
+                    ExecutableGone = -not (Test-Path -LiteralPath $target)
+                    Entries = @((Get-UninstallEntry -ProductName $productName) | Where-Object { Test-EntryPointsAt -Entry $_ -Directory $installDir })
+                }
+            }
+            $gone = $removal.ExecutableGone
+            $left = @($removal.Entries)
             $sw.Stop()
             $dirState = 'install folder removed'
             if (Test-Path -LiteralPath $installDir) {
@@ -362,7 +371,7 @@ finally {
         $uninstaller = Join-Path $installDir 'uninstall.exe'
         if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
             try {
-                $u = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru
+                $u = Start-Process -FilePath $uninstaller -ArgumentList '/S' -WindowStyle Hidden -PassThru
                 [void]$u.WaitForExit(300000)
                 Add-ValidationNote -Context $ctx -Text ('Cleaned up after an error: ran ' + $uninstaller + ' /S')
             }

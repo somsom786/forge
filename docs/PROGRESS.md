@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-28
 
+- An intermittent installer CI failure was reproduced in run `40718667010`: the 180-second app launch passed, but the test checked the uninstall registry entry immediately after the executable disappeared. The generated NSIS script removes files before the registry entry. Validation now waits for both conditions, up to a fixed timeout, and a fixture checks delayed removal and persistent failure. The fixture passed under Windows PowerShell 5.1 with no visible window; full installer CI is pending.
+
 - Cleanup preview tokens now include per-file size and modification time for mission and unreferenced logs. A same-size orphan-log rewrite was reproduced as being deleted under an old preview before the fix; after the fix it is refused. All 13 Windows storage tests passed, including a changed mission log and locked-file retry; focused UI test and type checking passed. Metadata is not a content hash and concurrent path swaps remain a limitation.
 
 - Cleanup preview exposes every listed mission log and unreferenced log file, rather than only counts or the first 50 missions. The Windows component regression checks both file lists before applying cleanup; type checking and the focused test passed.
