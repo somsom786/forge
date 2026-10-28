@@ -2,7 +2,9 @@
 
 ## Continuation, 2026-10-28
 
-Installer uninstall polling: FAIL — Windows CI run `40718667010`: the application stayed up for 180 seconds, the install folder was removed, but the test observed the uninstall registry entry immediately afterward. The generated NSIS script deletes that entry after the executable. The updated validation waits for both conditions and still fails on a persistent entry. PASS — Windows PowerShell 5.1 fixture for delayed removal, persistent entry, and remaining executable; PowerShell 7 fixture and real installer CI are pending. This evidence suggests a test race but does not establish whether that particular registry entry would eventually have disappeared.
+Installer uninstall polling: FAIL — Windows CI run `40718667010`: the application stayed up for 180 seconds, the install folder was removed, but the test observed the uninstall registry entry immediately afterward. The generated NSIS script deletes that entry after the executable. The updated validation waits for both conditions and still fails on a persistent entry. PASS — Windows PowerShell 5.1 and PowerShell 7 fixtures for delayed removal, persistent entry, and remaining executable; PASS — Windows CI at `46836d6` for the real 180-second launch and uninstall. This evidence suggests a test race but does not establish whether the particular earlier registry entry would eventually have disappeared.
+
+Continuation PR #9 at `46836d6`: PASS — Linux CI, 455 Rust tests passed and 6 ignored; PASS — Windows CI, 442 passed and 6 ignored; PASS — Windows 180-second unsigned installer launch and uninstall, script checks, dependency and secret scans, and SBOM generation.
 
 Cleanup preview freshness: PASS — Windows, 13 storage tests and 1 focused desktop component test; PASS — TypeScript type checking. The new same-size orphan rewrite failed before the fix and passed afterward; a modified mission log also invalidates its preview. The token checks metadata, not file contents, and cannot prevent concurrent path swaps. Linux CI is pending for this revision.
 
