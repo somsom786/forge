@@ -13,12 +13,15 @@ afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 it('shows cleanup failures and retains them until a successful retry', async () => {
   mocks.usage.mockResolvedValue({ databaseBytes: 0, events: 0, runBytes: 0, runFiles: 0, proofBytes: 0, proofFiles: 0, experimentBytes: 0, worktrees: 0, untrackedWorktrees: [] });
-  mocks.preview.mockResolvedValue({ olderThanDays: 30, missions: [{ id: 'm', title: 'Mission', state: 'cancelled', events: 1, files: ['run.log'], bytes: 5 }], orphanFiles: [], experiments: [], skippedExperiments: [], events: 1, files: 1, bytes: 5, token: 'fixture' });
+  mocks.preview.mockResolvedValue({ olderThanDays: 30, missions: [{ id: 'm', title: 'Mission', state: 'cancelled', events: 1, files: ['run.log'], bytes: 5 }], orphanFiles: ['old-orphan.stdout'], experiments: [], skippedExperiments: [], events: 1, files: 2, bytes: 5, token: 'fixture' });
   mocks.apply.mockResolvedValueOnce({ eventsDeleted: 0, filesDeleted: 0, bytesFreed: 0, failures: ['run.log: file is locked', 'mission m: transcript retained'] })
     .mockResolvedValueOnce({ eventsDeleted: 1, filesDeleted: 1, bytesFreed: 5, failures: [] });
   render(<StoragePanel />);
   fireEvent.click(screen.getByRole('button', { name: /preview clean-up/i }));
-  fireEvent.click(await screen.findByRole('button', { name: /remove what is listed/i }));
+  const remove = await screen.findByRole('button', { name: /remove what is listed/i });
+  expect(screen.getByText(/runs\/run\.log/)).toBeTruthy();
+  expect(screen.getByText(/runs\/old-orphan\.stdout/)).toBeTruthy();
+  fireEvent.click(remove);
   expect(await screen.findByText('run.log: file is locked')).toBeTruthy();
   expect(screen.getByText('mission m: transcript retained')).toBeTruthy();
   expect(screen.getByText(/preview clean-up again before retrying/i)).toBeTruthy();
