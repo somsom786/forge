@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-28
 
+- Storage now displays individual cleanup failures and retry guidance instead of only a count, limiting the display to 100 issues while preserving the full audit record. The failed-cleanup/successful-retry component test passed; all 128 desktop tests and type checking passed on Windows with hidden, low-priority subprocesses.
+
 - Mission cleanup now retains the transcript and log references if any listed log cannot be removed. A Windows locked-file regression reproduced the original loss (8 events reduced to the retention marker) before the fix, then passed after releasing and retrying. All 12 Windows storage tests passed with hidden, low-priority subprocesses. Earlier successful file removals remain reported as partial work; a fresh preview is required for retry.
 
 ## Continuation, 2026-10-27

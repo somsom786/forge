@@ -2,6 +2,8 @@
 
 ## Continuation, 2026-10-28
 
+Storage failure display: PASS — Windows desktop tests, 128 passed, including a fixture exercising visible failure details and their removal after successful retry; PASS — TypeScript type checking. No GPU or visible subprocess window used.
+
 2026-10-28: PASS — Windows, 12 storage tests, including a real locked mission-log fixture. Before the fix the new regression failed because the transcript was deleted despite the locked log; after the fix it passed, preserved the log reference, and succeeded after release and a fresh preview. Temporary repositories only; hidden, below-normal-priority subprocesses; no GPU or provider account used. Linux CI for this change is pending.
 
 ## Continuation, 2026-10-27

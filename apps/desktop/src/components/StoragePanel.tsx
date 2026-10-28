@@ -22,6 +22,7 @@ export function StoragePanel() {
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [days, setDays] = useState(30);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
+  const [cleanupFailures, setCleanupFailures] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [compactOpen, setCompactOpen] = useState(false);
   const load = useCallback(() => { void api.storageUsage().then(setUsage).catch((e) => notify('error', errMsg(e))); }, [notify]);
@@ -36,7 +37,8 @@ export function StoragePanel() {
     setBusy(true);
     try {
       const r = await api.storageCleanupApply(plan.olderThanDays, plan.token);
-      notify(r.failures.length ? 'warn' : 'info', `Removed ${r.eventsDeleted} transcript events and ${r.filesDeleted} files (${bytes(r.bytesFreed)})${r.failures.length ? `; ${r.failures.length} could not be removed` : ''}.`);
+      setCleanupFailures(r.failures);
+      notify(r.failures.length ? 'warn' : 'info', `Removed ${r.eventsDeleted} transcript events and ${r.filesDeleted} files (${bytes(r.bytesFreed)})${r.failures.length ? `; ${r.failures.length} issue(s) reported` : ''}.`);
       setPlan(null);
       load();
     } catch (e) {
@@ -69,6 +71,13 @@ export function StoragePanel() {
         <Callout tone="warn" title={`${usage.untrackedWorktrees.length} worktree folder(s) no mission refers to`}>
           FORGE does not delete these: they may hold work. Inspect them and remove them with git when you are sure.
           <ul className="m-0 mt-1 list-disc pl-5">{usage.untrackedWorktrees.slice(0, 20).map((w) => <li key={w} className="mono break-all text-[12px]">{w}</li>)}</ul>
+        </Callout>
+      )}
+      {cleanupFailures.length > 0 && (
+        <Callout tone="warn" title="Clean-up was incomplete">
+          Some items may already have been removed. Review the issues below, then preview clean-up again before retrying.
+          <ul className="m-0 mt-1 max-h-48 overflow-auto list-disc pl-5 text-[12px]">{cleanupFailures.slice(0, 100).map((failure, index) => <li key={`${index}-${failure}`} className="break-words">{failure}</li>)}</ul>
+          {cleanupFailures.length > 100 && <p className="m-0 mt-1">Showing 100 of {cleanupFailures.length} issues. The audit log records the full result.</p>}
         </Callout>
       )}
       <div className="mt-3 flex flex-wrap items-center gap-2">
