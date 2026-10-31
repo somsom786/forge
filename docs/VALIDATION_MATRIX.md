@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — Windows provider suite, 10 tests, including prompt rejection of oversized CLI output. Linux CI pending.
 2026-10-31: PASS — Windows provider suite, 10 tests, including malformed status and conflicting or incomplete content lengths. Linux CI pending.
 2026-10-31: PASS — Windows provider suite, 9 passed, including `localhost` discovery against an IPv4-only loopback listener. No GPU or provider account used; Linux CI pending.
 2026-10-31: PASS — GitHub security workflow `41240385733` at `591a308` emitted the new warning for a nonzero informational OSV scan. FINDINGS — the scan still reported the two RustSec advisories described below; this is not a clean result. Full CI is in progress.

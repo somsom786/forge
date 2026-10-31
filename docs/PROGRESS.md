@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Provider probes reject oversized output promptly instead of waiting for the full deadline once their readers have failed. Ten Windows provider tests passed, including an oversized local fixture.
 - Local-model HTTP discovery now checks the exact success status and any declared content length, rejecting malformed or incomplete responses. Ten Windows provider tests passed; Linux CI pending.
 - Local-model discovery now tries IPv6 and IPv4 loopback addresses directly for `localhost`, avoiding DNS and supporting IPv4-only listeners. Nine Windows provider tests passed, including the IPv4-only local-server fixture; Linux CI pending.
 - Investigated an informational OSV CI failure: it reports `glib 0.18.5` unsoundness and unmaintained `proc-macro-error 1.0.4` in the lockfile's GTK/Tauri dependency stack. Windows target selection did not include either; Linux target resolution and affected-code reachability remain unverified. Release assessment remains open. GitHub security run `41240385733` verified the new warning for nonzero informational scans.

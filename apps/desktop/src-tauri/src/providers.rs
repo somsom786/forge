@@ -99,16 +99,25 @@ fn run_timeout_command(mut cmd: Command, timeout: Duration) -> Option<(bool, Str
         std::thread::spawn(move || {
             let mut output = Vec::new();
             let result = (&mut pipe).take(OUTPUT_LIMIT + 1).read_to_end(&mut output);
-            if result.is_ok() && output.len() as u64 <= OUTPUT_LIMIT {
-                let _ = tx.send((index, output));
-            }
+            let output = (result.is_ok() && output.len() as u64 <= OUTPUT_LIMIT).then_some(output);
+            let _ = tx.send((index, output));
         });
     }
     drop(tx);
     let mut status = None;
     let mut outputs = [None, None];
     loop {
-        while let Ok((index, output)) = rx.try_recv() { outputs[index] = Some(output); }
+        let mut readers_closed = false;
+        let mut reader_failed = false;
+        loop {
+            match rx.try_recv() {
+                Ok((index, Some(output))) => outputs[index] = Some(output),
+                Ok((_, None)) => { reader_failed = true; break; }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => { readers_closed = true; break; }
+            }
+        }
+        if reader_failed || (readers_closed && outputs.iter().any(Option::is_none)) { break; }
         if status.is_none() {
             match child.try_wait() {
                 Ok(st) => status = st,
@@ -398,6 +407,7 @@ mod tests {
         use std::io::Write;
         match std::env::var("FORGE_PROBE_FIXTURE").as_deref() {
             Ok("large") => { std::io::stdout().write_all(&vec![b'x'; 200_000]).unwrap(); }
+            Ok("oversized") => { let _ = std::io::stdout().write_all(&vec![b'x'; 1_100_000]); std::thread::sleep(Duration::from_secs(8)); }
             Ok("hold") => {
                 let mut cmd = Command::new(std::env::current_exe().unwrap());
                 cmd.args(["--exact", "providers::tests::provider_probe_fixture", "--nocapture"]).env("FORGE_PROBE_FIXTURE", "sleep");
@@ -428,6 +438,9 @@ mod tests {
         let start = Instant::now();
         assert!(run_timeout_command(fixture_command("hold"), Duration::from_millis(400)).is_none());
         assert!(start.elapsed() < Duration::from_secs(2), "an inherited pipe must not defeat the deadline");
+        let start = Instant::now();
+        assert!(run_timeout_command(fixture_command("oversized"), Duration::from_secs(10)).is_none());
+        assert!(start.elapsed() < Duration::from_secs(5), "oversized output should be rejected promptly");
     }
 
     #[cfg(windows)]
