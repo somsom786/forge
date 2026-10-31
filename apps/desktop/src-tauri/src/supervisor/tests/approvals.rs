@@ -9,6 +9,15 @@ fn first_pending(f: &Fixture, m: &Mission) -> crate::store::Approval {
 }
 
 #[test]
+fn approval_expires_at_its_deadline_not_after_it() {
+    let deadline = "2026-10-31T12:00:00.000Z";
+    assert!(!approval_expired(Some(deadline), "2026-10-31T11:59:59.999Z"));
+    assert!(approval_expired(Some(deadline), deadline));
+    assert!(approval_expired(Some(deadline), "2026-10-31T12:00:00.001Z"));
+    assert!(!approval_expired(None, deadline));
+}
+
+#[test]
 fn an_approval_is_bound_to_its_exact_context_and_a_mismatched_binding_is_refused() {
     let f = fixture();
     let m = new_mission(&f, "add a scripted note", PermissionProfile::Default);

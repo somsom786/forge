@@ -238,6 +238,10 @@ pub(crate) fn approval_binding(mission_id: &str, session_id: &str, provider: &st
     format!("{:x}", h.finalize())
 }
 
+fn approval_expired(expires_at: Option<&str>, now: &str) -> bool {
+    expires_at.is_some_and(|expiry| expiry <= now)
+}
+
 /// Identity of one exact tool call: the provider's id *and* a digest of tool + input.
 fn request_key(tool_use_id: &str, tool: &str, input: &Value) -> String {
     let mut h = Sha256::new();
@@ -1066,7 +1070,7 @@ impl Core {
         let now = crate::store::now();
         for id in ids {
             let Ok(a) = self.store.get_approval(&id) else { continue };
-            if a.state == "pending" && a.expires_at.as_deref().is_some_and(|e| e < now.as_str()) {
+            if a.state == "pending" && approval_expired(a.expires_at.as_deref(), &now) {
                 if let Ok(Some(a)) = self.store.expire_approval(&id, "no decision before it expired") {
                     self.store.audit("system", "approval.expired", Some(&a.id), &json!({"tool": a.tool}));
                     self.core_event(h, "approval.decided", json!({"approvalId": a.id, "tool": a.tool, "decision": "expired"}));
@@ -1124,7 +1128,7 @@ impl Core {
             }
             _ => {}
         }
-        if existing.state == "pending" && existing.expires_at.as_deref().is_some_and(|e| e < crate::store::now().as_str()) {
+        if existing.state == "pending" && approval_expired(existing.expires_at.as_deref(), &crate::store::now()) {
             if let Ok(Some(a)) = self.store.expire_approval(approval_id, "no decision before it expired") {
                 self.store.audit("system", "approval.expired", Some(&a.id), &json!({"tool": a.tool}));
                 self.release_waiters(&handle, approval_id, false, Some("The request expired before anyone decided it".into()));

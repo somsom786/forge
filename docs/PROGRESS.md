@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Approval expiry now takes effect at the exact stored deadline in both the decision and background expiry paths. Six Windows approval tests passed, including the deadline boundary and scripted-agent cases; Linux CI pending.
 - Provider probes reject oversized output promptly instead of waiting for the full deadline once their readers have failed. Ten Windows provider tests passed, including an oversized local fixture.
 - Local-model HTTP discovery now checks the exact success status and any declared content length, rejecting malformed or incomplete responses. Ten Windows provider tests passed; Linux CI pending.
 - Local-model discovery now tries IPv6 and IPv4 loopback addresses directly for `localhost`, avoiding DNS and supporting IPv4-only listeners. Nine Windows provider tests passed, including the IPv4-only local-server fixture; Linux CI pending.
