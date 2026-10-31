@@ -2,7 +2,7 @@
 
 ## Continuation, 2026-10-31
 
-- Scanner evidence parsing now rejects trailing garbage, malformed results fields and excessive Playwright failure counts instead of treating them as clean. Sixteen Windows evidence tests passed, including recorded real-tool report fixtures; genuine live scanner invocation was not repeated for this parser change.
+- Scanner evidence parsing now rejects trailing garbage, malformed results fields and excessive Playwright failure counts instead of treating them as clean. Playwright suite structure is checked before results are accepted. Sixteen Windows evidence tests passed, including recorded real-tool report fixtures; genuine live scanner invocation was not repeated for this parser change.
 - Windows provider detection now starts CLI probes suspended inside a kill-on-close Job Object, refusing probes when containment fails. Nine targeted Windows provider tests passed, including a timed-out descendant that could not write its delayed marker. Unix descendant containment remains open.
 - Verification now refuses to start when its requested audit log cannot be created and reports a log write failure as an error. Twelve Windows verification tests passed, including a log-creation failure fixture. Linux CI pending.
 - Verification now marks ordinary checks incomplete if their output readers fail or remain open after the parent exits. Windows verification tests: 11 passed. The Node inherited-pipe fixture did not retain the pipe on Windows, so the real descendant regression is Unix-only and awaits Linux CI; it is not evidence of Windows descendant behavior.
