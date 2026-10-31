@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Investigated an informational OSV CI failure: it reports `glib 0.18.5` unsoundness and unmaintained `proc-macro-error 1.0.4` in the lockfile's GTK/Tauri dependency stack. Windows target selection did not include either; Linux target resolution and affected-code reachability remain unverified. Release assessment remains open. The workflow now adds an explicit warning and summary for nonzero informational scans; GitHub validation is pending.
 - New Playwright check suggestions use `npx --no-install` so a missing tool is not silently fetched. An offline Windows probe found the installed Playwright 1.56.1; existing saved check commands are unchanged.
 - Verification's line-oriented log capture now suppresses standard multiline private-key blocks; incomplete blocks are also redacted in output tails. A split-read fixture, harmless check and 11 targeted redaction-related Windows tests passed. Redaction remains best-effort, including unusual formats, truncated beginnings and very long lines; this does not claim all secrets are caught.
 - Extended the approval-binding regression to cover changed mission, file path and file content in addition to provider, tool, profile, backend and session; the Windows scripted-agent test passed.

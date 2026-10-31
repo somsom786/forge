@@ -167,11 +167,17 @@ jobs:
           chmod +x "$dir/osv-scanner"
           "$dir/osv-scanner" --version
       - name: Scan package-lock.json and Cargo.lock (overlaps npm audit / cargo audit, so it does not fail the build)
+        id: osv_scan
         continue-on-error: true
         run: |
           "$RUNNER_TEMP/osv-scanner/osv-scanner" scan source \
             --lockfile package-lock.json \
             --lockfile apps/desktop/src-tauri/Cargo.lock
+      - name: Surface an incomplete or non-clean informational scan
+        if: steps.osv_scan.outcome == 'failure'
+        run: |
+          echo '::warning::OSV-Scanner returned a nonzero exit. Findings or a scanner error require review; this informational job is not a clean scan.'
+          echo 'OSV-Scanner returned a nonzero exit. Review the scan log for findings or a scanner error; the informational job status does not mean the scan was clean.' >> "$GITHUB_STEP_SUMMARY"
 
   sbom:
     name: SBOM (CycloneDX, npm + Cargo)

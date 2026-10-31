@@ -50,6 +50,7 @@ Linux network namespaces isolate IP networking for checks, but filesystem Unix s
 8. **Unix process containment does not survive a descendant calling `setsid`** (limitation; `proc.rs`). Windows Job
    Objects are not affected.
 9. **Redaction is pattern based** (limitation; `redact.rs`). Unusual secret formats reach logs and transcripts.
+10. **The lockfile contains two RustSec advisories reported by OSV-Scanner** (confirmed in CI `41221116223`): `glib 0.18.5` has [RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html), an unsound iterator fixed in 0.20; `proc-macro-error 1.0.4` has [RUSTSEC-2024-0370](https://rustsec.org/advisories/RUSTSEC-2024-0370.html), an unmaintained-package notice with no patched version. The lockfile's reverse edges run through the GTK/Tauri dependency stack. Windows `cargo tree` did not select either package; an offline Linux-target tree could not be resolved locally. Whether FORGE exercises the affected GLib methods is unverified. The OSV job is informational and exited 1; its green job status is not a clean scan. Resolve or explicitly assess these transitive dependencies before release.
 
 ## Reliability and data
 
