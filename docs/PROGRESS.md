@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Turn completion now takes the same lifecycle lock as permission decisions, preventing a grant from racing with completion. Eleven Windows approval tests passed, including a synthetic completion-ordering fixture; Linux CI pending.
 - Live approvals now use an in-memory monotonic deadline in addition to the bound wall-clock expiry, preventing a backward wall-clock change from extending an active deadline. Expired and withdrawn deadline entries are pruned. Ten Windows approval tests, four scripted ACP tests and one real Claude Code test against a scripted local server passed; actual suspend/resume and Linux CI remain untested.
 - Reproduced approval during a stopping session; stop now serializes with permission decisions, and both late requests and approvals are refused after stopping begins. Nine Windows scripted approval tests passed. Linux CI and live-provider behavior remain pending.
 - Reproduced an approved-call reuse after its deadline with a delayed scripted agent. Reuse now rechecks expiry, policy, execution backend and binding, and audits a refused reuse; the regression failed before and passed afterward. Eight Windows approval tests, TypeScript checking, and one real Claude Code test against a scripted local server passed. Linux CI and live-provider compatibility remain pending.

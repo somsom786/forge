@@ -792,7 +792,11 @@ impl Core {
             }
             EngineMsg::PermissionCancelled { request_id } => self.on_permission_cancelled(h, &request_id),
             EngineMsg::TurnComplete { status, message, provider_session_id, usage, permission_denials } => {
-                h.completed.store(true, Ordering::SeqCst);
+                {
+                    // Serialize completion with approval decisions, just as stop is serialized below.
+                    let _life = lock(&h.life);
+                    h.completed.store(true, Ordering::SeqCst);
+                }
                 if let Some(id) = provider_session_id {
                     let _ = self.store.set_mission_provider_session(&h.mission_id, &id);
                 }

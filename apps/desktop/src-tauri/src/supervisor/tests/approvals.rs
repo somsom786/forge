@@ -103,6 +103,28 @@ fn a_stopping_session_cannot_approve_a_waiting_request() {
     f.core.stop_mission(&m.id).unwrap();
 }
 
+#[test]
+fn turn_completion_is_serialized_with_approval_decisions() {
+    let f = fixture();
+    let m = new_mission(&f, "add a scripted note", PermissionProfile::Default);
+    f.core.start_mission(&m.id, None).unwrap();
+    let a = first_pending(&f, &m);
+    let handle = f.core.reg().sessions.get(&a.session_id).cloned().unwrap();
+    let guard = lock(&handle.life);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let (core, other) = (f.core.clone(), handle.clone());
+    std::thread::spawn(move || {
+        core.on_engine_msg(&other, EngineMsg::TurnComplete { status: "interrupted".into(), message: None, provider_session_id: None, usage: None, permission_denials: None });
+        let _ = done_tx.send(());
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!handle.completed.load(Ordering::SeqCst), "completion must wait for the lifecycle lock");
+    drop(guard);
+    done_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(f.core.decide_approval_checked(&a.id, true, None, a.binding_sha256.as_deref()).is_err());
+    f.core.stop_mission(&m.id).unwrap();
+}
+
 /// Time-of-check/time-of-use: the request was safe when asked; while the human was reading it, the target was replaced by a
 /// link to a file outside the worktree. Approving must not let the write through.
 #[cfg(unix)]

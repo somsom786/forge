@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — Windows approval suite, 11 tests, including a synthetic turn-completion ordering fixture. Linux CI pending.
 2026-10-31: PASS — full CI `41241419174` at `53465b8`: Linux Rust 476 passed, 6 ignored; Windows Rust 459 passed, 6 ignored; Windows script checks and unsigned installer build, 180-second launch, uninstall and artifact upload passed. Later approval context, stopping and monotonic-deadline changes require their own CI run.
 2026-10-31: PASS — Windows approval suite, 10 tests, including a simulated elapsed monotonic deadline while the stored wall deadline remained in the future; scripted ACP 4 tests and real Claude Code against a local scripted model 1 test. Actual clock change, system suspend/resume, Linux CI and live-provider behavior: NOT RUN. No paid inference or GPU used.
 2026-10-31: PASS — Windows approval suite, 9 tests, including a stopping-session approval regression that failed before the fix and a late permission request; two scripted stop/cleanup tests also passed. Linux CI pending; live-provider cancellation not run.
