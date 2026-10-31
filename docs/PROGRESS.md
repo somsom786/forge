@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Reproduced approval during a stopping session; stop now serializes with permission decisions, and both late requests and approvals are refused after stopping begins. Nine Windows scripted approval tests passed. Linux CI and live-provider behavior remain pending.
 - Reproduced an approved-call reuse after its deadline with a delayed scripted agent. Reuse now rechecks expiry, policy, execution backend and binding; the regression failed before and passed afterward. Eight Windows approval tests, TypeScript checking, and one real Claude Code test against a scripted local server passed. Linux CI and live-provider compatibility remain pending.
 - Approval decisions now require current policy, execution location and expiry metadata, and recompute the binding from the held original request before authorizing. The expiry is included in the binding, so changing it invalidates the value shown on an existing approval card. Seven Windows approval tests, four scripted ACP tests, and one real Claude Code approval test against a scripted local server passed. Linux CI and live-provider compatibility remain pending.
 - Approval expiry now takes effect at the exact stored deadline in both the decision and background expiry paths. Six Windows approval tests passed, including the deadline boundary and scripted-agent cases; Linux CI pending.

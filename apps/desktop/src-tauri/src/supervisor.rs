@@ -820,8 +820,8 @@ impl Core {
         // Everything below happens under the lifecycle lock: insert, register waiter, change state, announce.
         let _life = lock(&h.life);
         // After the turn has ended nothing may still be granted (a late callback from a lingering agent process).
-        if h.completed.load(Ordering::SeqCst) {
-            return reply("deny", Some("the turn has ended; FORGE does not grant anything after it"));
+        if h.completed.load(Ordering::SeqCst) || h.stopping.load(Ordering::SeqCst) {
+            return reply("deny", Some("the session is stopping or the turn has ended; FORGE does not grant further actions"));
         }
         let key = request_key(&req.tool_use_id, &req.tool, &req.input);
 
@@ -1130,6 +1130,9 @@ impl Core {
             .ok_or_else(|| ForgeError::InvalidState("the agent session for this request has ended".into()))?;
         let _life = lock(&handle.life);
         let existing = self.store.get_approval(approval_id)?; // re-read under the lock
+        if approved && (handle.stopping.load(Ordering::SeqCst) || handle.completed.load(Ordering::SeqCst)) {
+            return Err(ForgeError::InvalidState("the session is stopping or has ended; no further approval can be granted".into()));
+        }
         match (expected_binding, existing.binding_sha256.as_deref()) {
             (Some(expected), stored) if stored != Some(expected) => {
                 return Err(ForgeError::InvalidState("this request is not the one you were shown; reload and decide again".into()));
@@ -1187,8 +1190,12 @@ impl Core {
     /// Ask the agent to stop; terminate its process tree if it does not exit promptly.
     pub fn stop_mission(self: &Arc<Self>, mission_id: &str) -> Result<()> {
         let h = self.handle_for_mission(mission_id).ok_or_else(|| ForgeError::InvalidState("this mission has no running session".into()))?;
-        h.stopping.store(true, Ordering::SeqCst);
-        h.send(json!({"t": "cancel"}));
+        {
+            // Serialize stopping with permission decisions: once stop is recorded, no later decision can grant a call.
+            let _life = lock(&h.life);
+            h.stopping.store(true, Ordering::SeqCst);
+            h.send(json!({"t": "cancel"}));
+        }
         self.store.audit("user", "mission.stop", Some(mission_id), &json!({}));
         let core = self.clone();
         let h2 = h.clone();

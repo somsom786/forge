@@ -70,6 +70,26 @@ fn an_undecided_request_expires_and_the_agent_is_told_it_was_denied() {
     assert!(f.core.store.audit_count("approval.expired").unwrap() >= 1);
 }
 
+#[test]
+fn a_stopping_session_cannot_approve_a_waiting_request() {
+    let f = fixture();
+    let m = new_mission(&f, "add a scripted note", PermissionProfile::Default);
+    f.core.start_mission(&m.id, None).unwrap();
+    let a = first_pending(&f, &m);
+    let handle = f.core.reg().sessions.get(&a.session_id).cloned().unwrap();
+    handle.stopping.store(true, Ordering::SeqCst);
+    f.core.on_permission(&handle, PermissionRequest {
+        request_id: "late-request".into(), tool: "Write".into(),
+        input: json!({"file_path": handle.worktree.join("AFTER_STOP.md").to_string_lossy(), "content": "fixture"}),
+        tool_use_id: "late-tool".into(), source: "test".into(), blocked_path: None, reason: None,
+    });
+    assert_eq!(pending(&f, &m.id).len(), 1, "a late request must not create another approval");
+    let result = f.core.decide_approval_checked(&a.id, true, None, a.binding_sha256.as_deref());
+    assert!(result.is_err(), "a stopping session must not grant new approvals");
+    assert_eq!(f.core.store.get_approval(&a.id).unwrap().state, "pending");
+    f.core.stop_mission(&m.id).unwrap();
+}
+
 /// Time-of-check/time-of-use: the request was safe when asked; while the human was reading it, the target was replaced by a
 /// link to a file outside the worktree. Approving must not let the write through.
 #[cfg(unix)]
