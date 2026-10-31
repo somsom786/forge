@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Provider discovery now concurrently reads bounded CLI output and applies its deadline even if a descendant keeps an output pipe open. Seven targeted provider tests passed on Windows, including large output and an inherited-pipe fixture. This does not yet contain or terminate all descendants of provider-detection commands.
 - Hardened Linux sandbox Git metadata mount selection: linked-worktree pointers must resolve to an existing Git worktree with a matching backlink and common-directory pointer. A harmless forged-pointer fixture reproduced the unsafe mount selection before the fix; seven portable execution tests passed on Windows afterward, including a real linked-worktree fixture. Linux sandbox enforcement tests are included in CI and remain pending for this revision. Malformed or unsupported linked metadata is refused rather than guessed.
 
 ## Continuation, 2026-10-28

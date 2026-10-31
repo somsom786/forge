@@ -7,6 +7,8 @@ the commit log, not here.
 
 ## Release blockers
 
+Provider detection has a bounded response deadline and output limit, but its short-lived CLI probes do not yet contain their descendants. A descendant retaining a pipe can leave a reader thread waiting until the descendant exits; repeated malicious probes could accumulate threads. Treat the installed provider executable as trusted until process-tree containment is added.
+
 | # | Risk | Kind | Where | What would close it |
 |---|---|---|---|---|
 | R1 | Commercial use of the Claude integration still needs an owner/vendor terms review | Unresolved decision | `docs/LICENSING_DECISION.md` | SDK code is now excluded from the bundle and loaded from a separately installed, pinned package. This closes the bundled-code issue but is not permission for every commercial integration |

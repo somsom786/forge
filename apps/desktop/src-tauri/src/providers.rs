@@ -63,7 +63,18 @@ pub fn locate_claude_sdk(engine: Option<&Path>) -> std::result::Result<PathBuf, 
 
 fn run_timeout(program: &Path, args: &[&str], secs: u64) -> Option<(bool, String)> {
     let mut cmd = Command::new(program);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(args);
+    run_timeout_command(cmd, Duration::from_secs(secs))
+}
+
+fn run_timeout_command(mut cmd: Command, timeout: Duration) -> Option<(bool, String)> {
+    use std::io::Read;
+    use std::sync::mpsc;
+
+    // Drain both pipes concurrently: waiting for the process first deadlocks when a pipe fills.
+    // Reject oversized output rather than retaining unbounded data.
+    const OUTPUT_LIMIT: u64 = 1024 * 1024;
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -71,22 +82,39 @@ fn run_timeout(program: &Path, args: &[&str], secs: u64) -> Option<(bool, String
     }
     let mut child = cmd.spawn().ok()?;
     let t0 = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(st)) => {
-                let out = child.wait_with_output().ok()?;
-                let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-                text.push_str(&String::from_utf8_lossy(&out.stderr));
-                return Some((st.success(), text));
+    let (tx, rx) = mpsc::channel();
+    for (index, mut pipe) in [(0, Box::new(child.stdout.take()?) as Box<dyn Read + Send>), (1, Box::new(child.stderr.take()?) as Box<dyn Read + Send>)] {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let result = (&mut pipe).take(OUTPUT_LIMIT + 1).read_to_end(&mut output);
+            if result.is_ok() && output.len() as u64 <= OUTPUT_LIMIT {
+                let _ = tx.send((index, output));
             }
-            Ok(None) if t0.elapsed() > Duration::from_secs(secs) => {
-                let _ = child.kill();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(30)),
-            Err(_) => return None,
-        }
+        });
     }
+    drop(tx);
+    let mut status = None;
+    let mut outputs = [None, None];
+    loop {
+        while let Ok((index, output)) = rx.try_recv() { outputs[index] = Some(output); }
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(st) => status = st,
+                Err(_) => break,
+            }
+        }
+        if let (Some(st), [Some(stdout), Some(stderr)]) = (status, &outputs) {
+            let mut text = String::from_utf8_lossy(stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(stderr));
+            return Some((st.success(), text));
+        }
+        if t0.elapsed() >= timeout { break; }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
 }
 
 fn unsupported(note: &str) -> Value {
@@ -307,6 +335,39 @@ pub fn detect_claude_local(claude: Option<&PathBuf>, ollama_url: &str) -> Provid
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The test binary acts as a deterministic local CLI; ordinary suite runs do nothing here.
+    #[test]
+    fn provider_probe_fixture() {
+        use std::io::Write;
+        match std::env::var("FORGE_PROBE_FIXTURE").as_deref() {
+            Ok("large") => { std::io::stdout().write_all(&vec![b'x'; 200_000]).unwrap(); }
+            Ok("hold") => {
+                let mut cmd = Command::new(std::env::current_exe().unwrap());
+                cmd.args(["--exact", "providers::tests::provider_probe_fixture", "--nocapture"]).env("FORGE_PROBE_FIXTURE", "sleep");
+                #[cfg(windows)]
+                { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0800_0000); }
+                cmd.spawn().unwrap();
+            }
+            Ok("sleep") => std::thread::sleep(Duration::from_secs(3)),
+            _ => {}
+        }
+    }
+
+    fn fixture_command(mode: &str) -> Command {
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", "providers::tests::provider_probe_fixture", "--nocapture"]).env("FORGE_PROBE_FIXTURE", mode);
+        cmd
+    }
+
+    #[test]
+    fn provider_probe_drains_large_output_and_respects_inherited_pipe_timeout() {
+        let (ok, output) = run_timeout_command(fixture_command("large"), Duration::from_secs(10)).unwrap();
+        assert!(ok && output.contains(&"x".repeat(200_000)));
+        let start = Instant::now();
+        assert!(run_timeout_command(fixture_command("hold"), Duration::from_millis(400)).is_none());
+        assert!(start.elapsed() < Duration::from_secs(2), "an inherited pipe must not defeat the deadline");
+    }
 
     #[test]
     fn separately_installed_sdk_metadata_is_version_pinned() {
