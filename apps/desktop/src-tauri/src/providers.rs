@@ -323,8 +323,25 @@ fn http_get_loopback(url: &str, path: &str, secs: u64) -> Option<String> {
         }
     }
     let raw = String::from_utf8(bytes).ok()?;
+    http_response_body(&raw).map(str::to_string)
+}
+
+fn http_response_body(raw: &str) -> Option<&str> {
     let (head, body) = raw.split_once("\r\n\r\n")?;
-    head.starts_with("HTTP/1.0 200").then(|| body.to_string()).or_else(|| head.starts_with("HTTP/1.1 200").then(|| body.to_string()))
+    let mut lines = head.lines();
+    let mut status = lines.next()?.split_whitespace();
+    if !matches!(status.next(), Some("HTTP/1.0" | "HTTP/1.1")) || status.next() != Some("200") { return None; }
+    let mut length = None;
+    for line in lines {
+        let (name, value) = line.split_once(':')?;
+        if name.eq_ignore_ascii_case("content-length") {
+            let parsed: usize = value.trim().parse().ok()?;
+            if length.is_some_and(|previous| previous != parsed) { return None; }
+            length = Some(parsed);
+        }
+    }
+    if length.is_some_and(|expected| expected != body.len()) { return None; }
+    Some(body)
 }
 
 pub fn list_ollama_models(url: &str) -> Option<Vec<String>> {
@@ -470,6 +487,17 @@ mod tests {
     fn non_loopback_urls_are_never_contacted() {
         assert!(http_get_loopback("http://example.com", "/", 1).is_none());
         assert!(list_ollama_models("http://10.0.0.5:11434").is_none());
+    }
+
+    #[test]
+    fn incomplete_or_invalid_http_responses_are_not_model_lists() {
+        assert_eq!(http_response_body("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"), Some("{}"));
+        for response in [
+            "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{}",
+            "HTTP/1.1 2000 Wrong\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n{}",
+        ] { assert!(http_response_body(response).is_none(), "{response:?}"); }
     }
 
     #[test]

@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — Windows provider suite, 10 tests, including malformed status and conflicting or incomplete content lengths. Linux CI pending.
 2026-10-31: PASS — Windows provider suite, 9 passed, including `localhost` discovery against an IPv4-only loopback listener. No GPU or provider account used; Linux CI pending.
 2026-10-31: PASS — GitHub security workflow `41240385733` at `591a308` emitted the new warning for a nonzero informational OSV scan. FINDINGS — the scan still reported the two RustSec advisories described below; this is not a clean result. Full CI is in progress.
 2026-10-31: PASS — full CI run `41221116227` at `dd57335`: Linux Rust 474 passed, 6 ignored; Windows Rust 457 passed, 6 ignored; Windows scripts and unsigned installer build, 180-second launch, uninstall and artifact upload passed. Linux included multiline and incomplete private-key redaction fixtures. The separate informational OSV scan reported findings as recorded below.
