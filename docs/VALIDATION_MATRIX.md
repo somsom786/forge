@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — Windows verification tests, 8 passed, including timeout and cancellation; Windows suspended-process Job Object test, 1 passed. Hidden, below-normal-priority subprocesses. Linux and Windows CI for this change pending.
 2026-10-31: PASS — Windows execution tests, 7 passed, including capability-reporting assertions. This verifies reporting only; it does not validate Linux enforcement.
 2026-10-31: PASS — Windows provider tests, 8 passed, including oversized and slow-trickle loopback server fixtures. Linux CI pending. No GPU or provider account used.
 2026-10-31: PASS — Windows targeted provider tests, 7 passed, including 200 KB of CLI output and a descendant retaining stdout beyond the deadline. Hidden, below-normal-priority test process; no provider account or GPU used. Linux CI for this change: pending.

@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Windows verification checks now start suspended and only execute after Job Object assignment; setup failures abort the check. Eight Windows verification tests and the Windows suspended-process containment test passed. This improves process cleanup, not filesystem isolation.
 - Corrected Linux backend capability reporting: selected system, toolchain, Git or workspace mounts can overlap sensitive data, so filesystem and credential isolation are partial rather than universally enforced. This is honest reporting, not a new isolation mechanism.
 - Local model discovery now bounds response size and total read time, and only connects to resolved loopback addresses. Windows provider tests: 8 passed, including oversized and slow-trickle fixtures; Linux CI pending.
 - Provider discovery now concurrently reads bounded CLI output and applies its deadline even if a descendant keeps an output pipe open. Seven targeted provider tests passed on Windows, including large output and an inherited-pipe fixture. This does not yet contain or terminate all descendants of provider-detection commands.

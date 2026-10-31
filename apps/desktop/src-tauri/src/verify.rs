@@ -128,13 +128,34 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
         .env("FORCE_COLOR", "0")
         .env("GIT_TERMINAL_PROMPT", "0");
     proc::isolate(&mut cmd);
+    // Assign the check to its Job Object before it can create a child process.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000 | proc::CREATE_SUSPENDED);
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return fail(format!("could not start the command: {e}")),
     };
     let pid = child.id();
-    // Best effort for checks: the timeout path also kills the tree explicitly. (A descendant created in the instant
-    // between spawn and job assignment could escape the job; see SECURITY.md.)
+    #[cfg(windows)]
+    let _containment = match proc::contain(&child) {
+        Ok(job) => job,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return fail(format!("could not contain the check: {e}"));
+        }
+    };
+    #[cfg(windows)]
+    if let Err(e) = proc::resume_suspended(&child) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return fail(format!("could not start the contained check: {e}"));
+    }
+    // Unix process-group containment is best effort for an already-exited short-lived command.
+    #[cfg(not(windows))]
     let _containment = proc::contain(&child).ok();
 
     let log = log_path.and_then(|p| {

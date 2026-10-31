@@ -237,8 +237,9 @@ Policy revision bumped to `policy-2026-10-23.2`, then `policy-2026-10-24.1` (Glo
    modified `npm test` script) with the user's privileges. Checks only run on an explicit user action and their commands
    come from the user, but the code they invoke is not sandboxed. A check that dirties the worktree is flagged and its
    result is not treated as fresh.
-5. Containment of *checks* is best-effort (a descendant created between spawn and job assignment could escape); the
-   engine's containment is race-free because the engine does nothing until it receives `start`.
+5. On Windows, checks start suspended and are resumed only after Job Object assignment; assignment or resume failure stops
+   the check. Job Objects provide process cleanup, not filesystem or credential isolation. Unix process-group containment
+   remains best-effort and descendants can escape by creating a new session.
 6. Repo-committed `CLAUDE.md`, rules and skills are still loaded as project instructions. They are text the model reads,
    so a hostile repository can try to steer the agent (prompt injection); policy and approvals still apply to what it
    then tries to do. The mission guidance tells the agent to treat file contents as data.
