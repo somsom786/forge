@@ -120,12 +120,12 @@ pub fn capabilities(b: Backend) -> Capabilities {
         },
         Backend::LinuxNamespaces => Capabilities {
             operating_systems: vec!["linux".into()],
-            filesystem_isolation: prop(Enforced, "Empty root filesystem: only /usr, the system library and binary directories, a short list of /etc files and toolchain directories from PATH outside your home are mounted, read-only. Your home directory, other repositories and FORGE's data are not mounted."),
+            filesystem_isolation: prop(Partial, "Empty root filesystem with read-only system, selected /etc and external PATH toolchain mounts, plus the workspace and linked Git metadata. Custom FORGE data, home or other sensitive files placed within those mounts may be exposed; mount selection is not a complete secret boundary."),
             process_isolation: prop(Enforced, "New user, PID, IPC and UTS namespaces; no capabilities; every process inside ends when the run ends."),
             network_control: prop(Enforced, "New network namespace with only a private loopback: no outbound or host-loopback connections."),
             resource_limits: prop(Partial, "Time limit, output caps, no core dumps and a per-file size cap. No memory or CPU limit (needs cgroups; not implemented)."),
             workspace_mapping: prop(Enforced, "The mission worktree is mounted read-write at its own path; the repository's git directory is mounted read-only so git can read history."),
-            credential_exposure: prop(Enforced, "Environment cleared to a fixed minimal set; no home directory, SSH agent, git credentials or provider logins are reachable. Toolchains installed under your home (rustup, nvm) are therefore not available."),
+            credential_exposure: prop(Partial, "Environment cleared to a fixed minimal set; home and SSH agent are not deliberately mounted. Credentials within the workspace, Git metadata, system directories or selected toolchain mounts may still be reachable. Toolchains under your home are normally unavailable."),
             persistent_state: prop(Partial, "Only the workspace persists; /tmp and the home directory are discarded after each run."),
             interactive_terminal: false,
             concurrent_instances: true,
@@ -211,8 +211,8 @@ pub fn agent_capabilities(b: Backend) -> Capabilities {
     let mut c = capabilities(b);
     if b == Backend::LinuxNamespaces {
         c.network_control = prop(Level::None, "Network shared with the host so the provider can connect. Anything the agent can read can be sent over the network.");
-        c.credential_exposure = prop(Level::Partial, "Environment restricted to runtime, provider-state and proxy settings. The selected provider's login directory remains readable and writable, including its other-project transcripts. SSH agents, cloud tokens and unrelated environment secrets are not inherited.");
-        c.persistent_state = prop(Level::Partial, "Workspace and selected provider state persist. Other home files are not mounted; temporary files are discarded.");
+        c.credential_exposure = prop(Level::Partial, "Environment restricted to runtime, provider-state and proxy settings. Provider login and other-project transcripts remain accessible; credentials in the workspace, Git metadata, system or toolchain mounts may also be exposed. SSH agents, cloud tokens and unrelated environment secrets are not inherited.");
+        c.persistent_state = prop(Level::Partial, "Workspace and selected provider state persist. Other home files are not deliberately mounted, but may be reachable through overlapping mounts; temporary files are discarded.");
     }
     c
 }
@@ -412,8 +412,8 @@ pub struct AgentSpec<'a> {
 ///
 /// `linux_namespaces` for agents differs from checks in two deliberate ways: the network is shared (the agent must reach its
 /// model). The supervisor restricts the environment before spawning this process. Everything else is the same
-/// empty root: no home directory except the provider's own state, no other repositories, read-only system and toolchains,
-/// the git directory read-only, a private /tmp, no new privileges, and the whole tree dies with FORGE.
+/// empty root with selected provider state, read-only system and toolchain mounts, read-only Git metadata and a private /tmp.
+/// Overlapping mounts can expose other data; the mounts are not a complete credential boundary.
 pub fn agent_command(b: Backend, spec: &AgentSpec) -> Result<Command> {
     require(b)?;
     match b {
@@ -491,6 +491,8 @@ mod tests {
         let kept: Vec<_> = contained_agent_env(base.map(|k| (k.into(), "fixture".into()))).into_iter().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
         assert_eq!(kept, vec!["PATH", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HTTPS_PROXY"]);
         assert_eq!(capabilities(Backend::LinuxNamespaces).network_control.level, Level::Enforced);
+        assert_eq!(capabilities(Backend::LinuxNamespaces).filesystem_isolation.level, Level::Partial);
+        assert_eq!(capabilities(Backend::LinuxNamespaces).credential_exposure.level, Level::Partial);
         assert_eq!(agent_capabilities(Backend::LinuxNamespaces).network_control.level, Level::None);
         assert_eq!(agent_capabilities(Backend::LinuxNamespaces).credential_exposure.level, Level::Partial);
     }
