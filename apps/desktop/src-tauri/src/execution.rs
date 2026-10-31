@@ -279,13 +279,26 @@ const SYSTEM_PREFIXES: &[&str] = &["/usr", "/bin", "/sbin", "/lib", "/lib64", "/
 /// /opt/node22). Directories under the home are left out on purpose: mounting them would expose the home directory.
 pub fn toolchain_roots(path_var: &str, home: Option<&Path>) -> Vec<PathBuf> {
     let system: Vec<&Path> = SYSTEM_PREFIXES.iter().map(Path::new).collect();
-    toolchain_roots_excluding(path_var, home, &system)
+    let forge_home = crate::forge_home();
+    // A not-yet-created default under HOME is already covered by the home exclusion. Explicit overrides and
+    // existing or externally located defaults must resolve before any optional mount is admitted.
+    let covered_missing_default = std::env::var_os("FORGE_HOME").is_none() && !forge_home.exists() && home.is_some_and(|h| forge_home.starts_with(h));
+    let protected = if covered_missing_default { vec![] } else { vec![forge_home.as_path()] };
+    toolchain_roots_excluding_protected(path_var, home, &system, &protected)
 }
 
+#[cfg(test)]
 fn toolchain_roots_excluding(path_var: &str, home: Option<&Path>, system: &[&Path]) -> Vec<PathBuf> {
+    toolchain_roots_excluding_protected(path_var, home, system, &[])
+}
+
+fn toolchain_roots_excluding_protected(path_var: &str, home: Option<&Path>, system: &[&Path], protected: &[&Path]) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = vec![];
     // Without a verifiable home, we cannot prove that a path alias does not expose it.
     let Some(resolved_home) = home.and_then(|h| std::fs::canonicalize(h).ok()) else { return out };
+    // A custom FORGE_HOME can live outside the user's home, including beneath an otherwise valid PATH root.
+    // If it cannot be resolved, do not guess which optional toolchain roots are safe.
+    let Ok(protected): std::result::Result<Vec<_>, _> = protected.iter().map(std::fs::canonicalize).collect() else { return out };
     for d in std::env::split_paths(path_var) {
         if !d.is_absolute() || !d.is_dir() {
             continue;
@@ -302,6 +315,7 @@ fn toolchain_roots_excluding(path_var: &str, home: Option<&Path>, system: &[&Pat
         // through an alias outside it, or bind an ancestor that contains the home. Fail closed if resolution fails.
         let Ok(resolved_root) = std::fs::canonicalize(&root) else { continue };
         if resolved_root.components().count() < 3 || resolved_root.starts_with(&resolved_home) || resolved_home.starts_with(&resolved_root)
+            || protected.iter().any(|p| resolved_root.starts_with(p) || p.starts_with(&resolved_root))
             || system.iter().any(|p| resolved_root.starts_with(p)) {
             continue;
         }
@@ -525,6 +539,22 @@ mod tests {
         let roots = toolchain_roots_excluding(&path.to_string_lossy(), Some(&home), &[Path::new("/usr")]);
         assert_eq!(roots, vec![d.path().join("opt/node22"), d.path().join("opt/tools")]);
         assert!(toolchain_roots_excluding(&path.to_string_lossy(), None, &[]).is_empty(), "unknown home cannot be protected from aliases");
+    }
+
+    #[test]
+    fn toolchain_roots_do_not_expose_custom_forge_data() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let bin = d.path().join("opt/tool/bin");
+        let private = d.path().join("opt/tool/private-data");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&private).unwrap();
+        let path = std::env::join_paths([&bin]).unwrap();
+        assert!(toolchain_roots_excluding_protected(&path.to_string_lossy(), Some(&home), &[], &[&private]).is_empty());
+        assert!(toolchain_roots_excluding_protected(&path.to_string_lossy(), Some(&home), &[], &[&d.path().join("opt")]).is_empty());
+        assert!(toolchain_roots_excluding_protected(&path.to_string_lossy(), Some(&home), &[], &[&d.path().join("missing")]).is_empty());
+        assert!(!toolchain_roots_excluding_protected(&path.to_string_lossy(), Some(&home), &[], &[]).is_empty());
     }
 
     #[cfg(unix)]

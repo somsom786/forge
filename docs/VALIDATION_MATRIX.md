@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — Windows portable execution tests, 8 passed, including custom FORGE-data overlap and unresolved-path refusal for optional toolchain roots. Linux sandbox enforcement for this change: NOT RUN locally; CI required.
 2026-10-31: PASS — Linux and Windows CI full test jobs at `4c7d5c1`: Linux Rust 469 passed, 6 ignored; Windows Rust 453 passed, 6 ignored. Engine 95 passed and UI 128 passed on each OS; simulated Linux browser E2E 6 passed. The Linux suite included real scanner adapter and sandbox tests and the inherited-pipe and `/dev/full` regressions. PASS — unsigned Windows installer build, disposable install, 180-second launch and uninstall in CI at the same revision (run `41218384232`). PASS — Windows disposable Obsidian vault fixture suite, 3 tests (links, read-only notes, renames/deletions); real Obsidian application integration was not run.
 2026-10-31: PASS — both workflow YAML files parsed locally after action updates. GitHub-hosted Linux, Windows and artifact-upload execution: PENDING.
 2026-10-31: PASS — Windows evidence parser tests, 16 passed, including malformed and concatenated reports and recorded real scanner fixtures. Live scanner invocation: NOT RUN for this change; Linux CI pending.
