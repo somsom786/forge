@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: NOT RUN — Linux `/dev/full` fixture for failed verification log/report writes; added to CI. The fixture uses the standard discard-and-fail device, not a user file.
 2026-10-31: PASS — Windows provider tests, 9 passed, including a real timed-out descendant and Job Object cleanup. Linux CI pending. No provider accounts or GPU used.
 2026-10-31: PASS — Windows verification suite, 12 tests, including refusal to execute when its requested log cannot be created. Linux CI pending.
 2026-10-31: PASS — Windows verification suite, 11 tests after incomplete-output handling. The inherited-pipe fixture did not reproduce on Windows and is restricted to Unix; Linux CI is required for that regression.

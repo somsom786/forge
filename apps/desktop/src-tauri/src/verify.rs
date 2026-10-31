@@ -405,6 +405,20 @@ mod tests {
         assert!(!d.path().join("ran").exists(), "the check must not run without its audit log");
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_log_or_report_write_is_not_a_successful_check() {
+        let d = tempfile::tempdir().unwrap();
+        let full = Path::new("/dev/full");
+        let run = |log, report| run_check_capture(Backend::TrustedLocal, "printf '[]\\n'", d.path(), Duration::from_secs(10), log, report, Arc::new(AtomicBool::new(false)));
+        let log = run(Some(full), None);
+        assert_eq!(log.state, RunState::Error);
+        assert!(log.output_tail.contains("log could not be written"));
+        let report = run(None, Some(full));
+        assert_eq!(report.state, RunState::Error);
+        assert!(report.output_tail.contains("report could not be written"));
+    }
+
     #[test]
     fn report_capture_rejects_truncation_and_freezes_after_finish() {
         let d = tempfile::tempdir().unwrap();
