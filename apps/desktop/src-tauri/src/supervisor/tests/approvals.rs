@@ -21,6 +21,8 @@ fn an_approval_is_bound_to_its_exact_context_and_a_mismatched_binding_is_refused
     // The binding is a digest of the context: changing any element changes it.
     let wt = PathBuf::from(f.core.store.get_mission(&m.id).unwrap().worktree_path.unwrap());
     let input = json!({"file_path": wt.join("FORGE_TEST.md").to_string_lossy(), "content": "x"});
+    let changed_content = json!({"file_path": wt.join("FORGE_TEST.md").to_string_lossy(), "content": "different"});
+    let changed_path = json!({"file_path": wt.join("OTHER.md").to_string_lossy(), "content": "x"});
     let b1 = approval_binding(&m.id, &a.session_id, "fake", "Write", &input, &wt, "default", AGENT_EXECUTES_ON);
     for other in [
         approval_binding(&m.id, &a.session_id, "fake", "Edit", &input, &wt, "default", AGENT_EXECUTES_ON),
@@ -28,6 +30,9 @@ fn an_approval_is_bound_to_its_exact_context_and_a_mismatched_binding_is_refused
         approval_binding(&m.id, &a.session_id, "fake", "Write", &input, &wt, "accept_edits", AGENT_EXECUTES_ON),
         approval_binding(&m.id, &a.session_id, "fake", "Write", &input, &wt, "default", "linux_namespaces"),
         approval_binding(&m.id, "other-session", "fake", "Write", &input, &wt, "default", AGENT_EXECUTES_ON),
+        approval_binding("other-mission", &a.session_id, "fake", "Write", &input, &wt, "default", AGENT_EXECUTES_ON),
+        approval_binding(&m.id, &a.session_id, "fake", "Write", &changed_content, &wt, "default", AGENT_EXECUTES_ON),
+        approval_binding(&m.id, &a.session_id, "fake", "Write", &changed_path, &wt, "default", AGENT_EXECUTES_ON),
     ] {
         assert_ne!(b1, other);
     }
