@@ -269,21 +269,38 @@ fn split_host_port(url: &str) -> Option<(String, u16)> {
 fn http_get_loopback(url: &str, path: &str, secs: u64) -> Option<String> {
     use std::io::{Read, Write};
     use std::net::{TcpStream, ToSocketAddrs};
+    const MAX_RESPONSE: usize = 1024 * 1024;
     if !is_loopback_http(url) {
         return None;
     }
+    let deadline = Instant::now().checked_add(Duration::from_secs(secs))?;
     let (host, port) = split_host_port(url)?;
-    let addr = (host.as_str(), port).to_socket_addrs().ok()?.next()?;
-    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(secs)).ok()?;
-    s.set_read_timeout(Some(Duration::from_secs(secs))).ok()?;
-    s.set_write_timeout(Some(Duration::from_secs(secs))).ok()?;
+    // Even a configured `localhost` resolver must not redirect local-model requests off-box.
+    let addr = (host.as_str(), port).to_socket_addrs().ok()?.find(|a| a.ip().is_loopback())?;
+    let remaining = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())?;
+    let mut s = TcpStream::connect_timeout(&addr, remaining).ok()?;
+    let remaining = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())?;
+    s.set_write_timeout(Some(remaining)).ok()?;
     let req = format!("GET {path} HTTP/1.0\r\nHost: {host}:{port}\r\nAccept: application/json\r\n\r\n");
     s.write_all(req.as_bytes()).ok()?;
-    let mut raw = String::new();
-    // Some peers close with a reset (notably on Windows) after sending a complete response; keep what arrived.
-    if s.read_to_string(&mut raw).is_err() && raw.is_empty() {
-        return None;
+    let mut bytes = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let remaining = deadline.checked_duration_since(Instant::now())?;
+        if remaining.is_zero() { return None; }
+        s.set_read_timeout(Some(remaining)).ok()?;
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if bytes.len() + n > MAX_RESPONSE { return None; }
+                bytes.extend_from_slice(&buf[..n]);
+            }
+            // Some peers close with a reset after their response, notably on Windows.
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset && !bytes.is_empty() => break,
+            Err(_) => return None,
+        }
     }
+    let raw = String::from_utf8(bytes).ok()?;
     let (head, body) = raw.split_once("\r\n\r\n")?;
     head.starts_with("HTTP/1.0 200").then(|| body.to_string()).or_else(|| head.starts_with("HTTP/1.1 200").then(|| body.to_string()))
 }
@@ -414,6 +431,37 @@ mod tests {
     fn non_loopback_urls_are_never_contacted() {
         assert!(http_get_loopback("http://example.com", "/", 1).is_none());
         assert!(list_ollama_models("http://10.0.0.5:11434").is_none());
+    }
+
+    #[test]
+    fn loopback_discovery_limits_response_size_and_total_time() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 512];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(&vec![b'x'; 1024 * 1024 + 1]);
+        });
+        assert!(http_get_loopback(&format!("http://127.0.0.1:{port}"), "/", 2).is_none());
+        server.join().unwrap();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 512];
+            let _ = stream.read(&mut request);
+            for _ in 0..8 {
+                if stream.write_all(b"x").is_err() { break; }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        let start = Instant::now();
+        assert!(http_get_loopback(&format!("http://127.0.0.1:{port}"), "/", 1).is_none());
+        assert!(start.elapsed() < Duration::from_millis(1500), "a trickle must not extend the deadline");
+        server.join().unwrap();
     }
 
     #[test]
