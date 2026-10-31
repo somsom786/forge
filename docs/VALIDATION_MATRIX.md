@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — full CI `41240385666` at `591a308`: Linux Rust 474 passed and Windows Rust 457 passed, with six ignored on each; engine 95 and UI 128 passed on each OS, plus six simulated Linux browser tests. Windows scripts and unsigned installer build, 180-second launch, uninstall and artifact uploads passed. The separate informational OSV scan reported the advisories below.
 2026-10-31: PASS — Windows provider suite, 10 tests, including prompt rejection of oversized CLI output. Linux CI pending.
 2026-10-31: PASS — Windows provider suite, 10 tests, including malformed status and conflicting or incomplete content lengths. Linux CI pending.
 2026-10-31: PASS — Windows provider suite, 9 passed, including `localhost` discovery against an IPv4-only loopback listener. No GPU or provider account used; Linux CI pending.
