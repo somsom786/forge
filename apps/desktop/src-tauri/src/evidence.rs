@@ -274,8 +274,9 @@ fn playwright(v: &Value) -> Option<Vec<Finding>> {
     fn valid_suite(suite: &Value) -> bool {
         if !suite.is_object() || !optional_array_is_valid(suite, "specs") || !optional_array_is_valid(suite, "suites") { return false; }
         let specs_valid = suite.get("specs").and_then(Value::as_array).into_iter().flatten().all(|spec| {
-            spec.is_object() && optional_array_is_valid(spec, "tests")
-                && spec.get("tests").and_then(Value::as_array).into_iter().flatten().all(Value::is_object)
+            spec.is_object() && spec.get("tests").and_then(Value::as_array).is_some_and(|tests| tests.iter().all(|t| {
+                matches!(t.get("status").and_then(Value::as_str), Some("expected" | "unexpected" | "flaky" | "skipped"))
+            }))
         });
         specs_valid && suite.get("suites").and_then(Value::as_array).into_iter().flatten().all(valid_suite)
     }

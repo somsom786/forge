@@ -1,6 +1,6 @@
 # Validation matrix
 
-2026-10-31: PASS — Linux and Windows CI full test jobs at `4c7d5c1`, including Linux real scanner adapter and sandbox tests, inherited-pipe and `/dev/full` regressions, UI typecheck/unit tests and simulated browser E2E. Installer validation for that revision remains in progress. PASS — Windows disposable Obsidian vault fixture suite, 3 tests (links, read-only notes, renames/deletions); real Obsidian application integration was not run.
+2026-10-31: PASS — Linux and Windows CI full test jobs at `4c7d5c1`: Linux Rust 469 passed, 6 ignored; Windows Rust 453 passed, 6 ignored. Engine 95 passed and UI 128 passed on each OS; simulated Linux browser E2E 6 passed. The Linux suite included real scanner adapter and sandbox tests and the inherited-pipe and `/dev/full` regressions. Installer validation for that revision remains in progress. PASS — Windows disposable Obsidian vault fixture suite, 3 tests (links, read-only notes, renames/deletions); real Obsidian application integration was not run.
 2026-10-31: PASS — both workflow YAML files parsed locally after action updates. GitHub-hosted Linux, Windows and artifact-upload execution: PENDING.
 2026-10-31: PASS — Windows evidence parser tests, 16 passed, including malformed and concatenated reports and recorded real scanner fixtures. Live scanner invocation: NOT RUN for this change; Linux CI pending.
 2026-10-31: NOT RUN — Linux `/dev/full` fixture for failed verification log/report writes; added to CI. The fixture uses the standard discard-and-fail device, not a user file.

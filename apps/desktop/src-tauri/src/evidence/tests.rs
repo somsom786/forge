@@ -85,6 +85,7 @@ fn unreadable_or_contradictory_output_is_never_a_pass() {
         ("playwright", r#"{"stats":{}}"#),
         ("playwright", r#"{"stats":{"unexpected":0},"suites":"corrupt"}"#),
         ("playwright", r#"{"stats":{"unexpected":0},"suites":[{"specs":"corrupt"}]}"#),
+        ("playwright", r#"{"stats":{"unexpected":0},"suites":[{"specs":[{"tests":[{"status":"corrupt"}]}]}]}"#),
         ("playwright", r#"{"stats":{"unexpected":18446744073709551615},"suites":[]}"#),
     ] {
         let (e, st) = evaluate(adapter, RunState::Passed, Some(0), report, "");
