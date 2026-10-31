@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — full CI run `41221116227` at `dd57335`: Linux Rust 474 passed, 6 ignored; Windows Rust 457 passed, 6 ignored; Windows scripts and unsigned installer build, 180-second launch, uninstall and artifact upload passed. Linux included multiline and incomplete private-key redaction fixtures. The separate informational OSV scan reported findings as recorded below.
 2026-10-31: FINDINGS — informational OSV-Scanner job in run `41221116223` exited 1 with RustSec advisories for `glib 0.18.5` (unsound iterator) and unmaintained `proc-macro-error 1.0.4`. The workflow marks the job successful because it is informational; do not interpret that status as a clean scan. Windows `cargo tree` did not select these packages; offline Linux-target dependency resolution was blocked by a missing cached crate. Lockfile reverse edges show the GTK/Tauri dependency stack; affected-code reachability remains unverified.
 2026-10-31: PASS — Windows offline `npx --no-install playwright --version` found the locally installed Playwright 1.56.1. This checks executable discovery only, not a browser test or a missing-package network attempt.
 2026-10-31: PASS — Windows verification suite, 14 passed, including a harmless multiline private-key fixture split across reads and an actual check command. Linux CI pending; redaction is still best-effort.
