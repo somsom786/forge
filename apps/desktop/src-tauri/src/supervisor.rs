@@ -226,12 +226,12 @@ const MAX_ENGINE_LINE: usize = 16 * 1024 * 1024;
 pub(crate) const APPROVAL_TTL_SECS: u64 = 30 * 60;
 
 /// What a human approves: one digest over everything the decision is about. A different mission, session, provider, tool,
-/// input, worktree, permission profile, policy revision or execution place is a different binding.
+/// input, worktree, permission profile, policy revision, execution place or expiry is a different binding.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn approval_binding(mission_id: &str, session_id: &str, provider: &str, tool: &str, input: &Value, worktree: &Path, profile: &str, executes_on: &str) -> String {
+pub(crate) fn approval_binding(mission_id: &str, session_id: &str, provider: &str, tool: &str, input: &Value, worktree: &Path, profile: &str, executes_on: &str, expires_at: &str) -> String {
     let doc = json!({
         "mission": mission_id, "session": session_id, "provider": provider, "tool": tool, "input": input,
-        "worktree": worktree.to_string_lossy(), "profile": profile, "policyRev": policy::REVISION, "executesOn": executes_on,
+        "worktree": worktree.to_string_lossy(), "profile": profile, "policyRev": policy::REVISION, "executesOn": executes_on, "expiresAt": expires_at,
     });
     let mut h = Sha256::new();
     h.update(canonical_json(&doc).as_bytes());
@@ -889,9 +889,9 @@ impl Core {
                     Risk::High => "high",
                 };
                 let provider = self.store.get_mission(&h.mission_id).map(|m| m.provider).unwrap_or_default();
-                let binding = approval_binding(&h.mission_id, &h.session_id, &provider, &req.tool, &req.input, &h.worktree, h.profile.as_str(), &h.executes_on);
                 let ttl = self.approval_ttl.load(Ordering::SeqCst);
                 let expires = (chrono::Utc::now() + chrono::Duration::seconds(ttl as i64)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                let binding = approval_binding(&h.mission_id, &h.session_id, &provider, &req.tool, &req.input, &h.worktree, h.profile.as_str(), &h.executes_on, &expires);
                 let created = self
                     .store
                     .create_approval(&h.mission_id, &h.session_id, &key, &req.tool, &redact::redact_str(&summary), &detail, risk_s, &warnings, "pending", None, None)
@@ -1138,10 +1138,19 @@ impl Core {
             return Err(ForgeError::InvalidState("this request expired before it was decided; the agent was told it was denied".into()));
         }
         if approved && existing.state == "pending" {
+            if existing.binding_sha256.is_none() || existing.policy_rev.as_deref() != Some(policy::REVISION)
+                || existing.executes_on.as_deref() != Some(handle.executes_on.as_str()) || existing.expires_at.is_none() {
+                return Err(ForgeError::InvalidState("the approval context is missing or has changed; deny this request and ask again".into()));
+            }
             let original = lock(&handle.requests).get(approval_id).cloned();
             let Some((tool, input)) = original else {
                 return Err(ForgeError::InvalidState("FORGE no longer holds the original request, so it cannot be approved safely; deny it instead".into()));
             };
+            let provider = self.store.get_mission(&existing.mission_id)?.provider;
+            let binding = approval_binding(&existing.mission_id, &existing.session_id, &provider, &tool, &input, &handle.worktree, handle.profile.as_str(), &handle.executes_on, existing.expires_at.as_deref().unwrap_or_default());
+            if existing.binding_sha256.as_deref() != Some(binding.as_str()) {
+                return Err(ForgeError::InvalidState("the approval no longer matches the original request; deny it and ask again".into()));
+            }
             if let Decision::Deny { reason } = policy::evaluate(&tool, &input, &handle.worktree, handle.profile) {
                 let why = format!("Blocked by FORGE policy at decision time: {reason}");
                 let a = self.store.decide_approval(approval_id, false, "policy", Some(&why))?;

@@ -32,16 +32,18 @@ fn an_approval_is_bound_to_its_exact_context_and_a_mismatched_binding_is_refused
     let input = json!({"file_path": wt.join("FORGE_TEST.md").to_string_lossy(), "content": "x"});
     let changed_content = json!({"file_path": wt.join("FORGE_TEST.md").to_string_lossy(), "content": "different"});
     let changed_path = json!({"file_path": wt.join("OTHER.md").to_string_lossy(), "content": "x"});
-    let b1 = approval_binding(&m.id, &a.session_id, "fake", "Write", &input, &wt, "default", AGENT_EXECUTES_ON);
+    let expiry = a.expires_at.as_deref().unwrap();
+    let b1 = approval_binding(&m.id, &a.session_id, "fake", "Write", &input, &wt, "default", AGENT_EXECUTES_ON, expiry);
     for other in [
-        approval_binding(&m.id, &a.session_id, "fake", "Edit", &input, &wt, "default", AGENT_EXECUTES_ON),
-        approval_binding(&m.id, &a.session_id, "codex", "Write", &input, &wt, "default", AGENT_EXECUTES_ON),
-        approval_binding(&m.id, &a.session_id, "fake", "Write", &input, &wt, "accept_edits", AGENT_EXECUTES_ON),
-        approval_binding(&m.id, &a.session_id, "fake", "Write", &input, &wt, "default", "linux_namespaces"),
-        approval_binding(&m.id, "other-session", "fake", "Write", &input, &wt, "default", AGENT_EXECUTES_ON),
-        approval_binding("other-mission", &a.session_id, "fake", "Write", &input, &wt, "default", AGENT_EXECUTES_ON),
-        approval_binding(&m.id, &a.session_id, "fake", "Write", &changed_content, &wt, "default", AGENT_EXECUTES_ON),
-        approval_binding(&m.id, &a.session_id, "fake", "Write", &changed_path, &wt, "default", AGENT_EXECUTES_ON),
+        approval_binding(&m.id, &a.session_id, "fake", "Edit", &input, &wt, "default", AGENT_EXECUTES_ON, expiry),
+        approval_binding(&m.id, &a.session_id, "codex", "Write", &input, &wt, "default", AGENT_EXECUTES_ON, expiry),
+        approval_binding(&m.id, &a.session_id, "fake", "Write", &input, &wt, "accept_edits", AGENT_EXECUTES_ON, expiry),
+        approval_binding(&m.id, &a.session_id, "fake", "Write", &input, &wt, "default", "linux_namespaces", expiry),
+        approval_binding(&m.id, "other-session", "fake", "Write", &input, &wt, "default", AGENT_EXECUTES_ON, expiry),
+        approval_binding("other-mission", &a.session_id, "fake", "Write", &input, &wt, "default", AGENT_EXECUTES_ON, expiry),
+        approval_binding(&m.id, &a.session_id, "fake", "Write", &changed_content, &wt, "default", AGENT_EXECUTES_ON, expiry),
+        approval_binding(&m.id, &a.session_id, "fake", "Write", &changed_path, &wt, "default", AGENT_EXECUTES_ON, expiry),
+        approval_binding(&m.id, &a.session_id, "fake", "Write", &input, &wt, "default", AGENT_EXECUTES_ON, "2099-01-01T00:00:00.000Z"),
     ] {
         assert_ne!(b1, other);
     }
@@ -162,5 +164,39 @@ fn approving_without_the_cards_binding_is_refused() {
     f.core.start_mission(&m.id, None).unwrap();
     let a = first_pending(&f, &m);
     assert!(f.core.decide_approval_checked(&a.id, true, None, None).unwrap_err().to_string().contains("must name"));
+    f.core.decide_approval_checked(&a.id, false, None, None).unwrap();
+}
+
+#[test]
+fn altered_or_missing_approval_context_cannot_be_approved() {
+    let f = fixture();
+    let m = new_mission(&f, "add a scripted note", PermissionProfile::Default);
+    f.core.start_mission(&m.id, None).unwrap();
+    let a = first_pending(&f, &m);
+    let set = |binding: Option<&str>, policy: Option<&str>, execution: Option<&str>, expiry: Option<&str>| {
+        f.core.store.set_approval_metadata_for_test(&a.id, binding, policy, execution, expiry).unwrap();
+    };
+    let (binding, policy, execution, expiry) = (a.binding_sha256.as_deref(), a.policy_rev.as_deref(), a.executes_on.as_deref(), a.expires_at.as_deref());
+    for (b, p, e, x) in [
+        (None, policy, execution, expiry),
+        (binding, Some("old-policy"), execution, expiry),
+        (binding, policy, Some("other-backend"), expiry),
+        (binding, policy, execution, None),
+        (binding, policy, execution, Some("2099-01-01T00:00:00.000Z")),
+        (Some("forged-binding"), policy, execution, expiry),
+    ] {
+        set(b, p, e, x);
+        assert!(f.core.decide_approval_checked(&a.id, true, None, b).is_err());
+        assert_eq!(f.core.store.get_approval(&a.id).unwrap().state, "pending");
+    }
+    set(binding, policy, execution, expiry);
+    let handle = f.core.reg().sessions.get(&a.session_id).cloned().unwrap();
+    {
+        let mut requests = lock(&handle.requests);
+        let (_, input) = requests.get_mut(&a.id).unwrap();
+        input["content"] = json!("altered after the card was shown");
+    }
+    assert!(f.core.decide_approval_checked(&a.id, true, None, binding).unwrap_err().to_string().contains("original request"));
+    assert_eq!(f.core.store.get_approval(&a.id).unwrap().state, "pending");
     f.core.decide_approval_checked(&a.id, false, None, None).unwrap();
 }

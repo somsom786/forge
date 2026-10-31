@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Approval decisions now require current policy, execution location and expiry metadata, and recompute the binding from the held original request before authorizing. The expiry is included in the binding, so changing it invalidates the value shown on an existing approval card. Seven Windows approval tests, four scripted ACP tests, and one real Claude Code approval test against a scripted local server passed. Linux CI and live-provider compatibility remain pending.
 - Approval expiry now takes effect at the exact stored deadline in both the decision and background expiry paths. Six Windows approval tests passed, including the deadline boundary and scripted-agent cases; Linux CI pending.
 - Provider probes reject oversized output promptly instead of waiting for the full deadline once their readers have failed. Ten Windows provider tests passed, including an oversized local fixture.
 - Local-model HTTP discovery now checks the exact success status and any declared content length, rejecting malformed or incomplete responses. Ten Windows provider tests passed; Linux CI pending.

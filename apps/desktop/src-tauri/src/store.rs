@@ -542,6 +542,12 @@ impl Store {
         self.get_approval(id)
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_approval_metadata_for_test(&self, id: &str, binding: Option<&str>, policy_rev: Option<&str>, executes_on: Option<&str>, expires_at: Option<&str>) -> Result<()> {
+        self.c().execute("UPDATE approval_request SET binding_sha256=?2, policy_rev=?3, executes_on=?4, expires_at=?5 WHERE id=?1", params![id, binding, policy_rev, executes_on, expires_at])?;
+        Ok(())
+    }
+
     pub fn get_approval(&self, id: &str) -> Result<Approval> {
         self.c()
             .query_row(&format!("SELECT {APPROVAL_COLS} FROM approval_request WHERE id=?1"), [id], approval_from)

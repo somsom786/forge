@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — Windows approval suite, 7 tests, including forged or missing binding, changed policy/backend, absent expiry and extended deadline; scripted ACP suite, 4 tests; one real Claude Code approval test against a scripted local server with the real test required. No provider account, paid inference or GPU used. Linux CI and live-provider interoperability for this change: NOT RUN locally.
 2026-10-31: PASS — Windows approval suite, 6 tests, including before, at and after the expiry deadline. Linux CI pending.
 2026-10-31: PASS — full CI `41240385666` at `591a308`: Linux Rust 474 passed and Windows Rust 457 passed, with six ignored on each; engine 95 and UI 128 passed on each OS, plus six simulated Linux browser tests. Windows scripts and unsigned installer build, 180-second launch, uninstall and artifact uploads passed. The separate informational OSV scan reported the advisories below.
 2026-10-31: PASS — Windows provider suite, 10 tests, including prompt rejection of oversized CLI output. Linux CI pending.
