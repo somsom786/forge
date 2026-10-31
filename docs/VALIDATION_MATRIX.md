@@ -2,7 +2,7 @@
 
 ## Continuation, 2026-10-31
 
-Git metadata mount validation: PASS — Windows, 7 portable execution tests, including forged pointers and a legitimate linked worktree. The forged-pointer regression failed before the fix. NOT RUN locally — Linux sandbox enforcement and Unix symlink fixtures; required in CI. This validation does not establish Windows agent isolation.
+Git metadata mount validation: PASS — Windows, 7 portable execution tests, including forged pointers and a legitimate linked worktree. The forged-pointer regression failed before the fix. PASS — Linux and Windows CI at `4aaca0e`, including required Linux sandbox enforcement and Unix fixtures; the unsigned installer and security checks also passed. This validation does not establish Windows agent isolation.
 
 ## Continuation, 2026-10-28
 
