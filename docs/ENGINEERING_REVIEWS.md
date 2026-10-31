@@ -9,6 +9,7 @@
 - Approval decisions previously compared the UI value with stored metadata without recomputing the digest from the held request, and expiry was accepted at the exact deadline. Decisions now check policy and backend metadata, bind the deadline, and recompute from the held request; Windows scripted approval and ACP tests and a real Claude Code test with a local scripted model passed. This remains subject to the trusted-webview and same-user host boundaries.
 - An already approved request could be reused after its deadline. A delayed scripted-agent fixture reproduced this on Windows; reuse now rechecks its deadline, policy, execution context and binding before the existing one-time reuse check. The regression passed after the fix; Linux CI remains pending.
 - A pending request could be approved while its session was stopping. A disposable Windows fixture reproduced the grant; stop now takes the lifecycle lock and both new permission requests and approvals are refused once stopping begins. The regression passed after the fix; Linux CI and live-provider cancellation remain pending.
+- Wall-clock rollback could extend a live approval. The session now enforces a separate monotonic deadline and prunes expired entries; a simulated elapsed-deadline fixture passed on Windows. Actual clock changes and suspend/resume were not performed on the user's machine.
 
 ## Continuation: agent instruction review (2026-10-27)
 

@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — Windows approval suite, 10 tests, including a simulated elapsed monotonic deadline while the stored wall deadline remained in the future; scripted ACP 4 tests and real Claude Code against a local scripted model 1 test. Actual clock change, system suspend/resume, Linux CI and live-provider behavior: NOT RUN. No paid inference or GPU used.
 2026-10-31: PASS — Windows approval suite, 9 tests, including a stopping-session approval regression that failed before the fix and a late permission request; two scripted stop/cleanup tests also passed. Linux CI pending; live-provider cancellation not run.
 2026-10-31: PASS — Windows approval suite, 8 tests, including delayed reuse after expiry (failed before the fix); TypeScript typecheck; real Claude Code approval against a scripted local server, 1 test. No provider account, paid inference or GPU used. Linux CI pending.
 2026-10-31: PASS — Windows approval suite, 7 tests, including forged or missing binding, changed policy/backend, absent expiry and extended deadline; scripted ACP suite, 4 tests; one real Claude Code approval test against a scripted local server with the real test required. No provider account, paid inference or GPU used. Linux CI and live-provider interoperability for this change: NOT RUN locally.

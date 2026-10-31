@@ -31,7 +31,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -139,6 +139,8 @@ struct SessionHandle {
     waiters: Mutex<HashMap<String, Vec<String>>>,
     /// approval id -> the exact (tool, input) the agent asked for, unredacted, so policy can be re-checked at decision time.
     requests: Mutex<HashMap<String, (String, Value)>>,
+    /// In-session deadlines cannot be extended by moving the system wall clock backwards.
+    approval_deadlines: Mutex<HashMap<String, Instant>>,
     /// Approvals whose single permitted reuse (provider prompt after FORGE's hook for the same call) has been spent.
     reused: Mutex<std::collections::HashSet<String>>,
     fatal: Mutex<Option<String>>,
@@ -240,6 +242,10 @@ pub(crate) fn approval_binding(mission_id: &str, session_id: &str, provider: &st
 
 fn approval_expired(expires_at: Option<&str>, now: &str) -> bool {
     expires_at.is_some_and(|expiry| expiry <= now)
+}
+
+fn approval_deadline_elapsed(handle: &SessionHandle, approval_id: &str) -> bool {
+    lock(&handle.approval_deadlines).get(approval_id).is_none_or(|deadline| Instant::now() >= *deadline)
 }
 
 /// Identity of one exact tool call: the provider's id *and* a digest of tool + input.
@@ -627,6 +633,7 @@ impl Core {
             life: Mutex::new(()),
             waiters: Mutex::new(HashMap::new()),
             requests: Mutex::new(HashMap::new()),
+            approval_deadlines: Mutex::new(HashMap::new()),
             reused: Mutex::new(std::collections::HashSet::new()),
             fatal: Mutex::new(None),
             stderr_tail: Mutex::new(String::new()),
@@ -835,6 +842,7 @@ impl Core {
                         if existing.state == "approved" {
                             let valid = existing.expires_at.as_deref().is_some_and(|expiry| {
                                 !approval_expired(Some(expiry), &crate::store::now())
+                                    && !approval_deadline_elapsed(h, &existing.id)
                                     && existing.policy_rev.as_deref() == Some(policy::REVISION)
                                     && existing.executes_on.as_deref() == Some(h.executes_on.as_str())
                                     && self.store.get_mission(&h.mission_id).ok().is_some_and(|m| {
@@ -905,6 +913,9 @@ impl Core {
                 };
                 let provider = self.store.get_mission(&h.mission_id).map(|m| m.provider).unwrap_or_default();
                 let ttl = self.approval_ttl.load(Ordering::SeqCst);
+                let Some(deadline) = Instant::now().checked_add(Duration::from_secs(ttl)) else {
+                    return reply("deny", Some("FORGE could not establish an approval deadline"));
+                };
                 let expires = (chrono::Utc::now() + chrono::Duration::seconds(ttl as i64)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
                 let binding = approval_binding(&h.mission_id, &h.session_id, &provider, &req.tool, &req.input, &h.worktree, h.profile.as_str(), &h.executes_on, &expires);
                 let created = self
@@ -913,6 +924,7 @@ impl Core {
                     .and_then(|a| self.store.bind_approval(&a.id, &binding, policy::REVISION, &h.executes_on, &expires));
                 match created {
                     Ok(a) => {
+                        lock(&h.approval_deadlines).insert(a.id.clone(), deadline);
                         lock(&h.requests).insert(a.id.clone(), (req.tool.clone(), req.input.clone()));
                         lock(&h.waiters).entry(a.id.clone()).or_default().push(req.request_id.clone());
                         self.core_event(h, "approval.requested", json!({"approvalId": a.id, "tool": req.tool, "summary": a.summary, "risk": risk_s}));
@@ -1063,6 +1075,7 @@ impl Core {
         waiters.remove(&approval_id);
         drop(waiters);
         lock(&h.requests).remove(&approval_id);
+        lock(&h.approval_deadlines).remove(&approval_id);
         if let Ok(Some(a)) = self.store.expire_approval(&approval_id, "the agent withdrew this request") {
             self.emit(UiEvent::Approval { approval: a });
         }
@@ -1085,7 +1098,7 @@ impl Core {
         let now = crate::store::now();
         for id in ids {
             let Ok(a) = self.store.get_approval(&id) else { continue };
-            if a.state == "pending" && approval_expired(a.expires_at.as_deref(), &now) {
+            if a.state == "pending" && (approval_expired(a.expires_at.as_deref(), &now) || approval_deadline_elapsed(h, &id)) {
                 if let Ok(Some(a)) = self.store.expire_approval(&id, "no decision before it expired") {
                     self.store.audit("system", "approval.expired", Some(&a.id), &json!({"tool": a.tool}));
                     self.core_event(h, "approval.decided", json!({"approvalId": a.id, "tool": a.tool, "decision": "expired"}));
@@ -1095,6 +1108,9 @@ impl Core {
                 }
             }
         }
+        // Approved entries are needed only until their deadline for the single permitted reuse.
+        let now = Instant::now();
+        lock(&h.approval_deadlines).retain(|_, deadline| *deadline > now);
     }
 
     #[cfg(test)]
@@ -1113,6 +1129,7 @@ impl Core {
     fn release_waiters(&self, handle: &SessionHandle, approval_id: &str, allow: bool, message: Option<String>) {
         let waiting = lock(&handle.waiters).remove(approval_id).unwrap_or_default();
         lock(&handle.requests).remove(approval_id);
+        if !allow { lock(&handle.approval_deadlines).remove(approval_id); }
         for r in waiting {
             handle.send(json!({"t": "permission_result", "requestId": r, "behavior": if allow { "allow" } else { "deny" }, "message": message}));
         }
@@ -1146,7 +1163,7 @@ impl Core {
             }
             _ => {}
         }
-        if existing.state == "pending" && approval_expired(existing.expires_at.as_deref(), &crate::store::now()) {
+        if existing.state == "pending" && (approval_expired(existing.expires_at.as_deref(), &crate::store::now()) || approval_deadline_elapsed(&handle, approval_id)) {
             if let Ok(Some(a)) = self.store.expire_approval(approval_id, "no decision before it expired") {
                 self.store.audit("system", "approval.expired", Some(&a.id), &json!({"tool": a.tool}));
                 self.release_waiters(&handle, approval_id, false, Some("The request expired before anyone decided it".into()));

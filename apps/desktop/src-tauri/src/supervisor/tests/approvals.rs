@@ -18,6 +18,19 @@ fn approval_expires_at_its_deadline_not_after_it() {
 }
 
 #[test]
+fn monotonic_deadline_expires_approval_even_if_wall_deadline_is_in_the_future() {
+    let f = fixture();
+    let m = new_mission(&f, "add a scripted note", PermissionProfile::Default);
+    f.core.start_mission(&m.id, None).unwrap();
+    let a = first_pending(&f, &m);
+    assert!(a.expires_at.as_deref().unwrap() > crate::store::now().as_str());
+    let handle = f.core.reg().sessions.get(&a.session_id).cloned().unwrap();
+    lock(&handle.approval_deadlines).insert(a.id.clone(), Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
+    assert!(f.core.decide_approval_checked(&a.id, true, None, a.binding_sha256.as_deref()).is_err());
+    assert_eq!(f.core.store.get_approval(&a.id).unwrap().state, "expired");
+}
+
+#[test]
 fn an_approval_is_bound_to_its_exact_context_and_a_mismatched_binding_is_refused() {
     let f = fixture();
     let m = new_mission(&f, "add a scripted note", PermissionProfile::Default);
