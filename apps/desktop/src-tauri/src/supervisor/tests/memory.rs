@@ -8,7 +8,7 @@ use crate::supervisor::{NewKnowledgeArgs, ReviewDecision, Seen};
 
 fn approve(f: &Fixture, id: &str, note: Option<&str>, override_reason: Option<&str>) -> Result<Mission> {
     let r = f.core.verification_report(id).unwrap();
-    f.core.review(id, ReviewDecision::Approve, note, override_reason, Some(&Seen { fingerprint: r.fingerprint, contract_sha256: r.contract_sha256 }))
+    f.core.review(id, ReviewDecision::Approve, note, override_reason, Some(&Seen { fingerprint: r.fingerprint, contract_sha256: r.contract_sha256, agent_instructions_reviewed: false }))
 }
 
 fn knowledge(f: &Fixture, title: &str, body: &str) -> crate::knowledge::store::KPage {

@@ -62,6 +62,7 @@ pub struct ReviewDecisionRow {
     pub head_commit: Option<String>,
     pub decided_by: String,
     pub at: String,
+    pub agent_instructions_reviewed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -232,20 +233,25 @@ impl Store {
 
     #[allow(clippy::too_many_arguments)]
     pub fn add_review_decision(&self, mission_id: &str, decision: &str, note: Option<&str>, override_reason: Option<&str>, fingerprint: &str, head_commit: Option<&str>) -> Result<ReviewDecisionRow> {
+        self.add_review_decision_with_instruction_review(mission_id, decision, note, override_reason, fingerprint, head_commit, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn add_review_decision_with_instruction_review(&self, mission_id: &str, decision: &str, note: Option<&str>, override_reason: Option<&str>, fingerprint: &str, head_commit: Option<&str>, agent_instructions_reviewed: bool) -> Result<ReviewDecisionRow> {
         let id = new_id();
         let at = now();
         self.c().execute(
-            "INSERT INTO review_decision(id, mission_id, decision, note, override_reason, fingerprint, head_commit, decided_by, at) VALUES (?1,?2,?3,?4,?5,?6,?7,'user',?8)",
-            params![id, mission_id, decision, note, override_reason, fingerprint, head_commit, at],
+            "INSERT INTO review_decision(id, mission_id, decision, note, override_reason, fingerprint, head_commit, decided_by, at, agent_instructions_reviewed) VALUES (?1,?2,?3,?4,?5,?6,?7,'user',?8,?9)",
+            params![id, mission_id, decision, note, override_reason, fingerprint, head_commit, at, agent_instructions_reviewed],
         )?;
-        Ok(ReviewDecisionRow { id, mission_id: mission_id.into(), decision: decision.into(), note: note.map(Into::into), override_reason: override_reason.map(Into::into), fingerprint: fingerprint.into(), head_commit: head_commit.map(Into::into), decided_by: "user".into(), at })
+        Ok(ReviewDecisionRow { id, mission_id: mission_id.into(), decision: decision.into(), note: note.map(Into::into), override_reason: override_reason.map(Into::into), fingerprint: fingerprint.into(), head_commit: head_commit.map(Into::into), decided_by: "user".into(), at, agent_instructions_reviewed })
     }
 
     pub fn review_decisions(&self, mission_id: &str) -> Result<Vec<ReviewDecisionRow>> {
         let c = self.c();
-        let mut s = c.prepare("SELECT id, mission_id, decision, note, override_reason, fingerprint, head_commit, decided_by, at FROM review_decision WHERE mission_id=?1 ORDER BY at, id")?;
+        let mut s = c.prepare("SELECT id, mission_id, decision, note, override_reason, fingerprint, head_commit, decided_by, at, agent_instructions_reviewed FROM review_decision WHERE mission_id=?1 ORDER BY at, id")?;
         Ok(s.query_map([mission_id], |r| {
-            Ok(ReviewDecisionRow { id: r.get(0)?, mission_id: r.get(1)?, decision: r.get(2)?, note: r.get(3)?, override_reason: r.get(4)?, fingerprint: r.get(5)?, head_commit: r.get(6)?, decided_by: r.get(7)?, at: r.get(8)? })
+            Ok(ReviewDecisionRow { id: r.get(0)?, mission_id: r.get(1)?, decision: r.get(2)?, note: r.get(3)?, override_reason: r.get(4)?, fingerprint: r.get(5)?, head_commit: r.get(6)?, decided_by: r.get(7)?, at: r.get(8)?, agent_instructions_reviewed: r.get(9)? })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?)
     }

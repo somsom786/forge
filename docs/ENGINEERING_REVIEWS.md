@@ -1,5 +1,16 @@
 # FORGE — Engineering Reviews
 
+## Continuation: verification evidence and sandbox mounts (2026-10-31)
+
+- Confirmed from the check runner and regression fixtures: an uncreated, truncated, failed or still-open scanner capture could previously be evaluated as complete; valid JSON prefixes with trailing output and malformed nested fields could be accepted. Capture now fails closed and freezes, and report parsing rejects these shapes. Windows targeted tests and full Linux/Windows CI at `4c7d5c1` passed, including real Gitleaks and OSV-Scanner checks on Linux. Later Playwright schema checks have targeted Windows tests and await full CI.
+- A custom FORGE data directory beneath a PATH toolchain root could be included in an optional read-only mount. Root selection now excludes overlaps and refuses unresolved protected paths; portable root-selection tests passed on Windows and Linux CI. Mandatory system, workspace, provider and Git mounts remain overlap risks.
+- A private network namespace does not prevent access to filesystem Unix sockets present in mounted directories. A harmless host-listener fixture confirmed the connection through real bubblewrap in Linux CI (`41220233133`). Capability reporting states this limitation; this is not complete network isolation.
+- The verification log redacted each line independently, so a standard multiline private-key block could reach the log. Log capture now suppresses those blocks, and complete or unfinished blocks are redacted in output tails. Harmless Windows fixtures passed; secrets with missing beginnings, unusual formats or boundary cases can still evade pattern-based redaction.
+
+## Continuation: agent instruction review (2026-10-27)
+
+Agent-controlled instruction files can steer later sessions. The review report identifies supported paths from the same immutable Git tree as the changes fingerprint; approvals require a separate acknowledgement and older approvals without it return to review before merge. The Proof Pack records the paths, acknowledgement in the review decision, and the exact-diff artifact. The diff is now rendered from the fingerprinted tree rather than a separate worktree snapshot. Renames are treated as deletion plus addition. This remains a path heuristic and uses the existing trusted-webview model; it does not attest that a person read the diff or detect arbitrary provider-specific conventions. Existing OS isolation limitations remain unchanged.
+
 Independent reviews by GPT-6 Astra (High reasoning, via the user's locally authenticated Codex CLI with a read-only,
 ephemeral sandbox and no API billing). Claude remains the implementing engineer: every finding below was evaluated
 independently, reproduced or checked against the code, and only then adopted, adapted or declined.

@@ -122,10 +122,7 @@ change between runs; the dialog says so.
 | Secret-scan findings keep rule, file and line only; `Secret`/`Match` are never stored or shown, even redacted. At most 200 findings are kept per run (counts cover all). Unknown severity is treated as blocking. | `evidence::gitleaks`, `MAX_FINDINGS` | `evidence::tests::gitleaks_findings…`, `findings_are_capped…` |
 | Findings appear in the Verification view and the Proof Pack (JSON + markdown). | `proof.rs` | `tests::evidence::findings_from_a_secret_scan…` |
 
-Honest limits: the parsers were tested against **hand-written fixtures** built from each tool's documented JSON format
-(`apps/desktop/src-tauri/fixtures/evidence/README.md`), not against real tool runs; the suggested command lines (notably
-`gitleaks … --report-path -` and `osv-scanner scan source`) must be confirmed against the tool versions on the user's machine.
-Trivy downloads its vulnerability database, so it fails (tool error) on the `linux_namespaces` backend, which has no network.
+The parsers have hand-written and recorded real-tool fixtures; Linux CI also exercises installed Gitleaks and OSV-Scanner through the check path. Tool versions and configurations can differ on a user's machine. Trivy cannot download its vulnerability database over IP from the `linux_namespaces` backend; mounted filesystem Unix sockets remain a separate host communication path.
 
 ## ACP agents (Milestone 3)
 
@@ -206,14 +203,16 @@ Policy revision bumped to `policy-2026-10-23.2`, then `policy-2026-10-24.1` (Glo
 
 * Checks and experiment runs execute through the project's **execution backend**. `trusted_local` (the default, unchanged
   behaviour) is labelled "Not isolated" everywhere. `linux_namespaces` (bubblewrap) is implemented and adversarially tested on
-  Linux: no host files outside the workspace, no home directory, cleared environment, no network, no surviving processes,
-  read-only git directory. Windows Sandbox and isolated WSL are designed and reported **not implemented**.
+  Linux: a cleared environment, isolated IP networking, a private home and read-only Git metadata. Selected system,
+  toolchain, Git and workspace mounts can expose overlapping host data or Unix sockets; these are not a complete secret
+  or communication boundary. Windows Sandbox and isolated WSL are designed and reported **not implemented**.
 * A selected backend that is unavailable is an error; FORGE never falls back to a less isolated one. Changes are audited, and
   every verification run, experiment run and Proof Pack records the backend it ran on.
 * **Agents** can be contained too (per project, "Agents run: …"; Linux only): the engine, the provider and every command it
   runs, approved or not, start inside `linux_namespaces` with the worktree read-write, the provider's own state directory
-  read-write in place, the runtime read-only, and nothing else of the user's files. The network and FORGE's environment are
-  **not** restricted for agents. Tested with the scripted agent and with the real Claude Code binary (approved `Bash cat` of a
+  read-write in place, the runtime read-only, and nothing else of the user's files. The network remains available to agents;
+  the engine receives an allow-list of runtime, provider and proxy environment variables, and provider state may contain
+  credentials and transcripts. This is not a credential-isolation guarantee. Historically tested with the scripted agent and with the real Claude Code binary (approved `Bash cat` of a
   host file fails; host control prints it). On Windows agents still run on the host (limit 1).
 
 ## Known limits (do not assume these are solved)
@@ -236,8 +235,9 @@ Policy revision bumped to `policy-2026-10-23.2`, then `policy-2026-10-24.1` (Glo
    modified `npm test` script) with the user's privileges. Checks only run on an explicit user action and their commands
    come from the user, but the code they invoke is not sandboxed. A check that dirties the worktree is flagged and its
    result is not treated as fresh.
-5. Containment of *checks* is best-effort (a descendant created between spawn and job assignment could escape); the
-   engine's containment is race-free because the engine does nothing until it receives `start`.
+5. On Windows, checks start suspended and are resumed only after Job Object assignment; assignment or resume failure stops
+   the check. Job Objects provide process cleanup, not filesystem or credential isolation. Unix process-group containment
+   remains best-effort and descendants can escape by creating a new session.
 6. Repo-committed `CLAUDE.md`, rules and skills are still loaded as project instructions. They are text the model reads,
    so a hostile repository can try to steer the agent (prompt injection); policy and approvals still apply to what it
    then tries to do. The mission guidance tells the agent to treat file contents as data.

@@ -8,7 +8,9 @@
     "resources": {
       "resources-staged/engine/": "engine/",
       "resources-staged/node/": "node/",
-      "resources-staged/THIRD_PARTY_NOTICES.txt": "THIRD_PARTY_NOTICES.txt"
+      "resources-staged/THIRD_PARTY_NOTICES.txt": "THIRD_PARTY_NOTICES.txt",
+      "resources-staged/CLAUDE_SDK_SETUP.txt": "CLAUDE_SDK_SETUP.txt",
+      "resources-staged/BUILD_MANIFEST.json": "BUILD_MANIFEST.json"
     },
     "windows": {
       "nsis": { "installMode": "currentUser" }

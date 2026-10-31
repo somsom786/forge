@@ -167,7 +167,8 @@ pub fn canonical_dir(p: &Path) -> Result<PathBuf> {
 pub(crate) fn test_dir_link(link: &Path, target: &Path) {
     #[cfg(windows)]
     {
-        let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
+        use std::os::windows::process::CommandExt;
+        let out = std::process::Command::new("cmd").creation_flags(0x0800_0000).args(["/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
         assert!(out.status.success(), "junction creation failed: {out:?}");
     }
     #[cfg(unix)]
@@ -254,8 +255,10 @@ mod tests {
         let link = d.path().join("link");
         #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
             // Junctions need no privilege on Windows.
             let out = std::process::Command::new("cmd")
+                .creation_flags(0x0800_0000)
                 .args(["/C", "mklink", "/J"])
                 .arg(&link)
                 .arg(outside.path())

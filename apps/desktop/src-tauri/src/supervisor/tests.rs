@@ -3,6 +3,22 @@ use super::*;
 use std::sync::Mutex as StdMutex;
 use std::time::Instant;
 
+#[test]
+fn worktree_in_use_probe_preserves_an_existing_sibling() {
+    let dir = tempfile::tempdir().unwrap();
+    let worktree = dir.path().join("worktree");
+    let sibling = dir.path().join("worktree.forge-in-use-check");
+    std::fs::create_dir(&worktree).unwrap();
+    std::fs::create_dir(&sibling).unwrap();
+    let result = Core::ensure_not_in_use(&worktree);
+    #[cfg(windows)]
+    assert!(result.is_err(), "an existing probe destination must prevent the Windows rename");
+    #[cfg(not(windows))]
+    assert!(result.is_ok(), "Unix must not rename the worktree to check for Windows file locks");
+    assert!(worktree.is_dir());
+    assert!(sibling.is_dir(), "the pre-existing sibling must never be replaced");
+}
+
 struct Fixture {
     core: Arc<Core>,
     repo: tempfile::TempDir,

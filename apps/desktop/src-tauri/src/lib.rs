@@ -217,6 +217,7 @@ pub fn run() {
             commands::project_set_execution_backend,
             commands::project_set_agent_backend,
             commands::storage_usage,
+            commands::storage_compact,
             commands::storage_cleanup_preview,
             commands::storage_cleanup_apply,
             commands::code_map,

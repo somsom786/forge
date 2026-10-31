@@ -87,7 +87,14 @@ pub fn run(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 pub fn version() -> Result<String> {
-    let out = Command::new(git_binary()?).arg("--version").output()?;
+    let mut command = Command::new(git_binary()?);
+    command.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = command.output()?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -415,6 +422,16 @@ impl Drop for PreviewIndex {
 pub fn changed_files(worktree: &Path, base: &str) -> Result<Vec<ChangedFile>> {
     let idx = PreviewIndex::build(worktree)?;
     let raw = idx.run(worktree, &["diff", "--cached", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", base])?;
+    Ok(parse_changed_files(&raw))
+}
+
+/// Read paths from the immutable tree used for the review fingerprint, not a second worktree snapshot.
+pub fn changed_files_in_tree(worktree: &Path, base: &str, tree: &str) -> Result<Vec<ChangedFile>> {
+    let raw = run(worktree, &["diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", base, tree])?;
+    Ok(parse_changed_files(&raw))
+}
+
+fn parse_changed_files(raw: &str) -> Vec<ChangedFile> {
     let mut out = vec![];
     let mut it = raw.split('\0').peekable();
     while let Some(rec) = it.next() {
@@ -432,13 +449,18 @@ pub fn changed_files(worktree: &Path, base: &str) -> Result<Vec<ChangedFile>> {
         };
         out.push(ChangedFile { path, added: a.parse().ok(), removed: r.parse().ok(), binary: a == "-" });
     }
-    Ok(out)
+    out
 }
 
 /// Unified diff of everything the mission changed relative to its base commit.
 pub fn diff(worktree: &Path, base: &str) -> Result<String> {
     let idx = PreviewIndex::build(worktree)?;
     idx.run(worktree, &["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "-U4", base])
+}
+
+/// Render the diff for a previously captured tree, so it matches its review fingerprint.
+pub fn diff_tree(worktree: &Path, base: &str, tree: &str) -> Result<String> {
+    run(worktree, &["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "-U4", base, tree])
 }
 
 /// Stable identity of the mission's current changes: base-relative content of every changed path.
@@ -546,6 +568,25 @@ u UU N... 100644 100644 100644 100644 a b c conflicted.rs\0\
         assert!(!st.dirty);
         assert_eq!(st.branch.as_deref(), Some("main"));
         assert!(st.head.is_some());
+    }
+
+    #[test]
+    fn reviewed_tree_paths_include_both_sides_of_a_rename_and_stay_stable() {
+        let repo = init_repo();
+        std::fs::write(repo.path().join("AGENTS.md"), "instructions\n").unwrap();
+        run(repo.path(), &["add", "AGENTS.md"]).unwrap();
+        run(repo.path(), &["commit", "-m", "instructions"]).unwrap();
+        let base = head_commit(repo.path()).unwrap();
+        std::fs::rename(repo.path().join("AGENTS.md"), repo.path().join("ordinary.md")).unwrap();
+        let (_, tree) = fingerprint_and_tree(repo.path(), &base).unwrap();
+        std::fs::write(repo.path().join("later.md"), "later\n").unwrap();
+        let files = changed_files_in_tree(repo.path(), &base, &tree).unwrap();
+        let paths: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"AGENTS.md") && paths.contains(&"ordinary.md"), "{paths:?}");
+        assert!(!paths.contains(&"later.md"), "{paths:?}");
+        let diff = diff_tree(repo.path(), &base, &tree).unwrap();
+        assert!(diff.contains("AGENTS.md") && diff.contains("ordinary.md"));
+        assert!(!diff.contains("later.md"));
     }
 
     #[test]

@@ -1,5 +1,69 @@
 # FORGE — Progress
 
+## Continuation, 2026-10-31
+
+- Verification's line-oriented log capture now suppresses standard multiline private-key blocks; incomplete blocks are also redacted in output tails. A split-read fixture, harmless check and 11 targeted redaction-related Windows tests passed. Redaction remains best-effort, including unusual formats, truncated beginnings and very long lines; this does not claim all secrets are caught.
+- Extended the approval-binding regression to cover changed mission, file path and file content in addition to provider, tool, profile, backend and session; the Windows scripted-agent test passed.
+- Linux check network reporting now distinguishes IP isolation from mounted Unix sockets. A harmless host-listener regression confirmed the socket connection through real bubblewrap in Linux CI. The simulated preview reflects the same partial capability levels; TypeScript typecheck passed.
+- Linux optional PATH toolchain mounts now exclude resolved paths overlapping FORGE's data directory, including custom `FORGE_HOME` locations; unresolved explicit paths suppress optional toolchain mounts. Root-selection tests passed on Windows and Linux CI. Mandatory system, workspace, provider and Git mounts can still overlap sensitive data.
+- Re-ran the Windows memory FAQ benchmark and added a reproducible process working-set measurement. The debug test process peaked at 16,617,472 bytes across both retrieval modes and fixture setup; this does not isolate retrieval allocations or child-process memory. Scores and latency are recorded in `docs/EVALUATION.md`.
+- Updated pinned GitHub checkout, Node setup and artifact-upload actions to Node 24 releases after CI warned about Node 20. Automatic package-manager caching is explicitly disabled where caching was not previously requested. Both workflow files parse locally; GitHub Actions validation is pending.
+- Scanner evidence parsing now rejects trailing garbage, malformed results fields and excessive Playwright failure counts instead of treating them as clean. Playwright suite structure is checked before results are accepted. Sixteen Windows evidence tests passed, including recorded real-tool report fixtures; genuine live scanner invocation was not repeated for this parser change.
+- Windows provider detection now starts CLI probes suspended inside a kill-on-close Job Object, refusing probes when containment fails. Nine targeted Windows provider tests passed, including a timed-out descendant that could not write its delayed marker. Unix descendant containment remains open.
+- Verification now refuses to start when its requested audit log cannot be created and reports a log write failure as an error. Twelve Windows verification tests passed, including a log-creation failure fixture. Linux CI pending.
+- Verification now marks ordinary checks incomplete if their output readers fail or remain open after the parent exits. Windows verification tests: 11 passed. The Node inherited-pipe fixture did not retain the pipe on Windows, so the real descendant regression is Unix-only and awaits Linux CI; it is not evidence of Windows descendant behavior.
+- Scanner capture now fails closed if a report cannot be created or written, exceeds its limit, or output readers do not complete. Completed buffers reject late writes. Eleven Windows verification tests passed, including a 17 MiB report whose truncated prefix is valid JSON. This does not prevent a trusted-local command from directly modifying files.
+- Windows verification checks now start suspended and only execute after Job Object assignment; setup failures abort the check. Eight Windows verification tests and the Windows suspended-process containment test passed. This improves process cleanup, not filesystem isolation.
+- Corrected Linux backend capability reporting: selected system, toolchain, Git or workspace mounts can overlap sensitive data, so filesystem and credential isolation are partial rather than universally enforced. This is honest reporting, not a new isolation mechanism.
+- Local model discovery now bounds response size and total read time, and only connects to resolved loopback addresses. Windows provider tests: 8 passed, including oversized and slow-trickle fixtures; Linux CI pending.
+- Provider discovery now concurrently reads bounded CLI output and applies its deadline even if a descendant keeps an output pipe open. Seven targeted provider tests passed on Windows, including large output and an inherited-pipe fixture. This does not yet contain or terminate all descendants of provider-detection commands.
+- Hardened Linux sandbox Git metadata mount selection: linked-worktree pointers must resolve to an existing Git worktree with a matching backlink and common-directory pointer. A harmless forged-pointer fixture reproduced the unsafe mount selection before the fix; seven portable execution tests passed on Windows afterward, including a real linked-worktree fixture. Linux sandbox enforcement tests are included in CI and remain pending for this revision. Malformed or unsupported linked metadata is refused rather than guessed.
+
+## Continuation, 2026-10-28
+
+- An intermittent installer CI failure occurred in run `40718667010`: the 180-second app launch passed, but the test checked the uninstall registry entry immediately after the executable disappeared. The generated NSIS script removes files before the registry entry. Validation now waits for both conditions, up to a fixed timeout, and a fixture checks delayed removal and persistent failure. At `46836d6`, both PowerShell fixture runs and the real 180-second installer launch and uninstall passed in Windows CI.
+
+- Cleanup preview tokens now include per-file size and modification time for mission and unreferenced logs. A same-size orphan-log rewrite was reproduced as being deleted under an old preview before the fix; after the fix it is refused. All 13 Windows storage tests passed, including a changed mission log and locked-file retry; focused UI test and type checking passed. Metadata is not a content hash and concurrent path swaps remain a limitation.
+
+- Cleanup preview exposes every listed mission log and unreferenced log file, rather than only counts or the first 50 missions. The Windows component regression checks both file lists before applying cleanup; type checking and the focused test passed.
+
+- Storage now displays individual cleanup failures and retry guidance instead of only a count, limiting the display to 100 issues while preserving the full audit record. The failed-cleanup/successful-retry component test passed; all 128 desktop tests and type checking passed on Windows with hidden, low-priority subprocesses.
+
+- Mission cleanup now retains the transcript and log references if any listed log cannot be removed. A Windows locked-file regression reproduced the original loss (8 events reduced to the retention marker) before the fix, then passed after releasing and retrying. All 12 Windows storage tests passed with hidden, low-priority subprocesses. Earlier successful file removals remain reported as partial work; a fresh preview is required for retry.
+
+## Continuation, 2026-10-27
+
+- On Linux, Obsidian detection checks the registered `obsidian://` desktop handler, and opening a note invokes `xdg-open` with the URI as a single argument. The time-limited lookup fixture passed in Linux CI. A Windows URI encoding regression passed locally; opening a real Linux Obsidian installation remains untested.
+
+- Windows Git version detection and junction/mock-model test subprocesses now request hidden console windows. A junction escape regression passed locally through a hidden, below-normal-priority runner. Full cross-platform validation is tracked by PR checks.
+
+- Linux toolchain mount selection now resolves installation roots and refuses aliases into the user's home, its ancestors, or system directories normally excluded from toolchain mounts. If the home cannot be resolved it omits extra toolchain mounts; system paths remain available. Windows portable selection test passed; the Unix symlink regression and real sandbox execution require CI for the latest change.
+
+- Sensitive instruction detection includes `.agents/skills/**`, including scripts and nested or case-varied paths, so the existing fingerprint-bound review gate covers project skills. Windows path classification regression passed locally.
+
+- Worktree cleanup no longer performs the Windows lock-probe rename on Unix, where it could replace an existing empty sibling directory. On Windows it refuses an already-existing probe destination. The new Windows regression passed locally with hidden, below-normal-priority processes; Linux coverage is included in CI.
+
+- Claude packaging: engine bundle excludes Anthropic SDK code and loads a separately installed, exact-pinned SDK. Provider readiness explains the installation command; invalid explicit overrides never fall back. Bundle input provenance and staged-file hashes are shipped. Engine 90 passed, 5 skipped, including a real bundle smoke test without SDK; real Claude Code against a scripted loopback model: 4 passed with the tool required. An intermediate unsigned installer passed six install/uninstall checks. No provider account or paid inference used. Terms review and the owner's license decision remain open.
+
+- Storage maintenance: previewed cleanup now covers finished experiment logs and empty folders, preserves active work/unexpected entries/worktrees, rejects linked paths, records intent before deletion, and records incomplete cleanup at restart. Explicit SQLite compaction requires the backend to be idle. Windows storage tests: 11 passed, including locked-file retry, stale preview, audit failure, interruption recovery, lock ordering and real database page reclamation. UI 127 passed; typecheck passed.
+
+- Retrieval and navigation: a bounded related-terminology channel and unresolved syntactic identifier mentions improve aggregate fixture results, with individual regressions and added indexing cost documented in `EVALUATION.md`. Ten code intelligence tests passed. Browser E2E: six simulated tests passed with GPU disabled.
+
+- Real installed Windows app: a scripted mission completed through approval, diff, contract check, review, merge and Proof Pack with an isolated temporary home and WebView profile, GPU disabled, and no console errors. The unsigned installer installed and uninstalled successfully, but the separate 180-second launch check FAILED when the app exited cleanly after 63.5 seconds; its cause has not been established. Full Rust run: 439 passed, 6 ignored, including four real Claude CLI tests against a local scripted server. Some platform-specific tests return early on Windows; they do not prove Linux enforcement.
+
+- GitHub PR #9 at `c1aa777`: Linux and Windows CI, unsigned installer build, script checks, audits and SBOM passed. Linux CI required sandbox and scanner tests. At `50c17a9`, an independent 90-second installer launch and uninstall test passed on the disposable Windows runner with GPU acceleration disabled. The earlier local exit during a 180-second test is still unexplained.
+
+- GitHub PR #9 at `77b088c`: Linux and Windows suites and all security jobs passed; the disposable Windows runner also passed a 180-second installer launch and uninstall with GPU disabled. The earlier clean local exit at 63.5 seconds still has no established cause.
+
+- Review acknowledgement now has a dedicated boolean in schema v16, bound to its review row's fingerprint. Legacy note text is never authorization; old instruction approvals return to review. Windows: review regressions 12 passed; migration tests 5 passed (including v15 data with a forged marker note).
+
+- Execution hardening: contained agents receive an explicit runtime/provider/proxy environment allow-list. Loader injection, SSH agents and unrelated environment secrets are removed before the engine starts. Backend capabilities now distinguish agent and check behavior. Linux network access and provider-state exposure remain explicit limitations. Windows targeted tests: 4 passed; UI 127 passed; typecheck passed. Linux enforcement regression awaits CI.
+
+- Based `codex/overhaul-continuation` on `origin/cloud/overhaul` at `8c3bcc9`; PR #8 remains open. The two commits after `6626706` were documentation-only. Existing main and worktrees were preserved.
+- Fixed a Codex adapter test fixture that unintentionally inspected parent-level user configuration on Windows. Engine: 86 passed, 5 skipped on this Windows environment; the app-server is scripted.
+- Added path-based agent instruction/configuration review, a fingerprint-bound acknowledgement, legacy-approval merge guard, and Proof Pack warning. The saved diff is generated from the fingerprinted tree. This is a review control, not a new isolation boundary. Targeted Rust regressions: 3 passed, 1 ignored. UI: 127 passed. Full continuation results and limitations are in `VALIDATION_MATRIX.md`.
+- Next: investigate the early clean app exit during the installer longevity check; finish Windows isolation implementation and enforcement validation, inspect the trusted-webview boundary, validate the installed app with a separate SDK and live providers, measure retrieval memory and release-build costs, and address the remaining release blockers. Avoid noisy visible subprocesses when testing on the user's desktop. No live provider, GPU workload, or published release was run in this continuation.
+
 Evidence levels: **A** = verified by a real run against the real thing (real window / real agent / real git); **B** = automated tests only;
 **C** = implemented, not verified; **—** = not built. Last full run: 2026-10-23. Rust 295 passing (6 live tests ignored by default), engine 45,
 UI 100 (vitest); `npm run typecheck` clean. Live tests that spend provider quota are never run in bulk (see `codex-handoff.md`).

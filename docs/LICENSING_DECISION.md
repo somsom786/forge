@@ -1,5 +1,15 @@
 # Licensing decision (for the owner)
 
+## Runtime dependency change, 2026-10-27
+
+FORGE's engine bundle now excludes the Claude Agent SDK. The SDK is an exact-pinned development dependency for tests and a separately installed runtime dependency for Claude users. Packaging checks the esbuild input graph to reject Anthropic SDK code; the installer includes dependency setup instructions and a build manifest. The loader and provider readiness checks require version `0.3.309` and never silently substitute another version. Existing Codex and ACP integrations do not need this SDK.
+
+On Windows, install it yourself with `npm install --prefix "$env:LOCALAPPDATA\FORGEProviderDeps\claude-sdk" --save-exact @anthropic-ai/claude-agent-sdk@0.3.309`. Refresh providers afterward. An alternative install location can be selected with `FORGE_CLAUDE_SDK_PATH` set to the absolute package directory (`.../node_modules/@anthropic-ai/claude-agent-sdk`); restart FORGE after changing environment variables. FORGE performs no automatic package installation or credential copying.
+
+On Linux, the corresponding user-controlled installation is `npm install --prefix "${XDG_DATA_HOME:-$HOME/.local/share}/FORGEProviderDeps/claude-sdk" --save-exact @anthropic-ai/claude-agent-sdk@0.3.309`. The package directory override works there as well. Provider detection verifies the version and entry file; the actual module and its dependencies are loaded when a Claude session starts.
+
+This removes the SDK's code from the shipped engine; it is not a legal conclusion about commercial service use. The [official SDK README](https://github.com/anthropics/claude-agent-sdk-typescript#license-and-terms) points to Anthropic's Commercial Terms for SDK use, including customer-facing products. The owner must still verify the integration's terms and decide FORGE's own license. The table below describes the **previous bundled design**; its SDK redistribution blocker is superseded by the external-dependency implementation.
+
 FORGE has no licence today: there is no `LICENSE` file, `forge-desktop` declares none (cargo-deny reports it as
 unlicensed and the security workflow accepts exactly that one finding), and all rights are reserved by default. This
 note lays out the realistic options so the owner can decide. **Nothing here is legal advice, and no licence has been
@@ -19,9 +29,7 @@ the installer:
 | bubblewrap (Linux isolation) | — | LGPL-2.0-or-later | Executed, not linked or shipped: no obligation unless bundled |
 | Claude Code, Codex, ACP agents | — | their own | Not shipped: the user installs and signs in to them |
 
-Options for the SDK if redistribution is not permitted: ship the engine without it and load the SDK from the user's own
-Claude Code installation at run time, or drive the user's `claude` CLI directly instead of the SDK. Both are
-engineering work; neither has been done.
+The external-dependency option is now implemented: it loads a separately installed SDK package, rather than assuming the user's Claude Code installation includes the SDK. Direct CLI integration remains an alternative, not implemented.
 
 **Compatibility:** every shipped dependency is compatible with MIT, Apache-2.0 or a proprietary licence for FORGE's own
 code. The constraint runs the other way: GPL code must not be imported into FORGE (policy already in

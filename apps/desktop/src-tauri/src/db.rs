@@ -426,6 +426,10 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE agent_session ADD COLUMN executes_on TEXT NOT NULL DEFAULT 'agent_host';
     "#,
+    // v16 - explicit, fingerprint-bound instruction review; free-form notes are not authorization.
+    r#"
+    ALTER TABLE review_decision ADD COLUMN agent_instructions_reviewed INTEGER NOT NULL DEFAULT 0 CHECK(agent_instructions_reviewed IN (0,1));
+    "#,
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {
@@ -475,6 +479,18 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_review_notes_do_not_become_instruction_acknowledgements() {
+        let c = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..15] { c.execute_batch(sql).unwrap(); }
+        c.pragma_update(None, "user_version", 15).unwrap();
+        c.execute_batch("INSERT INTO project(id,name,root_path,default_branch,created_at) VALUES ('p','p','/fixture','main','t'); INSERT INTO mission(id,project_id,title,objective,state,provider,permission_profile,created_at,updated_at) VALUES ('m','p','m','m','approved','fake','default','t','t');").unwrap();
+        c.execute("INSERT INTO review_decision(id,mission_id,decision,note,fingerprint,decided_by,at) VALUES ('r','m','approve','Explicitly acknowledged agent instruction/configuration changes','fp','user','t')", []).unwrap();
+        migrate(&c).unwrap();
+        let acknowledged: bool = c.query_row("SELECT agent_instructions_reviewed FROM review_decision WHERE id='r'", [], |r| r.get(0)).unwrap();
+        assert!(!acknowledged);
+    }
 
     #[test]
     fn migrations_apply_and_are_idempotent() {

@@ -136,6 +136,7 @@ fn eval_oss_commit_localization() {
         // [grep, index, fused] x KS, plus MRR@10 and the context-block hit.
         let mut sums: Vec<[Score; 3]> = vec![[Score::default(); 3]; KS.len()];
         let (mut mrr, mut ctx_hit, mut ctx_bytes, mut build_ms, mut query_ms, mut files, mut symbols) = ([0.0f64; 3], 0.0, 0usize, vec![], vec![], 0, 0);
+        let mut reference_bytes = vec![];
         let mut rows = vec![];
         for c in &cs {
             git::run(&wt_path, &["checkout", "-q", "--detach", &format!("{}^", c.sha)]).unwrap();
@@ -144,6 +145,13 @@ fn eval_oss_commit_localization() {
             build_ms.push(t.elapsed().as_secs_f64() * 1000.0);
             files = ix.files.len();
             symbols = ix.symbols.len();
+            // A lower bound on retained heap used by the added identifier index. Hash table control bytes, allocator
+            // overhead, temporary build allocations and all pre-existing index data are deliberately excluded.
+            let bytes = ix.symbols.capacity() * std::mem::size_of::<Vec<String>>()
+                + ix.symbols.iter().map(|s| s.syntactic_identifiers.capacity() * std::mem::size_of::<String>() + s.syntactic_identifiers.iter().map(String::capacity).sum::<usize>()).sum::<usize>()
+                + ix.identifier_file_counts.capacity() * (std::mem::size_of::<String>() + std::mem::size_of::<usize>())
+                + ix.identifier_file_counts.keys().map(String::capacity).sum::<usize>();
+            reference_bytes.push(bytes);
             let terms = objective_terms(&c.subject);
             let g20 = grep_select(&wt_path, &terms, 20);
             let t = Instant::now();
@@ -174,9 +182,11 @@ fn eval_oss_commit_localization() {
         let n = cs.len() as f64;
         build_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
         query_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        reference_bytes.sort_unstable();
         let med = |v: &Vec<f64>| v[v.len() / 2];
         println!("\n== {name} (HEAD {}, {} cases; last parent tree: {files} files, {symbols} symbols)", &head[..12], cs.len());
         println!("index build median {:.0} ms (max {:.0}); select_files median {:.2} ms", med(&build_ms), build_ms.last().unwrap(), med(&query_ms));
+        println!("additional retained identifier storage lower bound: median {} bytes", reference_bytes[reference_bytes.len()/2]);
         let mut by_k = serde_json::Map::new();
         for (i, k) in KS.iter().enumerate() {
             let [g, x, f] = sums[i];
@@ -193,6 +203,7 @@ fn eval_oss_commit_localization() {
         report.push(serde_json::json!({
             "repo": name, "head": head, "cases": cs.len(), "files": files, "symbols": symbols,
             "buildMsMedian": med(&build_ms), "buildMsMax": build_ms.last(), "queryMsMedian": med(&query_ms),
+            "identifierBytesLowerBoundMedian": reference_bytes[reference_bytes.len()/2],
             "atK": by_k, "mrr10": {"grep": mrr[0] / n, "index": mrr[1] / n, "fused": mrr[2] / n},
             "contextHitRate": ctx_hit / n, "contextBytesMean": ctx_bytes / cs.len().max(1), "rows": rows,
         }));

@@ -59,6 +59,7 @@ fn memory_eval_faq_retrieval() {
         eprintln!("SKIPPED: set FORGE_MEMORY_EVAL to FAQ markdown files");
         return;
     };
+    let mut measurements = vec![];
     for path in list.split(',').filter(|s| !s.is_empty()) {
         let pairs = faq_pairs(&std::fs::read_to_string(path).unwrap());
         let store = Store::in_memory();
@@ -75,10 +76,15 @@ fn memory_eval_faq_retrieval() {
                 store.k_verify(&p.id, &p.current_sha256, Some("eval")).unwrap().id
             })
             .collect();
+        for expand in [false, true] {
+        let mut elapsed = vec![];
+        let mut precision3 = 0.0;
         let (mut hit1, mut hit3, mut included, mut mrr, mut fts1, mut chars) = (0.0, 0.0, 0.0, 0.0, 0.0, 0usize);
         let mut misses = vec![];
         for (i, (q, _)) in pairs.iter().enumerate() {
-            let pkg = retrieve::build(ctx, &project, repo.path(), q, &[], &[], retrieve::DEFAULT_BUDGET_CHARS).unwrap();
+            let started = std::time::Instant::now();
+            let pkg = retrieve::build_with_expansion(ctx, &project, repo.path(), q, &[], &[], retrieve::DEFAULT_BUDGET_CHARS, expand).unwrap();
+            elapsed.push(started.elapsed().as_secs_f64() * 1000.0);
             chars += pkg.text.chars().count();
             let pos = pkg.items.iter().position(|it| it.page_id == ids[i]);
             if let Some(p) = pos {
@@ -86,6 +92,7 @@ fn memory_eval_faq_retrieval() {
                 mrr += 1.0 / (p + 1) as f64;
                 hit1 += if p == 0 { 1.0 } else { 0.0 };
                 hit3 += if p < 3 { 1.0 } else { 0.0 };
+                precision3 += if p < 3 { 1.0 / pkg.items.len().min(3) as f64 } else { 0.0 };
             } else {
                 misses.push(q.clone());
             }
@@ -94,12 +101,19 @@ fn memory_eval_faq_retrieval() {
             fts1 += if raw.first().is_some_and(|(p, _)| p.id == ids[i]) { 1.0 } else { 0.0 };
         }
         let n = pairs.len() as f64;
-        println!("\n== {path}: {} question/answer pairs", pairs.len());
+        let mode = if expand { "expanded" } else { "lexical" };
+        elapsed.sort_by(f64::total_cmp);
+        let median = elapsed[elapsed.len()/2];
+        println!("\n== {path}: {} question/answer pairs ({mode})", pairs.len());
+        println!("precision@3 {:.3}; latency median {:.2} ms; max {:.2} ms", precision3/n, median, elapsed.last().unwrap());
+        measurements.push(serde_json::json!({"source": path, "mode": mode, "pairs": pairs.len(), "hit1": hit1/n, "hit3": hit3/n, "mrr": mrr/n, "precision3": precision3/n, "latencyMedianMs": median, "latencyMaxMs": elapsed.last(), "contextCharsMean": chars/pairs.len().max(1)}));
         println!("retrieve::build  hit@1 {:.2}  hit@3 {:.2}  MRR {:.2}  answer included at all {:.2}  mean package {} chars", hit1 / n, hit3 / n, mrr / n, included / n, chars / pairs.len().max(1));
         println!("raw FTS (BM25)   hit@1 {:.2}", fts1 / n);
         for m in misses.iter().take(8) {
             println!("  missed: {m}");
         }
         assert!(pairs.len() >= 5, "{path}: parsed only {} pairs", pairs.len());
+        }
     }
+    if let Ok(out) = std::env::var("FORGE_MEMORY_EVAL_OUT") { std::fs::write(out, serde_json::to_string_pretty(&measurements).unwrap()).unwrap(); }
 }

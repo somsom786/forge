@@ -548,13 +548,23 @@ impl Core {
         // Where the agent runs: the project's agent backend, required (never a silent fallback to the host). Decided, and
         // what a contained agent may see checked, before a session is recorded: a refusal here leaves no session behind.
         let project = self.store.get_project(&m.project_id)?;
+        let sdk_dir = if matches!(m.provider.as_str(), "claude" | "claude-local") {
+            Some(crate::providers::locate_claude_sdk(Some(&script)).map_err(ForgeError::Provider)?)
+        } else { None };
         let backend = crate::execution::Backend::parse(&project.agent_backend)?;
         let executes_on = if backend == crate::execution::Backend::TrustedLocal { AGENT_EXECUTES_ON.to_string() } else { backend.as_str().to_string() };
-        let (read_only, read_write) = if backend == crate::execution::Backend::TrustedLocal {
+        let (mut read_only, read_write) = if backend == crate::execution::Backend::TrustedLocal {
             (vec![], vec![])
         } else {
             (self.agent_read_only_paths(&node, &script, worktree, acp_agent.as_ref(), &mcp_servers)?, self.agent_state_paths(&m.provider, worktree)?)
         };
+        if backend != crate::execution::Backend::TrustedLocal {
+            if let Some(sdk) = &sdk_dir {
+                let root = sdk.ancestors().find(|p| p.file_name().is_some_and(|n| n == "node_modules")).unwrap_or(sdk);
+                self.narrow_enough(root, worktree).map_err(ForgeError::Provider)?;
+                read_only.push(root.to_path_buf());
+            }
+        }
         let session = self.store.create_session(&m.id, &m.provider, resume)?;
         let fail_session = |reason: String| {
             let _ = self.store.end_session(&session.id, "lost", &reason);
@@ -564,12 +574,18 @@ impl Core {
         let script_arg = [script.clone().into_os_string()];
         let spec = crate::execution::AgentSpec { program: &node, args: &script_arg, workspace: worktree, read_only, read_write };
         let mut cmd = crate::execution::agent_command(backend, &spec).map_err(|e| fail_session(e.to_string()))?;
+        if backend != crate::execution::Backend::TrustedLocal {
+            let base = std::env::vars_os().chain(self.cfg.engine_env.iter().map(|(k, v)| (k.into(), v.into())));
+            cmd.env_clear().envs(crate::execution::contained_agent_env(base)).env("TMPDIR", "/tmp");
+        } else {
+            cmd.envs(self.cfg.engine_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        }
+        if let Some(sdk) = sdk_dir { cmd.env("FORGE_CLAUDE_SDK_PATH", sdk); }
         cmd.current_dir(worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("FORGE_ALLOW_FAKE_PROVIDER", if self.cfg.allow_fake { "1" } else { "0" })
-            .envs(self.cfg.engine_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+            .env("FORGE_ALLOW_FAKE_PROVIDER", if self.cfg.allow_fake { "1" } else { "0" });
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -1255,6 +1271,7 @@ impl Core {
         self.recover_knowledge();
         self.recover_harness();
         self.recover_experiments();
+        self.recover_storage_cleanup();
         let orphaned = self.store.fail_orphaned_runs()?;
         if orphaned > 0 {
             self.store.audit("system", "recovery.checks", None, &json!({"orphanedRuns": orphaned}));
@@ -1387,14 +1404,24 @@ impl Core {
         git::worktree_remove(root, wt, confirm_loss)
     }
 
-    /// On Windows a folder cannot be renamed while a program holds a file in it open, and git would delete part of the
-    /// worktree before failing on that file. Renaming it aside and back first turns that into a clean refusal. (On Unix
-    /// the rename always succeeds and nothing changes.)
+    /// On Windows, renaming aside and back can detect a file held open before git partially removes the worktree.
+    /// Unix does not need this probe: renaming there can replace an existing empty directory at the destination.
+    #[cfg(not(windows))]
+    fn ensure_not_in_use(_wt: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(windows)]
     fn ensure_not_in_use(wt: &Path) -> Result<()> {
         if !wt.exists() {
             return Ok(());
         }
         let probe = wt.with_file_name(format!("{}.forge-in-use-check", wt.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        match std::fs::symlink_metadata(&probe) {
+            Ok(_) => return Err(ForgeError::InvalidState(format!("cannot check {} while {} already exists; inspect it before retrying", wt.display(), probe.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(ForgeError::Other(format!("cannot inspect {} before checking the worktree: {e}", probe.display()))),
+        }
         match std::fs::rename(wt, &probe) {
             Ok(()) => std::fs::rename(&probe, wt).map_err(|e| ForgeError::Other(format!("FORGE moved {} to {} to check it was not in use and could not move it back: {e}", wt.display(), probe.display()))),
             Err(e) => Err(ForgeError::InvalidState(format!(

@@ -1,5 +1,86 @@
 # Validation matrix
 
+2026-10-31: PASS — Windows verification suite, 14 passed, including a harmless multiline private-key fixture split across reads and an actual check command. Linux CI pending; redaction is still best-effort.
+
+2026-10-31: PASS — Windows redaction-related selection, 11 passed after adding incomplete private-key block handling; includes the check runner and approval guard. Linux CI pending.
+2026-10-31: PASS — full CI `41220233133` at `bffca9e`: Linux Rust 471 passed, 6 ignored; Windows Rust 454 passed, 6 ignored; Windows script checks and unsigned installer build, 180-second launch, uninstall and artifact upload passed. Linux included protected toolchain-root selection and a real bubblewrap fixture demonstrating that a mounted Unix socket reaches a host listener. This test confirms a limitation, not complete network isolation.
+2026-10-31: PASS — GitHub Actions run `41219321684` at `04272af`: updated Node 24 checkout/setup/upload actions, Linux and Windows test jobs, Windows script checks, unsigned installer build, 180-second launch/uninstall and both installer artifact uploads. Later sandbox mount and Unix-socket changes require their own Linux CI run.
+2026-10-31: PASS — Windows portable execution tests, 8 passed, including custom FORGE-data overlap and unresolved-path refusal for optional toolchain roots. Linux sandbox enforcement for this change: NOT RUN locally; CI required.
+2026-10-31: PASS — Linux and Windows CI full test jobs at `4c7d5c1`: Linux Rust 469 passed, 6 ignored; Windows Rust 453 passed, 6 ignored. Engine 95 passed and UI 128 passed on each OS; simulated Linux browser E2E 6 passed. The Linux suite included real scanner adapter and sandbox tests and the inherited-pipe and `/dev/full` regressions. PASS — unsigned Windows installer build, disposable install, 180-second launch and uninstall in CI at the same revision (run `41218384232`). PASS — Windows disposable Obsidian vault fixture suite, 3 tests (links, read-only notes, renames/deletions); real Obsidian application integration was not run.
+2026-10-31: PASS — both workflow YAML files parsed locally after action updates. GitHub-hosted Linux, Windows and artifact-upload execution: PENDING.
+2026-10-31: PASS — Windows evidence parser tests, 16 passed, including malformed and concatenated reports and recorded real scanner fixtures. Live scanner invocation: NOT RUN for this change; Linux CI pending.
+2026-10-31: NOT RUN — Linux `/dev/full` fixture for failed verification log/report writes; added to CI. The fixture uses the standard discard-and-fail device, not a user file.
+2026-10-31: PASS — Windows provider tests, 9 passed, including a real timed-out descendant and Job Object cleanup. Linux CI pending. No provider accounts or GPU used.
+2026-10-31: PASS — Windows verification suite, 12 tests, including refusal to execute when its requested log cannot be created. Linux CI pending.
+2026-10-31: PASS — Windows verification suite, 11 tests after incomplete-output handling. The inherited-pipe fixture did not reproduce on Windows and is restricted to Unix; Linux CI is required for that regression.
+2026-10-31: PASS — Windows verification tests, 11 passed; includes unavailable report path, capped valid-JSON-prefix report, and frozen completed buffer. Linux CI pending. Test subprocesses hidden and below normal priority.
+2026-10-31: PASS — Windows verification tests, 8 passed, including timeout and cancellation; Windows suspended-process Job Object test, 1 passed. Hidden, below-normal-priority subprocesses. Linux and Windows CI for this change pending.
+2026-10-31: PASS — Windows execution tests, 7 passed, including capability-reporting assertions. This verifies reporting only; it does not validate Linux enforcement.
+2026-10-31: PASS — Windows provider tests, 8 passed, including oversized and slow-trickle loopback server fixtures. Linux CI pending. No GPU or provider account used.
+2026-10-31: PASS — Windows targeted provider tests, 7 passed, including 200 KB of CLI output and a descendant retaining stdout beyond the deadline. Hidden, below-normal-priority test process; no provider account or GPU used. Linux CI for this change: pending.
+
+## Continuation, 2026-10-31
+
+Git metadata mount validation: PASS — Windows, 7 portable execution tests, including forged pointers and a legitimate linked worktree. The forged-pointer regression failed before the fix. PASS — Linux and Windows CI at `4aaca0e`, including required Linux sandbox enforcement and Unix fixtures; the unsigned installer and security checks also passed. This validation does not establish Windows agent isolation.
+
+## Continuation, 2026-10-28
+
+Installer uninstall polling: FAIL — Windows CI run `40718667010`: the application stayed up for 180 seconds, the install folder was removed, but the test observed the uninstall registry entry immediately afterward. The generated NSIS script deletes that entry after the executable. The updated validation waits for both conditions and still fails on a persistent entry. PASS — Windows PowerShell 5.1 and PowerShell 7 fixtures for delayed removal, persistent entry, and remaining executable; PASS — Windows CI at `46836d6` for the real 180-second launch and uninstall. This evidence suggests a test race but does not establish whether the particular earlier registry entry would eventually have disappeared.
+
+Continuation PR #9 at `46836d6`: PASS — Linux CI, 455 Rust tests passed and 6 ignored; PASS — Windows CI, 442 passed and 6 ignored; PASS — Windows 180-second unsigned installer launch and uninstall, script checks, dependency and secret scans, and SBOM generation.
+
+Cleanup preview freshness: PASS — Windows, 13 storage tests and 1 focused desktop component test; PASS — TypeScript type checking. The new same-size orphan rewrite failed before the fix and passed afterward; a modified mission log also invalidates its preview. The token checks metadata, not file contents, and cannot prevent concurrent path swaps. Linux CI is pending for this revision.
+
+Cleanup preview detail: PASS — Windows targeted component test and TypeScript type checking; fixture checks that mission and unreferenced log paths are present before confirmation. This is a mock-backend UI test, not a real-desktop cleanup run.
+
+Storage failure display: PASS — Windows desktop tests, 128 passed, including a fixture exercising visible failure details and their removal after successful retry; PASS — TypeScript type checking. No GPU or visible subprocess window used.
+
+2026-10-28: PASS — Windows, 12 storage tests, including a real locked mission-log fixture. Before the fix the new regression failed because the transcript was deleted despite the locked log; after the fix it passed, preserved the log reference, and succeeded after release and a fresh preview. Temporary repositories only; hidden, below-normal-priority subprocesses; no GPU or provider account used. Linux CI for this change is pending.
+
+## Continuation, 2026-10-27
+
+Obsidian opening: PASS — Windows URI encoding regression; PASS — Linux CI desktop-handler lookup fixture (success, missing, failure, timeout), NOT RUN locally. Real Linux Obsidian/desktop-handler integration is NOT RUN.
+
+Toolchain mount path filtering: PASS — Windows, 1 portable targeted test including an unverifiable home; Unix symlink-to-home and ancestor regression is present but NOT RUN locally and must pass Linux CI. The change may omit custom toolchains when the home is unset or cannot be resolved.
+
+Agent skill path classification: PASS — Windows, 1 targeted regression including skill instructions and helper scripts under nested, case-varied `.agents/skills` paths. It feeds the existing fingerprint-bound review gate.
+
+Worktree lock-probe collision regression: PASS — Windows, 1 targeted test in a temporary directory; no test subprocess window or GPU was used. The Unix no-rename branch requires the corresponding Linux CI result.
+
+External Claude SDK follow-up: engine 90 passed, 5 skipped; copied bundle runs its scripted provider without SDK, and a Claude start with a missing SDK fails visibly. SDK metadata/version test: 1 passed. Real Claude Code against a scripted local model with `FORGE_REQUIRE_CLAUDE_REAL_TESTS=1`: 4 passed on Windows (no account/quota/GPU). Package staging succeeded; esbuild inputs exclude Anthropic SDK code. An intermediate unsigned installer built, installed and uninstalled in a temporary location (6 checks passed); it predates subsequent code changes. Installer launch/upgrade with separately installed SDK remains NOT RUN.
+
+Storage follow-up: `cargo test --lib --locked storage::` on Windows: 11 passed. Includes experiment artifacts, active-run exclusion, unexpected worktree preservation, junction refusal, locked log retry, durable audit failure, interrupted cleanup, explicit idle-only SQLite compaction on a real temporary database, and lock-order regression. UI 127 passed and typecheck passed. No real user artifacts were deleted.
+
+Schema v16 follow-up: review-hardening tests 12 passed; database tests 5 passed on Windows. New migration preserves legacy review notes while defaulting explicit instruction acknowledgement to false. Older schemas are tested through every forward migration; newer schemas continue to be refused.
+
+Execution hardening follow-up: Windows targeted `execution::tests`: 4 passed; UI 127 passed; typecheck and engine build passed. Linux end-to-end environment isolation regression added but NOT RUN locally (the existing WSL distribution has no bubblewrap or Rust). The test is required through the existing sandbox CI setting. Agent capability reporting now distinguishes shared network/provider state from isolated checks.
+
+Linux component probe: PASS on Ubuntu 24.04.4 under WSL using a temporarily extracted Ubuntu bubblewrap 0.9.0-1ubuntu0.3. Harmless host-control and isolated read/write/environment/network fixtures and scripted engine cancellation passed. This is not the Rust supervisor test and is not a Windows isolation backend. Simulated browser E2E: 6 passed using headless Chrome with GPU disabled; not a real Tauri integration test.
+
+Full Rust suite: PASS on the available Windows host, 439 passed and 6 ignored, `FORGE_REQUIRE_CLAUDE_REAL_TESTS=1` with scripted local model. Some platform-specific cases return early and are not Windows/Linux enforcement evidence. Installed Windows app scripted mission: PASS for mission creation, approval, actual diff, check, review, merge and Proof Pack using isolated temporary data and WebView2, with no console errors. Installer test: FAIL overall: six checks passed, including unsigned build, hashes, temporary install, manifest and uninstall, but the 180-second launch check observed a clean process exit after 63.5 seconds. Cause unknown. The test artifact was built from commit `0531e67` with uncommitted documentation/workflow changes; installer SHA-256 `95795d785d28624ff90a0fbbac3a48cb57cbe0b167a2f2178fccd0c297a40259`. It is not a signed or published release.
+
+Local Windows environment (not CI; whether the host is physical was not independently established): Node 24.19.0, npm 12.2.0, Rust 1.92.0 MSVC. `codex/overhaul-continuation` starts at `8c3bcc9`. No GPU workloads or live paid provider missions were run.
+
+GitHub PR #8 checks queried 2026-10-27: Linux and Windows tests, Windows unsigned build, Windows script checks, dependency/security scans and SBOM jobs reported PASS on the PR's existing revision. These are stale for the continuation commits.
+
+Continuation PR #9, commit `c1aa777`: PASS — Linux CI (451 Rust passed, 6 ignored; required sandbox, scanner and scripted Claude CLI checks enabled), PASS — Windows CI (439 Rust passed, 6 ignored), and PASS — unsigned installer build and Windows script checks. Security, dependency and SBOM jobs passed. Follow-up commit `50c17a9`: PASS — Windows CI installed the unsigned app into temporary storage, kept it running for 90 seconds with GPU disabled, then uninstalled it. This does not explain or invalidate the earlier local 180-second failure.
+
+Continuation PR #9, commit `77b088c`: PASS — Linux CI (453 Rust passed, 6 ignored), Windows CI (440 Rust passed, 6 ignored), security and dependency checks, and unsigned installer build. The clean Windows runner installed, launched for 180 seconds with GPU disabled, and uninstalled the application. The earlier local early exit remains unexplained; this CI pass is not evidence of a real provider, signing, or physical-desktop interoperability.
+
+Continuation PR #9, commit `714679b`: PASS — Linux CI (454 Rust passed, 6 ignored), Windows CI (440 Rust passed, 6 ignored), security and dependency checks, and the 180-second unsigned Windows installer launch and uninstall.
+
+| Check | Result | Evidence and limits |
+|---|---|---|
+| Initial Windows script | FAIL | First attempt: npm cache EPERM; dependent suites blocked. Retried with a worktree-local cache: one Codex fixture failed due to parent configuration; 425 Rust passed, 6 ignored, and 126 UI passed. Source changed during this run, so it is not a clean final-revision baseline. |
+| Engine after fixture fix | PASS — Windows (host type unconfirmed) | 86 passed, 5 skipped; simulated Codex app-server, ACP interoperability not required in this run. |
+| UI after review change | PASS — Windows (host type unconfirmed) | 127 passed; unit/component tests, not WebView2 integration. |
+| Typecheck | PASS — Windows (host type unconfirmed) | `npm run typecheck`, engine and desktop. |
+| Rust core | PASS — Windows (host type unconfirmed) | 427 passed, 6 ignored, 0 failed with four test threads after the tree/diff change. A subsequent path-list expansion was checked by its targeted test (1 passed); the full suite was not repeated after that small expansion. Optional tool tests may return early when tools are unavailable. |
+| Instruction review regression | PASS — Windows (host type unconfirmed) | 3 passed; 1 unrelated live test ignored. Includes denial, stale acknowledgement, merge refusal and legacy approval. |
+| Formatting | FAIL | `cargo fmt --check` reports extensive repository-wide pre-existing differences; no wholesale formatting applied. `git diff --check` passed. |
+| Linux / new Windows CI | NOT RUN | Existing PR #8 CI at `8c3bcc9` was green on 2026-10-24; those results do not cover this continuation. |
+| Desktop, actual providers, Windows isolation, installer upgrade | NOT RUN | Automated tests do not establish real UI or provider interoperability; Windows agent isolation remains unimplemented. |
+
 What has been run, where, and with what result, for `cloud/overhaul` (PR https://github.com/somsom786/forge/pull/8).
 
 Labels:
@@ -72,7 +153,7 @@ A Linux pass is never a Windows pass. **Simulated** marks tests whose counterpar
 | # | Threat | Main tests | Linux | Windows CI | Gap |
 |---|---|---|---|---|---|
 | 1 | Host-file access from agent-executed code | `agent_sandbox::*`, `claude_real::…when_contained`, `execution_tests::*`, policy | PASS — Linux | PASS (policy; isolation refused) | On Windows, approved actions run on the host |
-| 2 | Secrets via environment or mounts | `execution_tests::secrets…`, `acp.test.ts` env stripping, `dryrun::secret…`, `hardening_tests::secrets…` | PASS — Linux | partial | Contained agents and trusted-local checks inherit the environment |
+| 2 | Secrets via environment or mounts | `execution_tests::secrets…`, `acp.test.ts` env stripping, `dryrun::secret…`, `hardening_tests::secrets…` | PASS — Linux | partial | Contained agents use an environment allow-list but have provider state and configured proxy values; trusted-local checks inherit the environment |
 | 3 | Network egress | `execution_tests::…network…`, `providers::non_loopback…` | PASS — Linux | partial | No egress control for agents |
 | 4 | Project hooks and MCP at startup | `claude_real::a_hostile_repository…` (mutation-checked), `claudeOptions.test.ts`, `mcp::*`, `review_hardening::a_hostile_git_hook…` | PASS — Linux | PASS — Windows CI | — |
 | 5 | Approval replay or request mutation | `approvals::*`, `regressions::a_reask…` | PASS — Linux | PASS — Windows CI | — |

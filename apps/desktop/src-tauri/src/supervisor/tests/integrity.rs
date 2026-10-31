@@ -7,7 +7,7 @@ use crate::supervisor::{ReviewDecision, Seen};
 
 fn seen(f: &Fixture, id: &str) -> Seen {
     let r = f.core.verification_report(id).unwrap();
-    Seen { fingerprint: r.fingerprint, contract_sha256: r.contract_sha256 }
+    Seen { fingerprint: r.fingerprint, contract_sha256: r.contract_sha256, agent_instructions_reviewed: false }
 }
 
 fn approved_mission(f: &Fixture) -> Mission {

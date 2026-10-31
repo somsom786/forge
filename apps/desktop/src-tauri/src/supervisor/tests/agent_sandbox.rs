@@ -98,6 +98,24 @@ fn core_with_env(env: Vec<(String, String)>) -> (Arc<Core>, tempfile::TempDir) {
     (core, home)
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_contained_engine_does_not_inherit_unrelated_environment_secrets() {
+    if !sandbox_available() { return; }
+    let state = tempfile::tempdir().unwrap();
+    let (core, home) = core_with_env(vec![("FORGE_TEST_ENV_SECRET".into(), "fixture-only-secret".into()), ("CLAUDE_CONFIG_DIR".into(), state.path().to_string_lossy().into_owned())]);
+    let repo = git::testutil::init_repo();
+    let project = core.add_project(repo.path()).unwrap();
+    let f = Fixture { core, repo, _home: home, project, events: Arc::new(StdMutex::new(vec![])) };
+    let target = state.path().join("harmless.txt");
+    let host = snoop(&f, &target);
+    assert_eq!(host["fixtureSecretPresent"], true, "the host control sees the fixture secret");
+    f.core.project_set_agent_backend(&f.project.id, "linux_namespaces").unwrap();
+    let contained = snoop(&f, &target);
+    assert_eq!(contained["fixtureSecretPresent"], false, "the contained engine must not inherit it");
+    assert_eq!(contained["fixtureProviderStatePresent"], true, "provider state configuration survives");
+}
+
 /// Security review (agent containment): paths named by ACP/MCP definitions used to expose their parent folder, so an
 /// argument like `$HOME/projects` exposed the whole home. Now: directories are never exposed, scripts by their folder,
 /// other files only themselves, and anything too broad stops the agent from starting.

@@ -297,10 +297,12 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn protection_follows_the_real_path_not_the_spelling() {
+        use std::os::windows::process::CommandExt;
         let d = wt();
         std::fs::create_dir_all(d.path().join(".claude")).unwrap();
         // A junction inside the worktree that points at the protected directory.
         let out = std::process::Command::new("cmd")
+            .creation_flags(0x0800_0000)
             .args(["/C", "mklink", "/J"])
             .arg(d.path().join("docs"))
             .arg(d.path().join(".claude"))

@@ -75,7 +75,9 @@ export const fakeAdapter: ProviderAdapter = {
       let wrote: boolean;
       try { read = (await import('node:fs')).readFileSync(target, 'utf8'); } catch (e) { read = `ERROR ${(e as NodeJS.ErrnoException).code ?? e}`; }
       try { (await import('node:fs')).writeFileSync(`${target}.pwned`, 'x'); wrote = true; } catch { wrote = false; }
-      ctx.emit('status', { message: 'snoop', target, read: read.slice(0, 200), wrote, sandbox: process.env.FORGE_SANDBOX ?? null });
+      ctx.emit('status', { message: 'snoop', target, read: read.slice(0, 200), wrote, sandbox: process.env.FORGE_SANDBOX ?? null,
+        fixtureSecretPresent: process.env.FORGE_TEST_ENV_SECRET !== undefined,
+        fixtureProviderStatePresent: process.env.CLAUDE_CONFIG_DIR !== undefined });
       ctx.turnComplete({ status: 'success', usage: zeroUsage, permissionDenials: 0, providerSessionId: sid });
       return;
     }
