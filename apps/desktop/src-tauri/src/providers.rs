@@ -279,17 +279,28 @@ fn split_host_port(url: &str) -> Option<(String, u16)> {
 /// Minimal HTTP/1.0 GET to a loopback server (HTTP/1.0 avoids chunked bodies). Returns the body on a 200.
 fn http_get_loopback(url: &str, path: &str, secs: u64) -> Option<String> {
     use std::io::{Read, Write};
-    use std::net::{TcpStream, ToSocketAddrs};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
     const MAX_RESPONSE: usize = 1024 * 1024;
     if !is_loopback_http(url) {
         return None;
     }
     let deadline = Instant::now().checked_add(Duration::from_secs(secs))?;
     let (host, port) = split_host_port(url)?;
-    // Even a configured `localhost` resolver must not redirect local-model requests off-box.
-    let addr = (host.as_str(), port).to_socket_addrs().ok()?.find(|a| a.ip().is_loopback())?;
-    let remaining = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())?;
-    let mut s = TcpStream::connect_timeout(&addr, remaining).ok()?;
+    // Avoid DNS for localhost and try both families: many local servers listen on only one of them.
+    let addresses = if host == "localhost" {
+        vec![IpAddr::V6(Ipv6Addr::LOCALHOST), IpAddr::V4(Ipv4Addr::LOCALHOST)]
+    } else {
+        vec![host.parse::<IpAddr>().ok()?]
+    };
+    let mut s = None;
+    for ip in addresses.into_iter().filter(IpAddr::is_loopback) {
+        let remaining = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())?;
+        if let Ok(stream) = TcpStream::connect_timeout(&SocketAddr::new(ip, port), remaining) {
+            s = Some(stream);
+            break;
+        }
+    }
+    let mut s = s?;
     let remaining = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())?;
     s.set_write_timeout(Some(remaining)).ok()?;
     let req = format!("GET {path} HTTP/1.0\r\nHost: {host}:{port}\r\nAccept: application/json\r\n\r\n");
@@ -513,7 +524,7 @@ mod tests {
             s.write_all(resp.as_bytes()).unwrap();
             let _ = s.shutdown(std::net::Shutdown::Write);
         });
-        let names = list_ollama_models(&format!("http://127.0.0.1:{port}")).unwrap();
+        let names = list_ollama_models(&format!("http://localhost:{port}")).unwrap();
         assert_eq!(names, vec!["forge-qwen3.5-9b-32k:latest", "gemma3:12b", "qwen3:8b"], "embedding model hidden, forge tags first");
     }
 }
