@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — both workflow YAML files parsed locally after action updates. GitHub-hosted Linux, Windows and artifact-upload execution: PENDING.
 2026-10-31: PASS — Windows evidence parser tests, 16 passed, including malformed and concatenated reports and recorded real scanner fixtures. Live scanner invocation: NOT RUN for this change; Linux CI pending.
 2026-10-31: NOT RUN — Linux `/dev/full` fixture for failed verification log/report writes; added to CI. The fixture uses the standard discard-and-fail device, not a user file.
 2026-10-31: PASS — Windows provider tests, 9 passed, including a real timed-out descendant and Job Object cleanup. Linux CI pending. No provider accounts or GPU used.

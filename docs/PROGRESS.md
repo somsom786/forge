@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Updated pinned GitHub checkout, Node setup and artifact-upload actions to Node 24 releases after CI warned about Node 20. Automatic package-manager caching is explicitly disabled where caching was not previously requested. Both workflow files parse locally; GitHub Actions validation is pending.
 - Scanner evidence parsing now rejects trailing garbage, malformed results fields and excessive Playwright failure counts instead of treating them as clean. Playwright suite structure is checked before results are accepted. Sixteen Windows evidence tests passed, including recorded real-tool report fixtures; genuine live scanner invocation was not repeated for this parser change.
 - Windows provider detection now starts CLI probes suspended inside a kill-on-close Job Object, refusing probes when containment fails. Nine targeted Windows provider tests passed, including a timed-out descendant that could not write its delayed marker. Unix descendant containment remains open.
 - Verification now refuses to start when its requested audit log cannot be created and reports a log write failure as an error. Twelve Windows verification tests passed, including a log-creation failure fixture. Linux CI pending.
