@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — Windows provider tests, 9 passed, including a real timed-out descendant and Job Object cleanup. Linux CI pending. No provider accounts or GPU used.
 2026-10-31: PASS — Windows verification suite, 12 tests, including refusal to execute when its requested log cannot be created. Linux CI pending.
 2026-10-31: PASS — Windows verification suite, 11 tests after incomplete-output handling. The inherited-pipe fixture did not reproduce on Windows and is restricted to Unix; Linux CI is required for that regression.
 2026-10-31: PASS — Windows verification tests, 11 passed; includes unavailable report path, capped valid-JSON-prefix report, and frozen completed buffer. Linux CI pending. Test subprocesses hidden and below normal priority.

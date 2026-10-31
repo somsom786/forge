@@ -7,7 +7,7 @@ the commit log, not here.
 
 ## Release blockers
 
-Provider detection has a bounded response deadline and output limit, but its short-lived CLI probes do not yet contain their descendants. A descendant retaining a pipe can leave a reader thread waiting until the descendant exits; repeated malicious probes could accumulate threads. Treat the installed provider executable as trusted until process-tree containment is added.
+Provider detection has a bounded response deadline and output limit. On Windows its CLI probes start suspended in a kill-on-close Job Object; a timed-out descendant fixture was terminated. Unix probes do not yet contain their descendants: a descendant retaining a pipe can leave a reader thread waiting until it exits, and repeated malicious probes could accumulate threads. Treat installed provider executables as trusted; the Windows Job Object provides cleanup, not isolation.
 
 | # | Risk | Kind | Where | What would close it |
 |---|---|---|---|---|

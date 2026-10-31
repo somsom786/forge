@@ -78,9 +78,20 @@ fn run_timeout_command(mut cmd: Command, timeout: Duration) -> Option<(bool, Str
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
+        cmd.creation_flags(0x0800_0000 | crate::proc::CREATE_SUSPENDED);
     }
     let mut child = cmd.spawn().ok()?;
+    #[cfg(windows)]
+    let _containment = match crate::proc::contain(&child) {
+        Ok(job) => job,
+        Err(_) => { let _ = child.kill(); let _ = child.wait(); return None; }
+    };
+    #[cfg(windows)]
+    if crate::proc::resume_suspended(&child).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    }
     let t0 = Instant::now();
     let (tx, rx) = mpsc::channel();
     for (index, mut pipe) in [(0, Box::new(child.stdout.take()?) as Box<dyn Read + Send>), (1, Box::new(child.stderr.take()?) as Box<dyn Read + Send>)] {
@@ -366,7 +377,12 @@ mod tests {
                 { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0800_0000); }
                 cmd.spawn().unwrap();
             }
-            Ok("sleep") => std::thread::sleep(Duration::from_secs(3)),
+            Ok("sleep") => {
+                if let Some(marker) = std::env::var_os("FORGE_PROBE_MARKER") {
+                    std::thread::sleep(Duration::from_secs(1));
+                    let _ = std::fs::write(marker, "survived");
+                } else { std::thread::sleep(Duration::from_secs(3)); }
+            }
             _ => {}
         }
     }
@@ -384,6 +400,18 @@ mod tests {
         let start = Instant::now();
         assert!(run_timeout_command(fixture_command("hold"), Duration::from_millis(400)).is_none());
         assert!(start.elapsed() < Duration::from_secs(2), "an inherited pipe must not defeat the deadline");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn timed_out_provider_probe_terminates_its_descendant() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let mut cmd = fixture_command("hold");
+        cmd.env("FORGE_PROBE_MARKER", &marker);
+        assert!(run_timeout_command(cmd, Duration::from_millis(400)).is_none());
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "the timed-out probe's descendant must not survive its job");
     }
 
     #[test]
