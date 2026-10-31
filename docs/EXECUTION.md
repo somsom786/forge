@@ -20,22 +20,21 @@ its descendant and inherits the sandbox. What the agent sees:
 |---|---|---|
 | Worktree | read-write | read-write |
 | Git common dir | read-only | read-only |
-| Other host files | **none**: `/home`, `/root`, `/tmp`, `/run` are empty tmpfs; `/usr` and `/etc` basics read-only | same |
+| Other host files | `/home`, `/root`, `/tmp`, `/run` start as private tmpfs; selected mounts can expose overlapping host data | selected system, toolchain, workspace and Git mounts can expose overlapping host data |
 | Toolchain / runtime | node, the engine package and every `node_modules` it resolves from, the provider binaries; for an ACP agent or authorized MCP server: the folder of its program and of any script it is given, and any other *file* argument as that file only. **A directory argument is never exposed** (a filesystem-style MCP server pointed at a data folder will not see it). All read-only | toolchain only |
 | Provider state | Claude Code's config dir (`CLAUDE_CONFIG_DIR`, else `~/.claude` + `~/.claude.json`) or `CODEX_HOME` (else `~/.codex`) bound **read-write in place**: the agent must use its own login. Nothing is copied. These folders also hold the provider's transcripts of the user's *other* projects, which the agent can therefore read | none |
-| Network | **shared** (the agent must reach its provider) | none |
+| Network | **shared** (the agent must reach its provider) | IP networking isolated; mounted filesystem Unix sockets can reach host services |
 | Environment | allow-listed runtime, provider-state, proxy and TLS settings; loader injection, SSH agents, cloud tokens and other variables removed; plus `FORGE_SANDBOX=linux_namespaces` | cleared |
-| FORGE's database, other worktrees, `~/.ssh`, cloud credentials | not visible (unless FORGE's home was configured under a bound path) | not visible |
+| FORGE's database, other worktrees, `~/.ssh`, cloud credentials | not deliberately mounted; overlapping system, toolchain, workspace, Git or provider mounts can expose them | not deliberately mounted; overlapping mounts can expose them |
 
-Before a contained agent starts, every path above is checked: the root or a top-level folder, the home folder or one
+Before a contained agent starts, explicit agent paths are checked: the root or a top-level folder, the home folder or one
 above it, FORGE's own data folder (or anything inside or above it), a folder above the worktree, or a relative provider
 state path stops the mission with the reason instead of being exposed (`agent_sandbox::what_a_contained_agent_may_see…`,
 `…provider_state_folder_that_is_too_broad…`).
 
-So an approved `cat ~/.ssh/id_rsa`, `rm -rf ~`, or a write to another project fails inside the sandbox, while the agent still
-works in its worktree. It does **not** stop exfiltration over the network of what the agent can see (the worktree, its own
-provider login), and the agent can still `git push` only if push credentials are reachable — they are not, unless they live in
-an explicitly forwarded proxy setting or the provider's state. Tests (Linux, required in CI): `agent_sandbox::a_contained_agent_cannot_read_or_write_outside_its_worktree`
+In the tested fixture, attempts to read or write selected host paths fail while the agent works in its worktree. Mount overlap
+can change that result. The shared network permits exfiltration of anything the agent can read, including provider state;
+credentials may be present in mounted paths or explicitly forwarded proxy settings. Tests (Linux, required in CI): `agent_sandbox::a_contained_agent_cannot_read_or_write_outside_its_worktree`
 (scripted agent, with a host control), `…still_works_in_its_worktree…`, `an_unavailable_agent_backend…never_falls_back`, and
 `claude_real::an_approved_command_from_real_claude_code_cannot_read_outside_the_worktree_when_contained` (the real Claude Code
 binary, an approved `Bash cat` of a host file; host control prints it). Mutation-checked: building the agent command with
@@ -69,7 +68,7 @@ test has a trusted-local control proving it would notice a leak, and mutation ch
 | Attack | Result |
 |---|---|
 | Read `~/.ssh/id_*` / another directory outside the workspace | not present in the sandbox |
-| Write outside the workspace | impossible; workspace writes work |
+| Write to a selected outside fixture | refused; workspace writes work |
 | Read FORGE's environment (tokens, `SSH_AUTH_SOCK`) | cleared |
 | Connect to a service on the host's loopback; resolve DNS | refused / no DNS |
 | Leave a background process running | killed with the sandbox's PID namespace |
