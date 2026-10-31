@@ -122,10 +122,7 @@ change between runs; the dialog says so.
 | Secret-scan findings keep rule, file and line only; `Secret`/`Match` are never stored or shown, even redacted. At most 200 findings are kept per run (counts cover all). Unknown severity is treated as blocking. | `evidence::gitleaks`, `MAX_FINDINGS` | `evidence::tests::gitleaks_findings…`, `findings_are_capped…` |
 | Findings appear in the Verification view and the Proof Pack (JSON + markdown). | `proof.rs` | `tests::evidence::findings_from_a_secret_scan…` |
 
-Honest limits: the parsers were tested against **hand-written fixtures** built from each tool's documented JSON format
-(`apps/desktop/src-tauri/fixtures/evidence/README.md`), not against real tool runs; the suggested command lines (notably
-`gitleaks … --report-path -` and `osv-scanner scan source`) must be confirmed against the tool versions on the user's machine.
-Trivy downloads its vulnerability database, so it fails (tool error) on the `linux_namespaces` backend, which has no network.
+The parsers have hand-written and recorded real-tool fixtures; Linux CI also exercises installed Gitleaks and OSV-Scanner through the check path. Tool versions and configurations can differ on a user's machine. Trivy cannot download its vulnerability database over IP from the `linux_namespaces` backend; mounted filesystem Unix sockets remain a separate host communication path.
 
 ## ACP agents (Milestone 3)
 
@@ -206,8 +203,9 @@ Policy revision bumped to `policy-2026-10-23.2`, then `policy-2026-10-24.1` (Glo
 
 * Checks and experiment runs execute through the project's **execution backend**. `trusted_local` (the default, unchanged
   behaviour) is labelled "Not isolated" everywhere. `linux_namespaces` (bubblewrap) is implemented and adversarially tested on
-  Linux: no host files outside the workspace, no home directory, cleared environment, no network, no surviving processes,
-  read-only git directory. Windows Sandbox and isolated WSL are designed and reported **not implemented**.
+  Linux: a cleared environment, isolated IP networking, a private home and read-only Git metadata. Selected system,
+  toolchain, Git and workspace mounts can expose overlapping host data or Unix sockets; these are not a complete secret
+  or communication boundary. Windows Sandbox and isolated WSL are designed and reported **not implemented**.
 * A selected backend that is unavailable is an error; FORGE never falls back to a less isolated one. Changes are audited, and
   every verification run, experiment run and Proof Pack records the backend it ran on.
 * **Agents** can be contained too (per project, "Agents run: …"; Linux only): the engine, the provider and every command it

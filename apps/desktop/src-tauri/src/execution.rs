@@ -7,7 +7,8 @@
 //! * `trusted_local` — the user's own shell, privileges, home directory and network. **Not isolated.** Kept for compatibility.
 //! * `linux_namespaces` — bubblewrap (an external program, LGPL-2.0-or-later, invoked not linked): new user/pid/net/ipc/uts
 //!   namespaces, an empty filesystem with only system and toolchain directories mounted read-only, the workspace mounted
-//!   read-write, no home directory, a cleared environment and no network. Linux only. On Windows this is the planned inner
+//!   read-write, no home directory, a cleared environment and isolated IP networking. Mounted Unix sockets can still reach
+//!   host services. Linux only. On Windows this is the planned inner
 //!   layer of the isolated-WSL backend.
 //! * `windows_sandbox`, `isolated_wsl` — designed (docs/EXECUTION.md), **not implemented**; always reported unavailable.
 //!
@@ -122,7 +123,7 @@ pub fn capabilities(b: Backend) -> Capabilities {
             operating_systems: vec!["linux".into()],
             filesystem_isolation: prop(Partial, "Empty root filesystem with read-only system, selected /etc and external PATH toolchain mounts, plus the workspace and linked Git metadata. Custom FORGE data, home or other sensitive files placed within those mounts may be exposed; mount selection is not a complete secret boundary."),
             process_isolation: prop(Enforced, "New user, PID, IPC and UTS namespaces; no capabilities; every process inside ends when the run ends."),
-            network_control: prop(Enforced, "New network namespace with only a private loopback: no outbound or host-loopback connections."),
+            network_control: prop(Partial, "A private network namespace blocks outbound IP and host-loopback connections. Unix sockets exposed by mounted directories can still connect to host services."),
             resource_limits: prop(Partial, "Time limit, output caps, no core dumps and a per-file size cap. No memory or CPU limit (needs cgroups; not implemented)."),
             workspace_mapping: prop(Enforced, "The mission worktree is mounted read-write at its own path; the repository's git directory is mounted read-only so git can read history."),
             credential_exposure: prop(Partial, "Environment cleared to a fixed minimal set; home and SSH agent are not deliberately mounted. Credentials within the workspace, Git metadata, system directories or selected toolchain mounts may still be reachable. Toolchains under your home are normally unavailable."),
@@ -504,7 +505,7 @@ mod tests {
         let base = ["PATH", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HTTPS_PROXY", "NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "BASH_ENV", "SSH_AUTH_SOCK", "GH_TOKEN", "AWS_SESSION_TOKEN", "unusual_private_value", "FORGE_ALLOW_FAKE_PROVIDER"];
         let kept: Vec<_> = contained_agent_env(base.map(|k| (k.into(), "fixture".into()))).into_iter().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
         assert_eq!(kept, vec!["PATH", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HTTPS_PROXY"]);
-        assert_eq!(capabilities(Backend::LinuxNamespaces).network_control.level, Level::Enforced);
+        assert_eq!(capabilities(Backend::LinuxNamespaces).network_control.level, Level::Partial);
         assert_eq!(capabilities(Backend::LinuxNamespaces).filesystem_isolation.level, Level::Partial);
         assert_eq!(capabilities(Backend::LinuxNamespaces).credential_exposure.level, Level::Partial);
         assert_eq!(agent_capabilities(Backend::LinuxNamespaces).network_control.level, Level::None);

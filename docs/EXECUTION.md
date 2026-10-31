@@ -59,7 +59,7 @@ bubblewrap (`bwrap`, invoked as an external program) with:
   directory (e.g. `/opt/node22`) read-only;
 * the workspace (mission or experiment worktree) read-write at its own path; the repository's git directory read-only;
 * private `/tmp` and `/home/forge`; `--clearenv` then a fixed environment (`PATH`, `HOME`, `TMPDIR`, `LANG`, `CI`, ...);
-* no network at all (a private loopback only);
+* isolated IP networking (a private loopback only); filesystem Unix sockets visible through a mounted directory can still reach host services;
 * `ulimit -c 0` (no core dumps) and a 4 GiB per-file cap; the existing timeout and output caps.
 
 **Enforced and tested** (`execution_tests.rs`, `supervisor::tests::phase2::checks_run_on_the_projects_execution_backend…`; every

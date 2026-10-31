@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Linux check network reporting now distinguishes IP isolation from mounted Unix sockets, which may connect to host services. Added a harmless host-listener regression; Linux CI is required to execute it. No claim of complete network isolation remains in the capability text.
 - Linux optional PATH toolchain mounts now exclude resolved paths overlapping FORGE's data directory, including custom `FORGE_HOME` locations; unresolved explicit paths suppress optional toolchain mounts. Eight portable execution tests passed on Windows. Mandatory system, workspace, provider and Git mounts can still overlap sensitive data; Linux enforcement validation is pending.
 - Re-ran the Windows memory FAQ benchmark and added a reproducible process working-set measurement. The debug test process peaked at 16,617,472 bytes across both retrieval modes and fixture setup; this does not isolate retrieval allocations or child-process memory. Scores and latency are recorded in `docs/EVALUATION.md`.
 - Updated pinned GitHub checkout, Node setup and artifact-upload actions to Node 24 releases after CI warned about Node 20. Automatic package-manager caching is explicitly disabled where caching was not previously requested. Both workflow files parse locally; GitHub Actions validation is pending.

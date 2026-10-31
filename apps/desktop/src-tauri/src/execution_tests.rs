@@ -92,7 +92,7 @@ fn secrets_in_forges_environment_do_not_reach_the_command() {
 }
 
 #[test]
-fn a_command_cannot_reach_the_network_or_host_loopback_services() {
+fn a_command_cannot_reach_ip_network_or_host_loopback_services() {
     if !sandbox_available() {
         return;
     }
@@ -111,6 +111,22 @@ fn a_command_cannot_reach_the_network_or_host_loopback_services() {
     assert!(listener.accept().is_err(), "the sandbox reached the host's listener");
     let dns = run(&ws, "node -e \"require('dns').lookup('example.com',e=>{console.log(e?'NO-DNS':'RESOLVED');})\"", 20);
     assert!(dns.output_tail.contains("NO-DNS"), "{}", dns.output_tail);
+}
+
+#[test]
+fn mounted_unix_sockets_can_reach_host_services_despite_network_namespace() {
+    use std::os::unix::net::UnixListener;
+    if !sandbox_available() { return; }
+    let (_d, ws, _) = setup();
+    let listener = UnixListener::bind(ws.join("host.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let probe = "node -e \"const s=require('net').connect('host.sock');s.on('connect',()=>{console.log('CONNECTED');process.exit(0)});s.on('error',()=>{console.log('BLOCKED');process.exit(0)})\"";
+    let control = run_check_in(Backend::TrustedLocal, probe, &ws, Duration::from_secs(20), None, Arc::new(AtomicBool::new(false)));
+    assert!(control.output_tail.contains("CONNECTED"), "host control: {}", control.output_tail);
+    let _ = listener.accept().unwrap();
+    let sandbox = run(&ws, probe, 20);
+    assert!(sandbox.output_tail.contains("CONNECTED"), "mounted socket behavior: {}", sandbox.output_tail);
+    assert!(listener.accept().is_ok(), "the host listener should receive the sandbox connection");
 }
 
 #[test]

@@ -20,6 +20,8 @@ Provider detection has a bounded response deadline and output limit. On Windows 
 
 Linux linked-worktree metadata is validated before selecting its shared Git mount. This reduces forged-pointer exposure but does not eliminate concurrent filesystem path-swap races; Git metadata may contain sensitive repository configuration.
 
+Linux network namespaces isolate IP networking for checks, but filesystem Unix sockets exposed through workspace or other mounts may still reach host services. A real sandbox regression was added; its Linux CI result is pending.
+
 1. **An approved agent action runs with the user's privileges on Windows, and on Linux unless the project's agent
    backend is `linux_namespaces`** (limitation; `docs/SECURITY.md` limit 1). Approval prompts and policy reduce, not
    remove, the risk. Windows isolation (Windows Sandbox / isolated WSL) is designed in `docs/EXECUTION.md`, not
