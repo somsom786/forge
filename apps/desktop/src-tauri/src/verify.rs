@@ -128,6 +128,19 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
         Ok(c) => c,
         Err(e) => return fail(e.to_string()),
     };
+    let log = match log_path {
+        Some(p) => {
+            let open = || -> std::io::Result<std::fs::File> {
+                if let Some(parent) = p.parent() { std::fs::create_dir_all(parent)?; }
+                std::fs::File::create(p)
+            };
+            match open() {
+                Ok(f) => Some(f),
+                Err(e) => return fail(format!("could not create the check log: {e}")),
+            }
+        }
+        None => None,
+    };
     // An adapter cannot produce trustworthy evidence if its report cannot be captured.
     let capture = match stdout_path {
         Some(p) => {
@@ -181,12 +194,6 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
     #[cfg(not(windows))]
     let _containment = proc::contain(&child).ok();
 
-    let log = log_path.and_then(|p| {
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::File::create(p).ok()
-    });
     let buf = Arc::new(Mutex::new(Buf { log, ..Default::default() }));
     let mut readers = vec![];
     for (i, stream) in [child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>), child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>)].into_iter().enumerate() {
@@ -261,9 +268,10 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
         if c.write_failed { capture_error = Some("check report could not be written"); }
         else if c.truncated { capture_error = Some("check report exceeded the capture limit"); }
     }
-    if capture_error.is_some() && matches!(state, RunState::Passed | RunState::Failed) { state = RunState::Error; }
     let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
     b.finish_log();
+    if b.write_failed { capture_error = Some("check log could not be written"); }
+    if capture_error.is_some() && matches!(state, RunState::Passed | RunState::Failed) { state = RunState::Error; }
     let truncated = b.total as usize > b.tail.len().min(TAIL_BYTES);
     let start = b.tail.len().saturating_sub(TAIL_BYTES);
     let mut text = String::from_utf8_lossy(&b.tail[start..]).into_owned();
@@ -386,6 +394,15 @@ mod tests {
         let r = run_check_capture(Backend::TrustedLocal, "node -e \"require('fs').writeFileSync('ran','yes')\"", d.path(), Duration::from_secs(10), None, Some(d.path()), Arc::new(AtomicBool::new(false)));
         assert_eq!(r.state, RunState::Error);
         assert!(!d.path().join("ran").exists(), "the check must not run without report capture");
+    }
+
+    #[test]
+    fn missing_log_stops_the_check() {
+        let d = tempfile::tempdir().unwrap();
+        let r = run_check("node -e \"require('fs').writeFileSync('ran','yes')\"", d.path(), Duration::from_secs(10), Some(d.path()), Arc::new(AtomicBool::new(false)));
+        assert_eq!(r.state, RunState::Error);
+        assert!(r.log_path.is_none());
+        assert!(!d.path().join("ran").exists(), "the check must not run without its audit log");
     }
 
     #[test]

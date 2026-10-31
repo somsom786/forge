@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Verification now refuses to start when its requested audit log cannot be created and reports a log write failure as an error. Twelve Windows verification tests passed, including a log-creation failure fixture. Linux CI pending.
 - Verification now marks ordinary checks incomplete if their output readers fail or remain open after the parent exits. Windows verification tests: 11 passed. The Node inherited-pipe fixture did not retain the pipe on Windows, so the real descendant regression is Unix-only and awaits Linux CI; it is not evidence of Windows descendant behavior.
 - Scanner capture now fails closed if a report cannot be created or written, exceeds its limit, or output readers do not complete. Completed buffers reject late writes. Eleven Windows verification tests passed, including a 17 MiB report whose truncated prefix is valid JSON. This does not prevent a trusted-local command from directly modifying files.
 - Windows verification checks now start suspended and only execute after Job Object assignment; setup failures abort the check. Eight Windows verification tests and the Windows suspended-process containment test passed. This improves process cleanup, not filesystem isolation.
