@@ -44,6 +44,7 @@ struct Buf {
     truncated: bool,
     closed: bool,
     write_failed: bool,
+    in_private_key: bool,
 }
 
 impl Buf {
@@ -62,27 +63,36 @@ impl Buf {
         }
     }
 
+    fn redact_log_line(&mut self, line: &[u8]) {
+        let text = String::from_utf8_lossy(line);
+        let begin = text.contains("-----BEGIN ") && text.contains("PRIVATE KEY-----");
+        let end = text.contains("-----END ") && text.contains("PRIVATE KEY-----");
+        if begin || self.in_private_key {
+            if begin { self.write_log(b"[REDACTED PRIVATE KEY]\n"); }
+            self.in_private_key = !end;
+        } else {
+            self.write_log(redact::redact_str(&text).as_bytes());
+        }
+    }
+
     /// Write the log redacted, line by line.
     fn log_chunk(&mut self, chunk: &[u8]) {
         if self.closed { return; }
         self.pending.extend_from_slice(chunk);
         while let Some(pos) = self.pending.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = self.pending.drain(..=pos).collect();
-            let red = redact::redact_str(&String::from_utf8_lossy(&line));
-            self.write_log(red.as_bytes());
+            self.redact_log_line(&line);
         }
         if self.pending.len() > 64 * 1024 {
             let line: Vec<u8> = std::mem::take(&mut self.pending);
-            let red = redact::redact_str(&String::from_utf8_lossy(&line));
-            self.write_log(red.as_bytes());
+            self.redact_log_line(&line);
         }
     }
 
     fn finish_log(&mut self) {
         if !self.pending.is_empty() {
             let line: Vec<u8> = std::mem::take(&mut self.pending);
-            let red = redact::redact_str(&String::from_utf8_lossy(&line));
-            self.write_log(red.as_bytes());
+            self.redact_log_line(&line);
         }
         self.closed = true;
     }
@@ -430,6 +440,30 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
         capture.log_chunk(b"late output\n");
         assert_eq!(std::fs::read(&path).unwrap(), before, "late readers must not alter completed evidence");
+    }
+
+    #[test]
+    fn multiline_private_keys_are_not_written_to_verification_logs() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("log");
+        let mut log = Buf { log: Some(std::fs::File::create(&path).unwrap()), ..Default::default() };
+        log.log_chunk(b"before\n-----BEGIN PRIVATE ");
+        log.log_chunk(b"KEY-----\nprivate-fixture-part-one\nprivate-fixture-part-two\n-----END PRIVATE KEY-----\nafter\n");
+        log.finish_log();
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(contents.contains("before") && contents.contains("after") && contents.contains("[REDACTED PRIVATE KEY]"));
+        assert!(!contents.contains("private-fixture-part"), "{contents}");
+    }
+
+    #[test]
+    fn verification_command_redacts_a_multiline_private_key_in_log_and_tail() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("run.log");
+        let command = "node -e \"console.log('-----BEGIN '+'PRIVATE KEY-----\\nprivate-fixture-value\\n-----END '+'PRIVATE KEY-----')\"";
+        let result = run_check(command, d.path(), Duration::from_secs(20), Some(&path), Arc::new(AtomicBool::new(false)));
+        assert_eq!(result.state, RunState::Passed);
+        assert!(!result.output_tail.contains("private-fixture-value"));
+        assert!(!std::fs::read_to_string(path).unwrap().contains("private-fixture-value"));
     }
 
     #[test]
