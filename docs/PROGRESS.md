@@ -1,5 +1,9 @@
 # FORGE — Progress
 
+## Continuation, 2026-10-31
+
+- Hardened Linux sandbox Git metadata mount selection: linked-worktree pointers must resolve to an existing Git worktree with a matching backlink and common-directory pointer. A harmless forged-pointer fixture reproduced the unsafe mount selection before the fix; seven portable execution tests passed on Windows afterward, including a real linked-worktree fixture. Linux sandbox enforcement tests are included in CI and remain pending for this revision. Malformed or unsupported linked metadata is refused rather than guessed.
+
 ## Continuation, 2026-10-28
 
 - An intermittent installer CI failure occurred in run `40718667010`: the 180-second app launch passed, but the test checked the uninstall registry entry immediately after the executable disappeared. The generated NSIS script removes files before the registry entry. Validation now waits for both conditions, up to a fixed timeout, and a fixture checks delayed removal and persistent failure. At `46836d6`, both PowerShell fixture runs and the real 180-second installer launch and uninstall passed in Windows CI.

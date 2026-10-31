@@ -16,6 +16,8 @@ the commit log, not here.
 
 ## Security (in priority order)
 
+Linux linked-worktree metadata is validated before selecting its shared Git mount. This reduces forged-pointer exposure but does not eliminate concurrent filesystem path-swap races; Git metadata may contain sensitive repository configuration.
+
 1. **An approved agent action runs with the user's privileges on Windows, and on Linux unless the project's agent
    backend is `linux_namespaces`** (limitation; `docs/SECURITY.md` limit 1). Approval prompts and policy reduce, not
    remove, the risk. Windows isolation (Windows Sandbox / isolated WSL) is designed in `docs/EXECUTION.md`, not

@@ -313,14 +313,46 @@ fn toolchain_roots_excluding(path_var: &str, home: Option<&Path>, system: &[&Pat
     out
 }
 
-/// The git directory shared by a worktree (read from its `.git` file), so it can be mounted read-only.
-fn git_common_dir(workspace: &Path) -> Option<PathBuf> {
-    let gitfile = std::fs::read_to_string(workspace.join(".git")).ok()?;
-    let gitdir = PathBuf::from(gitfile.trim().strip_prefix("gitdir:")?.trim());
-    let gitdir = if gitdir.is_absolute() { gitdir } else { workspace.join(gitdir) };
-    // <repo>/.git/worktrees/<name> -> <repo>/.git
-    let common = gitdir.parent()?.parent()?.to_path_buf();
-    common.is_dir().then_some(common)
+fn read_git_metadata(path: &Path, label: &str) -> Result<String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ForgeError::PathRejected(format!("invalid linked-worktree Git metadata: {label} is unavailable")))?;
+    if !metadata.is_file() || metadata.len() > 16_384 {
+        return Err(ForgeError::PathRejected(format!("invalid linked-worktree Git metadata: {label} is not a small regular file")));
+    }
+    std::fs::read_to_string(path).map_err(|_| ForgeError::PathRejected(format!("invalid linked-worktree Git metadata: {label} is unreadable")))
+}
+
+/// Validate both sides of Git's linked-worktree metadata before mounting its shared directory. Never infer a mount
+/// from an arbitrary path in an agent-controlled `.git` file. Ordinary directories without linked metadata need no mount.
+fn git_common_dir(workspace: &Path) -> Result<Option<PathBuf>> {
+    let gitfile = workspace.join(".git");
+    let metadata = match std::fs::symlink_metadata(&gitfile) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let invalid = |message: &str| ForgeError::PathRejected(format!("invalid linked-worktree Git metadata: {message}"));
+    if metadata.file_type().is_symlink() { return Err(invalid(".git is a link")); }
+    if metadata.is_dir() { return Ok(None) }
+    let contents = read_git_metadata(&gitfile, ".git")?;
+    let pointer = contents.trim().strip_prefix("gitdir:").map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| invalid("missing gitdir pointer"))?;
+    let pointer = PathBuf::from(pointer);
+    let gitdir = dunce::canonicalize(if pointer.is_absolute() { pointer } else { workspace.join(pointer) })
+        .map_err(|_| invalid("gitdir does not exist"))?;
+    let worktrees = gitdir.parent().filter(|p| p.file_name().is_some_and(|n| n == "worktrees"))
+        .ok_or_else(|| invalid("gitdir is not a linked-worktree directory"))?;
+    let common = worktrees.parent().ok_or_else(|| invalid("missing common Git directory"))?.to_path_buf();
+    let back = read_git_metadata(&gitdir.join("gitdir"), "worktree backlink")?;
+    let back = PathBuf::from(back.trim());
+    let back = dunce::canonicalize(if back.is_absolute() { back } else { gitdir.join(back) })
+        .map_err(|_| invalid("worktree backlink does not exist"))?;
+    let expected = dunce::canonicalize(&gitfile).map_err(|_| invalid("workspace .git file is unavailable"))?;
+    if back != expected { return Err(invalid("worktree backlink names a different workspace")); }
+    let common_link = read_git_metadata(&gitdir.join("commondir"), "common-directory pointer")?;
+    let common_link = PathBuf::from(common_link.trim());
+    let resolved_common = dunce::canonicalize(if common_link.is_absolute() { common_link } else { gitdir.join(common_link) })
+        .map_err(|_| invalid("common Git directory is unavailable"))?;
+    if resolved_common != common { return Err(invalid("common-directory pointer is inconsistent")); }
+    Ok(Some(common))
 }
 
 const SANDBOX_HOME: &str = "/home/forge";
@@ -346,7 +378,7 @@ pub fn command(b: Backend, spec: &RunSpec) -> Result<Command> {
                 c.arg("--ro-bind-try").arg(r).arg(r);
             }
             c.args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/home", "--dir", SANDBOX_HOME]);
-            if let Some(common) = git_common_dir(&ws) {
+            if let Some(common) = git_common_dir(&ws)? {
                 c.arg("--ro-bind").arg(&common).arg(&common);
             }
             c.arg("--bind").arg(&ws).arg(&ws).arg("--chdir").arg(&ws);
@@ -414,7 +446,7 @@ pub fn agent_command(b: Backend, spec: &AgentSpec) -> Result<Command> {
             for rw in &spec.read_write {
                 c.arg("--bind-try").arg(rw).arg(rw);
             }
-            if let Some(common) = git_common_dir(&ws) {
+            if let Some(common) = git_common_dir(&ws)? {
                 c.arg("--ro-bind").arg(&common).arg(&common);
             }
             c.arg("--bind").arg(&ws).arg(&ws).arg("--chdir").arg(&ws);
@@ -513,5 +545,74 @@ mod tests {
     #[test]
     fn quoting_survives_hostile_commands() {
         assert_eq!(sh_quote("echo 'a'; rm -rf x"), r"'echo '\''a'\''; rm -rf x'");
+    }
+
+    #[test]
+    fn forged_git_pointer_cannot_select_an_unrelated_mount() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let private = root.path().join("private-fixture");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&private).unwrap();
+        std::fs::write(private.join("fixture.txt"), "harmless").unwrap();
+        std::fs::write(workspace.join(".git"), format!("gitdir: {}\n", private.join("worktrees/nonexistent").display())).unwrap();
+        assert!(git_common_dir(&workspace).is_err(), "an unrelated directory must not become a sandbox mount");
+        let fake_gitdir = private.join("worktrees/fake");
+        std::fs::create_dir_all(&fake_gitdir).unwrap();
+        std::fs::write(fake_gitdir.join("gitdir"), private.join("fixture.txt").to_string_lossy().as_bytes()).unwrap();
+        std::fs::write(fake_gitdir.join("commondir"), "../..\n").unwrap();
+        std::fs::write(workspace.join(".git"), format!("gitdir: {}\n", fake_gitdir.display())).unwrap();
+        assert!(git_common_dir(&workspace).is_err(), "a backlink to another file must be refused");
+    }
+
+    #[test]
+    fn legitimate_linked_worktree_resolves_its_git_directory() {
+        let repo = crate::git::testutil::init_repo();
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("linked");
+        let base = crate::git::head_commit(repo.path()).unwrap();
+        crate::git::worktree_add(repo.path(), &workspace, "forge/sandbox-fixture", &base).unwrap();
+        let common = git_common_dir(&workspace).unwrap().unwrap();
+        assert_eq!(common, dunce::canonicalize(repo.path().join(".git")).unwrap());
+        crate::git::worktree_remove(repo.path(), &workspace, true).unwrap();
+    }
+
+    #[test]
+    fn ordinary_or_missing_git_directories_need_no_separate_mount() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(git_common_dir(root.path()).unwrap().is_none());
+        std::fs::create_dir(root.path().join(".git")).unwrap();
+        assert!(git_common_dir(root.path()).unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_git_metadata_cannot_be_read_through_a_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let private = root.path().join("private-fixture");
+        let link = root.path().join("gitdir");
+        std::fs::write(&private, "harmless fixture").unwrap();
+        std::os::unix::fs::symlink(&private, &link).unwrap();
+        assert!(read_git_metadata(&link, "worktree backlink").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sandbox_refuses_forged_git_metadata_before_spawning() {
+        if availability(Backend::LinuxNamespaces).is_err() {
+            assert!(std::env::var("FORGE_REQUIRE_SANDBOX_TESTS").as_deref() != Ok("1"), "sandbox required");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let private = root.path().join("outside");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&private).unwrap();
+        std::fs::write(private.join("fixture.txt"), "harmless host fixture").unwrap();
+        assert_eq!(std::fs::read_to_string(private.join("fixture.txt")).unwrap(), "harmless host fixture");
+        std::fs::write(workspace.join(".git"), format!("gitdir: {}\n", private.join("worktrees/absent").display())).unwrap();
+        let spec = RunSpec { command: "true", workspace: &workspace };
+        let error = command(Backend::LinuxNamespaces, &spec).unwrap_err().to_string();
+        assert!(error.contains("linked-worktree Git metadata"), "{error}");
     }
 }
