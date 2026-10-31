@@ -254,13 +254,12 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
         }
     }
 
-    let mut capture_error = None;
+    let mut capture_error = incomplete_output.then_some("check output was incomplete or did not close");
     if let Some(c) = &capture {
         let mut c = c.lock().unwrap_or_else(|p| p.into_inner());
         c.finish_log();
         if c.write_failed { capture_error = Some("check report could not be written"); }
         else if c.truncated { capture_error = Some("check report exceeded the capture limit"); }
-        else if incomplete_output { capture_error = Some("check report output did not close"); }
     }
     if capture_error.is_some() && matches!(state, RunState::Passed | RunState::Failed) { state = RunState::Error; }
     let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
@@ -315,6 +314,15 @@ mod tests {
         let r = run("node -e \"require('child_process').spawn(process.execPath,['-e','setTimeout(()=>{},60000)'],{stdio:'inherit'}); setTimeout(()=>{},60000)\"", 1);
         assert_eq!(r.state, RunState::Timeout);
         assert!(t0.elapsed() < Duration::from_secs(10), "runner must not hang on grandchildren holding pipes: {:?}", t0.elapsed());
+    }
+
+    // Node's Windows child fixture does not retain these inherited pipe handles after its parent exits.
+    #[cfg(unix)]
+    #[test]
+    fn completed_parent_with_open_output_is_not_a_passing_check() {
+        let r = run("node -e \"let c=require('child_process').spawn(process.execPath,['-e','setTimeout(()=>{},5000)'],{stdio:'inherit'});c.unref()\"", 15);
+        assert_eq!(r.state, RunState::Error);
+        assert!(r.output_tail.contains("output was incomplete"));
     }
 
     #[test]
