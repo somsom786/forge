@@ -187,6 +187,7 @@ fn an_approved_call_cannot_be_reused_after_its_deadline() {
     wait_until("two results", || results(&f, &m).len() == 2);
     let r = results(&f, &m);
     assert_eq!(r.iter().map(|x| x.0).collect::<Vec<_>>(), vec![true, false], "{r:?}");
+    assert!(f.core.store.audit_count("approval.reuse_denied").unwrap() >= 1);
 }
 
 /// Security review F7: approving requires naming the request that was shown; denying does not.

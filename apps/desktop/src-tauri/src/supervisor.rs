@@ -842,7 +842,10 @@ impl Core {
                                         existing.binding_sha256.as_deref() == Some(binding.as_str())
                                     })
                             });
-                            if !valid { return reply("deny", Some("the earlier approval expired or its context changed")); }
+                            if !valid {
+                                self.store.audit("system", "approval.reuse_denied", Some(&existing.id), &json!({"tool": req.tool, "reason": "expired or changed context"}));
+                                return reply("deny", Some("the earlier approval expired or its context changed"));
+                            }
                         }
                         // The only legitimate repeat is the provider's own prompt following FORGE's hook for the same call, so
                         // an allow is reused once, and only if policy still allows it now (the world may have changed).

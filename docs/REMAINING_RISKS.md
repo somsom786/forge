@@ -53,6 +53,7 @@ Linux network namespaces isolate IP networking for checks, but filesystem Unix s
 10. **The lockfile contains two RustSec advisories reported by OSV-Scanner** (confirmed in CI `41221116223`): `glib 0.18.5` has [RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html), an unsound iterator fixed in 0.20; `proc-macro-error 1.0.4` has [RUSTSEC-2024-0370](https://rustsec.org/advisories/RUSTSEC-2024-0370.html), an unmaintained-package notice with no patched version. The lockfile's reverse edges run through the GTK/Tauri dependency stack. Windows `cargo tree` did not select either package; an offline Linux-target tree could not be resolved locally. Whether FORGE exercises the affected GLib methods is unverified. The OSV job is informational and exited 1; its green job status is not a clean scan. Resolve or explicitly assess these transitive dependencies before release.
 
    Tauri tracks the [GTK dependency upgrade](https://github.com/tauri-apps/tauri/issues/12564); its [development manifest](https://github.com/tauri-apps/tauri/blob/dev/crates/tauri/Cargo.toml) specified GTK 0.18 when checked on 2026-10-31. A standalone GLib major-version bump would require compatibility work across that dependency family. No unreviewed fork or advisory suppression was added.
+11. **Approval expiry uses the system wall clock** (code limitation). Moving the clock backwards during a live session can extend a deadline. Pending approvals expire on restart, but a monotonic in-session deadline is not yet implemented.
 
 ## Reliability and data
 
