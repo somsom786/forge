@@ -3,8 +3,8 @@
 ## Continuation: verification evidence and sandbox mounts (2026-10-31)
 
 - Confirmed from the check runner and regression fixtures: an uncreated, truncated, failed or still-open scanner capture could previously be evaluated as complete; valid JSON prefixes with trailing output and malformed nested fields could be accepted. Capture now fails closed and freezes, and report parsing rejects these shapes. Windows targeted tests and full Linux/Windows CI at `4c7d5c1` passed, including real Gitleaks and OSV-Scanner checks on Linux. Later Playwright schema checks have targeted Windows tests and await full CI.
-- A custom FORGE data directory beneath a PATH toolchain root could be included in an optional read-only mount. Root selection now excludes overlaps and refuses unresolved protected paths; portable tests passed. Mandatory system, workspace, provider and Git mounts remain overlap risks. Linux validation for this change is pending.
-- A private network namespace does not by itself prevent access to filesystem Unix sockets present in mounted directories. Capability reporting now states this limitation; a harmless host-listener regression awaits Linux CI. This is not a claim of complete network isolation.
+- A custom FORGE data directory beneath a PATH toolchain root could be included in an optional read-only mount. Root selection now excludes overlaps and refuses unresolved protected paths; portable root-selection tests passed on Windows and Linux CI. Mandatory system, workspace, provider and Git mounts remain overlap risks.
+- A private network namespace does not prevent access to filesystem Unix sockets present in mounted directories. A harmless host-listener fixture confirmed the connection through real bubblewrap in Linux CI (`41220233133`). Capability reporting states this limitation; this is not complete network isolation.
 
 ## Continuation: agent instruction review (2026-10-27)
 
