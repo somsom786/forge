@@ -102,7 +102,7 @@ pub const ADAPTERS: &[AdapterInfo] = &[
     AdapterInfo { id: "gitleaks", label: "Secret scan (gitleaks)", command: "gitleaks dir . --redact --no-banner --report-format json --report-path -", threshold: Severity::Info, kind: crate::contract::CheckKind::Security, version_command: "gitleaks version" },
     AdapterInfo { id: "osv-scanner", label: "Dependency vulnerabilities (OSV-Scanner)", command: "osv-scanner scan source --format json -r .", threshold: Severity::Info, kind: crate::contract::CheckKind::Security, version_command: "osv-scanner --version" },
     AdapterInfo { id: "trivy", label: "Vulnerabilities, secrets, misconfiguration (Trivy)", command: "trivy fs --quiet --format json --scanners vuln,secret,misconfig .", threshold: Severity::High, kind: crate::contract::CheckKind::Security, version_command: "trivy --version" },
-    AdapterInfo { id: "playwright", label: "End-to-end tests (Playwright)", command: "npx playwright test --reporter=json", threshold: Severity::Info, kind: crate::contract::CheckKind::Test, version_command: "npx --no-install playwright --version" },
+    AdapterInfo { id: "playwright", label: "End-to-end tests (Playwright)", command: "npx --no-install playwright test --reporter=json", threshold: Severity::Info, kind: crate::contract::CheckKind::Test, version_command: "npx --no-install playwright --version" },
 ];
 
 pub fn adapter(id: &str) -> Option<&'static AdapterInfo> {

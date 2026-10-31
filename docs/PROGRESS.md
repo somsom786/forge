@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- New Playwright check suggestions use `npx --no-install` so a missing tool is not silently fetched. An offline Windows probe found the installed Playwright 1.56.1; existing saved check commands are unchanged.
 - Verification's line-oriented log capture now suppresses standard multiline private-key blocks; incomplete blocks are also redacted in output tails. A split-read fixture, harmless check and 11 targeted redaction-related Windows tests passed. Redaction remains best-effort, including unusual formats, truncated beginnings and very long lines; this does not claim all secrets are caught.
 - Extended the approval-binding regression to cover changed mission, file path and file content in addition to provider, tool, profile, backend and session; the Windows scripted-agent test passed.
 - Linux check network reporting now distinguishes IP isolation from mounted Unix sockets. A harmless host-listener regression confirmed the socket connection through real bubblewrap in Linux CI. The simulated preview reflects the same partial capability levels; TypeScript typecheck passed.

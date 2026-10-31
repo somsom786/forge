@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-10-31: PASS — Windows offline `npx --no-install playwright --version` found the locally installed Playwright 1.56.1. This checks executable discovery only, not a browser test or a missing-package network attempt.
 2026-10-31: PASS — Windows verification suite, 14 passed, including a harmless multiline private-key fixture split across reads and an actual check command. Linux CI pending; redaction is still best-effort.
 
 2026-10-31: PASS — Windows redaction-related selection, 11 passed after adding incomplete private-key block handling; includes the check runner and approval guard. Linux CI pending.
