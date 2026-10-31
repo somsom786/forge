@@ -41,6 +41,9 @@ struct Buf {
     pending: Vec<u8>,
     /// Log size cap; 0 means `LOG_CAP_BYTES`.
     cap: u64,
+    truncated: bool,
+    closed: bool,
+    write_failed: bool,
 }
 
 impl Buf {
@@ -50,14 +53,18 @@ impl Buf {
             if self.logged < cap {
                 let room = (cap - self.logged) as usize;
                 let n = bytes.len().min(room);
-                let _ = f.write_all(&bytes[..n]);
+                if f.write_all(&bytes[..n]).is_err() { self.write_failed = true; }
                 self.logged += n as u64;
+                self.truncated |= n < bytes.len();
+            } else if !bytes.is_empty() {
+                self.truncated = true;
             }
         }
     }
 
     /// Write the log redacted, line by line.
     fn log_chunk(&mut self, chunk: &[u8]) {
+        if self.closed { return; }
         self.pending.extend_from_slice(chunk);
         while let Some(pos) = self.pending.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = self.pending.drain(..=pos).collect();
@@ -77,9 +84,11 @@ impl Buf {
             let red = redact::redact_str(&String::from_utf8_lossy(&line));
             self.write_log(red.as_bytes());
         }
+        self.closed = true;
     }
 
     fn push(&mut self, chunk: &[u8]) {
+        if self.closed { return; }
         self.total += chunk.len() as u64;
         self.log_chunk(chunk);
         self.tail.extend_from_slice(chunk);
@@ -118,6 +127,20 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
     let mut cmd = match execution::command(backend, &RunSpec { command, workspace: cwd }) {
         Ok(c) => c,
         Err(e) => return fail(e.to_string()),
+    };
+    // An adapter cannot produce trustworthy evidence if its report cannot be captured.
+    let capture = match stdout_path {
+        Some(p) => {
+            let open = || -> std::io::Result<std::fs::File> {
+                if let Some(parent) = p.parent() { std::fs::create_dir_all(parent)?; }
+                std::fs::File::create(p)
+            };
+            match open() {
+                Ok(f) => Some(Arc::new(Mutex::new(Buf { log: Some(f), cap: STDOUT_CAP_BYTES, ..Default::default() }))),
+                Err(e) => return fail(format!("could not capture the check report: {e}")),
+            }
+        }
+        None => None,
     };
     cmd.current_dir(cwd)
         .stdin(Stdio::null())
@@ -165,13 +188,6 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
         std::fs::File::create(p).ok()
     });
     let buf = Arc::new(Mutex::new(Buf { log, ..Default::default() }));
-    let capture = stdout_path.and_then(|p| {
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::File::create(p).ok()
-    });
-    let capture = capture.map(|f| Arc::new(Mutex::new(Buf { log: Some(f), cap: STDOUT_CAP_BYTES, ..Default::default() })));
     let mut readers = vec![];
     for (i, stream) in [child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>), child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>)].into_iter().enumerate() {
         let Some(stream) = stream else { continue };
@@ -180,10 +196,12 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
         readers.push(std::thread::spawn(move || {
             let mut s = stream;
             let mut chunk = [0u8; 8192];
-            while let Ok(n) = s.read(&mut chunk) {
-                if n == 0 {
-                    break;
-                }
+            loop {
+                let n = match s.read(&mut chunk) {
+                    Ok(0) => return true,
+                    Ok(n) => n,
+                    Err(_) => return false,
+                };
                 b.lock().unwrap_or_else(|p| p.into_inner()).push(&chunk[..n]);
                 if let Some(c) = &cap {
                     c.lock().unwrap_or_else(|p| p.into_inner()).log_chunk(&chunk[..n]);
@@ -192,7 +210,7 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
         }));
     }
 
-    let state: RunState;
+    let mut state: RunState;
     let mut exit_code = None;
     loop {
         match child.try_wait() {
@@ -224,23 +242,33 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
     // Grandchildren holding the pipes open would block the readers forever; the tree is gone or the process
     // exited normally, so give readers a short grace period and then move on.
     let grace = Instant::now();
+    let mut incomplete_output = false;
     for r in readers {
         while !r.is_finished() && grace.elapsed() < Duration::from_secs(2) {
             std::thread::sleep(Duration::from_millis(10));
         }
         if r.is_finished() {
-            let _ = r.join();
+            if !matches!(r.join(), Ok(true)) { incomplete_output = true; }
+        } else {
+            incomplete_output = true;
         }
     }
 
+    let mut capture_error = None;
     if let Some(c) = &capture {
-        c.lock().unwrap_or_else(|p| p.into_inner()).finish_log();
+        let mut c = c.lock().unwrap_or_else(|p| p.into_inner());
+        c.finish_log();
+        if c.write_failed { capture_error = Some("check report could not be written"); }
+        else if c.truncated { capture_error = Some("check report exceeded the capture limit"); }
+        else if incomplete_output { capture_error = Some("check report output did not close"); }
     }
+    if capture_error.is_some() && matches!(state, RunState::Passed | RunState::Failed) { state = RunState::Error; }
     let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
     b.finish_log();
     let truncated = b.total as usize > b.tail.len().min(TAIL_BYTES);
     let start = b.tail.len().saturating_sub(TAIL_BYTES);
-    let text = String::from_utf8_lossy(&b.tail[start..]).into_owned();
+    let mut text = String::from_utf8_lossy(&b.tail[start..]).into_owned();
+    if let Some(error) = capture_error { text.push_str(&format!("\n{error}")); }
     RunOutcome {
         state,
         exit_code,
@@ -342,6 +370,37 @@ mod tests {
         assert!(!text.contains("ghp_abcdefghijklmnopqrstuvwxyz0123"), "redacted");
         assert!(serde_json::from_str::<serde_json::Value>(text.trim()).is_ok(), "still valid JSON after redaction: {text}");
         assert!(r.output_tail.contains("progress on stderr"), "the combined tail still has both");
+    }
+
+    #[test]
+    fn missing_report_capture_stops_the_check() {
+        let d = tempfile::tempdir().unwrap();
+        let r = run_check_capture(Backend::TrustedLocal, "node -e \"require('fs').writeFileSync('ran','yes')\"", d.path(), Duration::from_secs(10), None, Some(d.path()), Arc::new(AtomicBool::new(false)));
+        assert_eq!(r.state, RunState::Error);
+        assert!(!d.path().join("ran").exists(), "the check must not run without report capture");
+    }
+
+    #[test]
+    fn report_capture_rejects_truncation_and_freezes_after_finish() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("report");
+        let mut capture = Buf { log: Some(std::fs::File::create(&path).unwrap()), cap: 4, ..Default::default() };
+        capture.log_chunk(b"[]   \n");
+        capture.finish_log();
+        assert!(capture.truncated, "even a valid JSON prefix must not be treated as a complete report");
+        let before = std::fs::read(&path).unwrap();
+        capture.log_chunk(b"late output\n");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "late readers must not alter completed evidence");
+    }
+
+    #[test]
+    fn oversized_scanner_output_is_not_successful_evidence() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("report");
+        let r = run_check_capture(Backend::TrustedLocal, "node -e \"process.stdout.write('[]'+' '.repeat(17*1024*1024))\"", d.path(), Duration::from_secs(30), None, Some(&path), Arc::new(AtomicBool::new(false)));
+        assert_eq!(r.state, RunState::Error, "a truncated valid JSON prefix is incomplete evidence");
+        assert!(r.output_tail.contains("capture limit"));
+        assert!(std::fs::metadata(path).unwrap().len() <= STDOUT_CAP_BYTES);
     }
 
     #[test]
