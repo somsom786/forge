@@ -1,6 +1,8 @@
 # Validation matrix
 
 2026-10-31: PASS — Windows verification suite, 14 passed, including a harmless multiline private-key fixture split across reads and an actual check command. Linux CI pending; redaction is still best-effort.
+
+2026-10-31: PASS — Windows redaction-related selection, 11 passed after adding incomplete private-key block handling; includes the check runner and approval guard. Linux CI pending.
 2026-10-31: PASS — Linux CI `41220233133` at `bffca9e`: Rust 471 passed, 6 ignored, including protected toolchain-root selection and a real bubblewrap fixture demonstrating that a mounted Unix socket reaches a host listener. This test confirms a limitation, not complete network isolation. Windows and installer jobs remain in progress.
 2026-10-31: PASS — GitHub Actions run `41219321684` at `04272af`: updated Node 24 checkout/setup/upload actions, Linux and Windows test jobs, Windows script checks, unsigned installer build, 180-second launch/uninstall and both installer artifact uploads. Later sandbox mount and Unix-socket changes require their own Linux CI run.
 2026-10-31: PASS — Windows portable execution tests, 8 passed, including custom FORGE-data overlap and unresolved-path refusal for optional toolchain roots. Linux sandbox enforcement for this change: NOT RUN locally; CI required.

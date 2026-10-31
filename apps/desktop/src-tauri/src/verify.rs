@@ -464,6 +464,9 @@ mod tests {
         assert_eq!(result.state, RunState::Passed);
         assert!(!result.output_tail.contains("private-fixture-value"));
         assert!(!std::fs::read_to_string(path).unwrap().contains("private-fixture-value"));
+        let incomplete = run("node -e \"console.log('-----BEGIN '+'PRIVATE KEY-----\\nprivate-fixture-value')\"", 20);
+        assert_eq!(incomplete.state, RunState::Passed);
+        assert!(!incomplete.output_tail.contains("private-fixture-value"), "an absent footer must not leak the partial key");
     }
 
     #[test]

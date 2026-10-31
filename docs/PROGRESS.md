@@ -2,7 +2,7 @@
 
 ## Continuation, 2026-10-31
 
-- Verification's line-oriented log capture now suppresses standard multiline private-key blocks; a split-read fixture and a real harmless check passed within 14 Windows verification tests. Redaction remains best-effort, including unusual formats and very long lines; this does not claim all secrets are caught.
+- Verification's line-oriented log capture now suppresses standard multiline private-key blocks; incomplete blocks are also redacted in output tails. A split-read fixture, harmless check and 11 targeted redaction-related Windows tests passed. Redaction remains best-effort, including unusual formats, truncated beginnings and very long lines; this does not claim all secrets are caught.
 - Extended the approval-binding regression to cover changed mission, file path and file content in addition to provider, tool, profile, backend and session; the Windows scripted-agent test passed.
 - Linux check network reporting now distinguishes IP isolation from mounted Unix sockets. A harmless host-listener regression confirmed the socket connection through real bubblewrap in Linux CI. The simulated preview reflects the same partial capability levels; TypeScript typecheck passed.
 - Linux optional PATH toolchain mounts now exclude resolved paths overlapping FORGE's data directory, including custom `FORGE_HOME` locations; unresolved explicit paths suppress optional toolchain mounts. Root-selection tests passed on Windows and Linux CI. Mandatory system, workspace, provider and Git mounts can still overlap sensitive data.
