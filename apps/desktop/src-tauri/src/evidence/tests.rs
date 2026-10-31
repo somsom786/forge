@@ -73,6 +73,21 @@ fn unreadable_or_contradictory_output_is_never_a_pass() {
     assert_eq!((e.outcome, st), (Outcome::ToolError, RunState::Error));
     // Unknown adapter.
     assert_eq!(evaluate("nope", RunState::Passed, Some(0), "[]", "").0.outcome, Outcome::ToolError);
+    for report in ["[] trailing garbage", "[]\n[{\"RuleID\":\"secret\"}]", "preamble\n[]\nnot a report"] {
+        let (e, st) = evaluate("gitleaks", RunState::Passed, Some(0), report, "");
+        assert_eq!((e.outcome, st), (Outcome::ToolError, RunState::Error), "{report:?}");
+    }
+    for (adapter, report) in [
+        ("trivy", r#"{"Results":"corrupt"}"#),
+        ("trivy", r#"{"Results":[{"Vulnerabilities":"corrupt"}]}"#),
+        ("osv-scanner", r#"{"results":[{"packages":"corrupt"}]}"#),
+        ("osv-scanner", r#"{"results":[{"packages":[{"vulnerabilities":"corrupt"}]}]}"#),
+        ("playwright", r#"{"stats":{}}"#),
+        ("playwright", r#"{"stats":{"unexpected":18446744073709551615}}"#),
+    ] {
+        let (e, st) = evaluate(adapter, RunState::Passed, Some(0), report, "");
+        assert_eq!((e.outcome, st), (Outcome::ToolError, RunState::Error), "{adapter}: {report}");
+    }
 }
 
 #[test]
