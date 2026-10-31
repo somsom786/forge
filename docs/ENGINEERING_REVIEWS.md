@@ -7,6 +7,7 @@
 - A private network namespace does not prevent access to filesystem Unix sockets present in mounted directories. A harmless host-listener fixture confirmed the connection through real bubblewrap in Linux CI (`41220233133`). Capability reporting states this limitation; this is not complete network isolation.
 - The verification log redacted each line independently, so a standard multiline private-key block could reach the log. Log capture now suppresses those blocks, and complete or unfinished blocks are redacted in output tails. Harmless Windows fixtures passed; secrets with missing beginnings, unusual formats or boundary cases can still evade pattern-based redaction.
 - Approval decisions previously compared the UI value with stored metadata without recomputing the digest from the held request, and expiry was accepted at the exact deadline. Decisions now check policy and backend metadata, bind the deadline, and recompute from the held request; Windows scripted approval and ACP tests and a real Claude Code test with a local scripted model passed. This remains subject to the trusted-webview and same-user host boundaries.
+- An already approved request could be reused after its deadline. A delayed scripted-agent fixture reproduced this on Windows; reuse now rechecks its deadline, policy, execution context and binding before the existing one-time reuse check. The regression passed after the fix; Linux CI remains pending.
 
 ## Continuation: agent instruction review (2026-10-27)
 

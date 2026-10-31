@@ -832,6 +832,18 @@ impl Core {
                 match existing.state.as_str() {
                     "pending" => lock(&h.waiters).entry(existing.id).or_default().push(req.request_id.clone()),
                     "approved" | "auto_allowed" => {
+                        if existing.state == "approved" {
+                            let valid = existing.expires_at.as_deref().is_some_and(|expiry| {
+                                !approval_expired(Some(expiry), &crate::store::now())
+                                    && existing.policy_rev.as_deref() == Some(policy::REVISION)
+                                    && existing.executes_on.as_deref() == Some(h.executes_on.as_str())
+                                    && self.store.get_mission(&h.mission_id).ok().is_some_and(|m| {
+                                        let binding = approval_binding(&h.mission_id, &h.session_id, &m.provider, &req.tool, &req.input, &h.worktree, h.profile.as_str(), &h.executes_on, expiry);
+                                        existing.binding_sha256.as_deref() == Some(binding.as_str())
+                                    })
+                            });
+                            if !valid { return reply("deny", Some("the earlier approval expired or its context changed")); }
+                        }
                         // The only legitimate repeat is the provider's own prompt following FORGE's hook for the same call, so
                         // an allow is reused once, and only if policy still allows it now (the world may have changed).
                         let first_reuse = lock(&h.reused).insert(existing.id.clone());
