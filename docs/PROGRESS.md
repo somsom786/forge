@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-10-31
 
+- Re-ran the Windows memory FAQ benchmark and added a reproducible process working-set measurement. The debug test process peaked at 16,617,472 bytes across both retrieval modes and fixture setup; this does not isolate retrieval allocations or child-process memory. Scores and latency are recorded in `docs/EVALUATION.md`.
 - Updated pinned GitHub checkout, Node setup and artifact-upload actions to Node 24 releases after CI warned about Node 20. Automatic package-manager caching is explicitly disabled where caching was not previously requested. Both workflow files parse locally; GitHub Actions validation is pending.
 - Scanner evidence parsing now rejects trailing garbage, malformed results fields and excessive Playwright failure counts instead of treating them as clean. Playwright suite structure is checked before results are accepted. Sixteen Windows evidence tests passed, including recorded real-tool report fixtures; genuine live scanner invocation was not repeated for this parser change.
 - Windows provider detection now starts CLI probes suspended inside a kill-on-close Job Object, refusing probes when containment fails. Nine targeted Windows provider tests passed, including a timed-out descendant that could not write its delayed marker. Unix descendant containment remains open.
