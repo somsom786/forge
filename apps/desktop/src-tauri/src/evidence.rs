@@ -144,7 +144,7 @@ fn last_error_line(tail: &str) -> Option<String> {
     Some(pick.chars().take(240).collect())
 }
 
-/// The first JSON value in `text` (tools sometimes print a line before it).
+/// One complete JSON value, optionally preceded by a tool's text preamble.
 fn json_in(text: &str) -> Option<Value> {
     let t = text.trim();
     if let Ok(v) = serde_json::from_str(t) {
