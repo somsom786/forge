@@ -346,18 +346,7 @@ pub fn worktree_remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
             Err(e) => return Err(e.into()),
         }
-        if !path.is_absolute() { return Err(ForgeError::PathRejected("missing worktree path must be absolute".into())); }
-        // A missing directory cannot prove ownership. Do not run repository-wide prune or remove a registration by guess.
-        let out = run_raw(repo, &["worktree", "list", "--porcelain", "-z"])?;
-        if !out.status.success() { return Err(ForgeError::Git(format!("could not inspect worktree registrations: {}", String::from_utf8_lossy(&out.stderr).trim()))); }
-        let text = std::str::from_utf8(&out.stdout).map_err(|_| ForgeError::Git("worktree registrations contain non-UTF-8 paths; inspect them manually".into()))?;
-        let registered = text.split('\0').filter_map(|s| s.strip_prefix("worktree ")).any(|p| {
-            let other = Path::new(p);
-            crate::paths::is_within(path, other) && crate::paths::is_within(other, path)
-        });
-        if registered {
-            return Err(ForgeError::InvalidState(format!("{} is missing but still registered with Git; inspect that specific registration before removing it", path.display())));
-        }
+        ensure_worktree_unregistered(repo, path)?;
         return Ok(());
     }
     if !force {
@@ -376,6 +365,21 @@ pub fn worktree_remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
     }
     args.push(&p);
     run(repo, &args)?;
+    Ok(())
+}
+
+/// An incomplete directory cannot prove ownership of its Git registration.
+pub fn ensure_worktree_unregistered(repo: &Path, path: &Path) -> Result<()> {
+    if !path.is_absolute() { return Err(ForgeError::PathRejected("worktree path must be absolute".into())); }
+    let out = run_raw(repo, &["worktree", "list", "--porcelain", "-z"])?;
+    if !out.status.success() { return Err(ForgeError::Git(format!("could not inspect worktree registrations: {}", String::from_utf8_lossy(&out.stderr).trim()))); }
+    let text = std::str::from_utf8(&out.stdout).map_err(|_| ForgeError::Git("worktree registrations contain non-UTF-8 paths; inspect them manually".into()))?;
+    if text.split('\0').filter_map(|s| s.strip_prefix("worktree ")).any(|p| {
+        let other = Path::new(p);
+        crate::paths::is_within(path, other) && crate::paths::is_within(other, path)
+    }) {
+        return Err(ForgeError::InvalidState(format!("{} is still registered with Git; inspect that specific registration before removing it", path.display())));
+    }
     Ok(())
 }
 

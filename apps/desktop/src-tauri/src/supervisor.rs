@@ -1451,6 +1451,7 @@ impl Core {
                 return Err(ForgeError::InvalidState(format!("an earlier attempt removed part of {}; confirm to finish removing what is left", wt.display())));
             }
             let real = self.inside_worktrees_folder(wt)?;
+            git::ensure_worktree_unregistered(root, wt)?;
             std::fs::remove_dir_all(&real).map_err(|e| ForgeError::Other(format!("could not finish removing {}: {e}. Close any program using files in it and try again.", real.display())))?;
             return git::worktree_remove(root, wt, confirm_loss);
         }
