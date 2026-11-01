@@ -225,6 +225,22 @@ fn an_approved_call_cannot_be_reused_after_its_deadline() {
     assert!(f.core.store.audit_count("approval.reuse_denied").unwrap() >= 1);
 }
 
+#[test]
+fn approved_reuse_respects_monotonic_deadline_when_wall_deadline_is_future() {
+    let f = fixture();
+    let m = new_mission(&f, "FAKE:delay-reuse", PermissionProfile::Default);
+    f.core.start_mission(&m.id, None).unwrap();
+    let a = first_pending(&f, &m);
+    assert!(a.expires_at.as_deref().unwrap() > crate::store::now().as_str());
+    f.core.decide_approval_checked(&a.id, true, None, a.binding_sha256.as_deref()).unwrap();
+    let handle = f.core.reg().sessions.get(&a.session_id).cloned().unwrap();
+    lock(&handle.approval_deadlines).insert(a.id.clone(), Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
+    wait_until("two results", || results(&f, &m).len() == 2);
+    let r = results(&f, &m);
+    assert_eq!(r.iter().map(|x| x.0).collect::<Vec<_>>(), vec![true, false], "{r:?}");
+    assert!(f.core.store.audit_count("approval.reuse_denied").unwrap() >= 1);
+}
+
 /// Security review F7: approving requires naming the request that was shown; denying does not.
 #[test]
 fn approving_without_the_cards_binding_is_refused() {
