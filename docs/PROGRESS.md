@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-11-01
 
+- Full CI exposed a stale missing-worktree discard expectation after the cleanup safety change. Updated its regression to verify branch preservation and a successful retry after the specific registration is manually removed; targeted Windows test passed, full CI pending.
 - Half-removed registered worktrees are checked before deleting remaining files; the Windows integrity suite passed 8 tests after an initial regression was corrected. Manual inspection is required for stale registrations.
 - Worktree cleanup no longer runs repository-wide Git prune. Missing registrations are preserved for inspection; experiment recovery only considers recorded variants and verifies paths and repository identity. The Windows missing-registration regression and nine experiment tests passed; Linux CI is pending.
 - Check registration now re-reads mission state under the registry lock and refuses terminal or unknown states. Windows tests passed for a deliberately stale nonterminal snapshot and an already-reserved mission; Linux CI pending.

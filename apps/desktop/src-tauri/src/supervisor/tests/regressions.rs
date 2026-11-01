@@ -108,6 +108,11 @@ fn discard_cannot_delete_a_branch_with_unmerged_commits_even_if_the_worktree_is_
     assert!(git::run(f.repo.path(), &["rev-parse", "--verify", &verify]).is_ok(), "branch must survive the refused discard");
     assert_ne!(state(&f, &m.id), "cancelled");
 
+    let err = f.core.discard_mission(&m.id, true).unwrap_err().to_string();
+    assert!(err.contains("still registered"), "{err}");
+    assert!(git::run(f.repo.path(), &["rev-parse", "--verify", &verify]).is_ok(), "branch must survive an unresolved registration");
+    // Simulate an owner inspecting and removing this exact registration in the disposable fixture.
+    git::run(f.repo.path(), &["worktree", "remove", &wt.to_string_lossy()]).unwrap();
     f.core.discard_mission(&m.id, true).unwrap();
     assert!(git::run(f.repo.path(), &["rev-parse", "--verify", "--quiet", &verify]).is_err());
 }
