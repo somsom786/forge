@@ -34,6 +34,13 @@ pub fn isolate(cmd: &mut std::process::Command) {
     let _ = cmd;
 }
 
+/// The command was configured with `isolate` immediately before spawning. Unlike `contain`, this
+/// also handles a fast-exiting leader while descendants still retain its process group and pipes.
+#[cfg(unix)]
+pub fn contain_isolated(child: &Child) -> Containment {
+    Containment { pgid: child.id() }
+}
+
 #[cfg(not(windows))]
 fn kill_group(pgid: u32) {
     if pgid > 1 {

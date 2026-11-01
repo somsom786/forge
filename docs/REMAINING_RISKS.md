@@ -9,7 +9,7 @@ the commit log, not here.
 
 Missing worktree directories that remain registered with Git require manual inspection. FORGE deliberately preserves the registration rather than pruning other worktrees or guessing ownership. Experiment cleanup refuses linked paths and verifies Git identity, but concurrent path replacement remains a filesystem race.
 
-Provider detection has a bounded response deadline and output limit. On Windows its CLI probes start suspended in a kill-on-close Job Object; a timed-out descendant fixture was terminated. Unix probes do not yet contain their descendants: a descendant retaining a pipe can leave a reader thread waiting until it exits, and repeated malicious probes could accumulate threads. Treat installed provider executables as trusted; the Windows Job Object provides cleanup, not isolation.
+Provider detection has a bounded response deadline and output limit. Windows CLI probes start suspended in a kill-on-close Job Object. Unix probes now start in a dedicated process group, which is terminated on completion or timeout; the Unix descendant fixture requires CI validation. A Unix descendant can escape by creating a new session, retain a pipe and leave a reader thread waiting. Treat installed provider executables as trusted; process cleanup is not isolation.
 
 | # | Risk | Kind | Where | What would close it |
 |---|---|---|---|---|

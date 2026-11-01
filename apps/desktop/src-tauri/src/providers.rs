@@ -75,12 +75,16 @@ fn run_timeout_command(mut cmd: Command, timeout: Duration) -> Option<(bool, Str
     // Reject oversized output rather than retaining unbounded data.
     const OUTPUT_LIMIT: u64 = 1024 * 1024;
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    crate::proc::isolate(&mut cmd);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000 | crate::proc::CREATE_SUSPENDED);
     }
     let mut child = cmd.spawn().ok()?;
+    #[cfg(unix)]
+    let _containment = crate::proc::contain_isolated(&child);
     #[cfg(windows)]
     let _containment = match crate::proc::contain(&child) {
         Ok(job) => job,
@@ -443,7 +447,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(5), "oversized output should be rejected promptly");
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, unix))]
     #[test]
     fn timed_out_provider_probe_terminates_its_descendant() {
         let dir = tempfile::tempdir().unwrap();

@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-11-01
 
+- Unix provider probes now use a dedicated process group for descendant cleanup, including when the probe leader exits before a descendant closes its pipes. The existing descendant fixture is enabled on Unix; Windows provider suite passed 10 tests and Linux CI is pending. `setsid` escape remains possible.
 - Full CI exposed a stale missing-worktree discard expectation after the cleanup safety change. Updated its regression to verify branch preservation and a successful retry after the specific registration is manually removed; targeted Windows test passed, full CI pending.
 - Half-removed registered worktrees are checked before deleting remaining files; the Windows integrity suite passed 8 tests after an initial regression was corrected. Manual inspection is required for stale registrations.
 - Worktree cleanup no longer runs repository-wide Git prune. Missing registrations are preserved for inspection; experiment recovery only considers recorded variants and verifies paths and repository identity. The Windows missing-registration regression and nine experiment tests passed; Linux CI is pending.
