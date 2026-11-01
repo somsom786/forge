@@ -1,5 +1,9 @@
 # FORGE — Engineering Reviews
 
+## Process utility lookup (2026-11-01)
+
+Windows process cleanup and liveness checks resolved taskkill and tasklist by name, allowing the current directory or PATH to influence which program was launched. Both now use the OS-reported system directory and a neutral working directory. Three Windows process tests passed; this is process cleanup, not agent isolation.
+
 ## Worktree cleanup review (2026-11-01)
 
 A disposable Windows repository reproduced repository-wide `git worktree prune` deleting an unrelated missing worktree registration. Cleanup no longer invokes prune: absent registered paths fail closed, and experiment recovery limits removal to recorded variant paths after link and repository checks. Windows regression and experiment tests passed. Filesystem path-swap races and manual repair of missing registrations remain limitations.

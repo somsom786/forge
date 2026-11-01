@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-11-01: PASS — Windows process suite, 3 tests, including system utility path resolution and terminating a disposable child. Full CI pending; no hostile executable was run on the user's machine.
 2026-11-01: PASS — Windows provider suite, 10 tests, after adding Unix process-group cleanup. Unix descendant termination test and full CI pending; escaping the group with `setsid` is not prevented.
 2026-11-01: FAIL — full CI `41324278573` at `318d72f`: Linux Rust 483 passed, 1 failed, 6 ignored; Windows Rust also failed the missing-worktree discard regression. The unsigned Windows installer and scripts passed. The test expected the previous automatic prune behavior; it now verifies the branch survives refusal, simulates an owner removing only the inspected registration in a disposable repository, and checks confirmed discard succeeds. PASS — updated targeted regression on Windows (1 test); full CI pending.
 2026-11-01: PASS — Windows integrity suite, 8 tests. An existing half-removed-worktree test exposed a regression in the initial prune-removal change: the remaining files were deleted before a stale-registration error. Cleanup now checks the registration first and the regression asserts both files and registration remain. Linux CI pending.

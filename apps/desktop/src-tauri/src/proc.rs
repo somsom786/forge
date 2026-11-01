@@ -122,13 +122,29 @@ pub fn resume_suspended(child: &Child) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve a Windows utility without searching the current directory or PATH.
+#[cfg(windows)]
+fn system_utility(name: &str) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buf = vec![0u16; 32768];
+    // SAFETY: the buffer is valid for the supplied number of UTF-16 code units.
+    let len = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if len == 0 || len >= buf.len() { return None; }
+    let dir = std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf[..len]));
+    if !dir.is_absolute() { return None; }
+    Some(dir.join(name))
+}
+
 /// Forcefully terminate a process and its whole tree.
 pub fn kill_tree(pid: u32) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("taskkill")
+        let Some(exe) = system_utility("taskkill.exe") else { return };
+        let _ = std::process::Command::new(&exe)
             .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .current_dir(exe.parent().unwrap())
             .creation_flags(0x0800_0000)
             .output();
     }
@@ -145,8 +161,10 @@ pub fn is_alive(pid: u32) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let out = std::process::Command::new("tasklist")
+        let Some(exe) = system_utility("tasklist.exe") else { return false };
+        let out = std::process::Command::new(&exe)
             .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .current_dir(exe.parent().unwrap())
             .creation_flags(0x0800_0000)
             .output();
         match out {
@@ -207,6 +225,31 @@ mod tests {
     use super::*;
     use std::os::windows::process::CommandExt;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn process_utilities_use_the_windows_system_directory() {
+        for name in ["taskkill.exe", "tasklist.exe"] {
+            let path = system_utility(name).unwrap();
+            assert!(path.is_absolute() && path.is_file(), "{}", path.display());
+            assert_eq!(path.file_name().unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn system_utility_can_terminate_a_disposable_child() {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "providers::tests::provider_probe_fixture", "--nocapture"])
+            .env("FORGE_PROBE_FIXTURE", "sleep")
+            .creation_flags(0x0800_0000)
+            .spawn().unwrap();
+        assert!(is_alive(child.id()));
+        kill_tree(child.id());
+        let start = Instant::now();
+        while child.try_wait().unwrap().is_none() && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(child.try_wait().unwrap().is_some(), "disposable child was not terminated");
+    }
 
     /// A suspended process runs nothing until it is contained and resumed, then runs normally.
     #[test]

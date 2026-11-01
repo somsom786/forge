@@ -2,6 +2,7 @@
 
 ## Continuation, 2026-11-01
 
+- Windows process helpers now locate taskkill and tasklist via the OS system-directory API and use that directory as their working directory. Three Windows process tests passed, including termination of a disposable child; full CI pending.
 - Unix provider probes now use a dedicated process group for descendant cleanup, including when the probe leader exits before a descendant closes its pipes. The existing descendant fixture is enabled on Unix; Windows provider suite passed 10 tests and Linux CI is pending. `setsid` escape remains possible.
 - Full CI exposed a stale missing-worktree discard expectation after the cleanup safety change. Updated its regression to verify branch preservation and a successful retry after the specific registration is manually removed; targeted Windows test passed, full CI pending.
 - Half-removed registered worktrees are checked before deleting remaining files; the Windows integrity suite passed 8 tests after an initial regression was corrected. Manual inspection is required for stale registrations.
