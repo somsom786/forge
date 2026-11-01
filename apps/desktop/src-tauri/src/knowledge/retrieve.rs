@@ -76,6 +76,7 @@ pub struct ContextPackage {
     pub items: Vec<ContextItem>,
     pub omitted: Vec<Omitted>,
     pub query: String,
+    pub query_expansion: Option<String>,
     pub char_budget: usize,
     /// Exactly what is appended to the agent's prompt ("" when nothing qualified).
     pub text: String,
@@ -134,10 +135,16 @@ struct Cand {
     relevance: f64,
     overlap: usize,
     pinned: bool,
+    expanded: bool,
 }
 
 /// Build the package for a mission. `hints` are extra path/scope hints (e.g. the contract's in-scope globs, trimmed).
 pub fn build(ctx: Ctx, project_id: &str, repo_root: &Path, objective: &str, hints: &[String], pins: &[String], budget_chars: usize) -> Result<ContextPackage> {
+    build_with_expansion(ctx, project_id, repo_root, objective, hints, pins, budget_chars, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_with_expansion(ctx: Ctx, project_id: &str, repo_root: &Path, objective: &str, hints: &[String], pins: &[String], budget_chars: usize, use_expansion: bool) -> Result<ContextPackage> {
     // Reconcile first: the index must reflect the files as they are now.
     service::scan(ctx, project_id)?;
     service::refresh_sources(ctx, project_id, repo_root)?;
@@ -162,7 +169,18 @@ pub fn build(ctx: Ctx, project_id: &str, repo_root: &Path, objective: &str, hint
         let max = hits.iter().map(|(_, s)| *s).fold(0.0_f64, f64::max).max(1e-9);
         for (p, s) in hits {
             let overlap = overlaps(&p.files, &hint_set);
-            cands.insert(p.id.clone(), Cand { relevance: s / max, overlap, pinned: false, page: p });
+            cands.insert(p.id.clone(), Cand { relevance: s / max, overlap, pinned: false, expanded: false, page: p });
+        }
+    }
+    let query_expansion = use_expansion.then(|| query::expanded_match(&query_text)).flatten();
+    if let Some(q) = &query_expansion {
+        let hits = ctx.store.k_search(project_id, q, MAX_CANDIDATES)?;
+        let max = hits.iter().map(|(_, s)| *s).fold(0.0_f64, f64::max).max(1e-9);
+        for (p, s) in hits {
+            let bonus = 0.9 * s / max;
+            let overlap = overlaps(&p.files, &hint_set);
+            cands.entry(p.id.clone()).and_modify(|c| { c.relevance += bonus; c.expanded = true; })
+                .or_insert(Cand { relevance: bonus, overlap, pinned: false, expanded: true, page: p });
         }
     }
     // Pages that name files this mission is about, even if the text did not match.
@@ -173,7 +191,7 @@ pub fn build(ctx: Ctx, project_id: &str, repo_root: &Path, objective: &str, hint
             }
             let o = overlaps(&p.files, &hint_set);
             if o > 0 {
-                cands.insert(p.id.clone(), Cand { relevance: 0.0, overlap: o, pinned: false, page: p });
+                cands.insert(p.id.clone(), Cand { relevance: 0.0, overlap: o, pinned: false, expanded: false, page: p });
             }
         }
     }
@@ -181,7 +199,7 @@ pub fn build(ctx: Ctx, project_id: &str, repo_root: &Path, objective: &str, hint
         if let Ok(p) = ctx.store.k_get(id) {
             if p.project_id == project_id {
                 let o = overlaps(&p.files, &hint_set);
-                cands.entry(p.id.clone()).and_modify(|c| c.pinned = true).or_insert(Cand { relevance: 0.0, overlap: o, pinned: true, page: p });
+                cands.entry(p.id.clone()).and_modify(|c| c.pinned = true).or_insert(Cand { relevance: 0.0, overlap: o, pinned: true, expanded: false, page: p });
             }
         }
     }
@@ -243,7 +261,7 @@ pub fn build(ctx: Ctx, project_id: &str, repo_root: &Path, objective: &str, hint
 
         let mut reasons = vec![];
         if c.relevance > 0.0 {
-            reasons.push("matches the mission text".to_string());
+            reasons.push(if c.expanded { "matches mission text or related technical terminology" } else { "matches the mission text" }.to_string());
         }
         if c.overlap > 0 {
             reasons.push(format!("covers {} file(s) this mission touches", c.overlap));
@@ -302,7 +320,7 @@ pub fn build(ctx: Ctx, project_id: &str, repo_root: &Path, objective: &str, hint
     let code = codeintel::relevant_for(repo_root, objective, &path_hints, codeintel::CODE_BUDGET_BYTES);
     let text = [render_package(&items), codeintel::render(&code)].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n");
     let sha = sha256_hex(text.as_bytes());
-    Ok(ContextPackage { items, omitted, query: query_text, char_budget: budget_chars, text, sha256: sha, path_hints, code })
+    Ok(ContextPackage { items, omitted, query: query_text, query_expansion, char_budget: budget_chars, text, sha256: sha, path_hints, code })
 }
 
 fn render_item(n: usize, i: &ContextItem) -> String {
@@ -355,5 +373,5 @@ pub fn compose_prompt(objective: &str, package_text: &str) -> String {
 
 /// JSON helpers for persisting a package.
 pub fn package_json(p: &ContextPackage) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
-    (json!({"budgetChars": p.char_budget, "pathHints": p.path_hints, "relevantCode": p.code}), json!(p.items), json!(p.omitted))
+    (json!({"budgetChars": p.char_budget, "pathHints": p.path_hints, "queryExpansion": p.query_expansion, "relevantCode": p.code}), json!(p.items), json!(p.omitted))
 }

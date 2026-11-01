@@ -102,7 +102,7 @@ pub const ADAPTERS: &[AdapterInfo] = &[
     AdapterInfo { id: "gitleaks", label: "Secret scan (gitleaks)", command: "gitleaks dir . --redact --no-banner --report-format json --report-path -", threshold: Severity::Info, kind: crate::contract::CheckKind::Security, version_command: "gitleaks version" },
     AdapterInfo { id: "osv-scanner", label: "Dependency vulnerabilities (OSV-Scanner)", command: "osv-scanner scan source --format json -r .", threshold: Severity::Info, kind: crate::contract::CheckKind::Security, version_command: "osv-scanner --version" },
     AdapterInfo { id: "trivy", label: "Vulnerabilities, secrets, misconfiguration (Trivy)", command: "trivy fs --quiet --format json --scanners vuln,secret,misconfig .", threshold: Severity::High, kind: crate::contract::CheckKind::Security, version_command: "trivy --version" },
-    AdapterInfo { id: "playwright", label: "End-to-end tests (Playwright)", command: "npx playwright test --reporter=json", threshold: Severity::Info, kind: crate::contract::CheckKind::Test, version_command: "npx --no-install playwright --version" },
+    AdapterInfo { id: "playwright", label: "End-to-end tests (Playwright)", command: "npx --no-install playwright test --reporter=json", threshold: Severity::Info, kind: crate::contract::CheckKind::Test, version_command: "npx --no-install playwright --version" },
 ];
 
 pub fn adapter(id: &str) -> Option<&'static AdapterInfo> {
@@ -144,19 +144,24 @@ fn last_error_line(tail: &str) -> Option<String> {
     Some(pick.chars().take(240).collect())
 }
 
-/// The first JSON value in `text` (tools sometimes print a line before it).
+/// One complete JSON value, optionally preceded by a tool's text preamble.
 fn json_in(text: &str) -> Option<Value> {
     let t = text.trim();
     if let Ok(v) = serde_json::from_str(t) {
         return Some(v);
     }
     let start = t.find(['{', '['])?;
-    let mut de = serde_json::Deserializer::from_str(&t[start..]).into_iter::<Value>();
-    de.next()?.ok()
+    // Some tools print a preamble, but the report itself must consume the remaining output. Accepting a JSON prefix
+    // would allow malformed or concatenated reports (including a clean `[]` before findings) to appear clean.
+    serde_json::from_str(&t[start..]).ok()
 }
 
 fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+fn optional_array_is_valid(v: &Value, key: &str) -> bool {
+    matches!(v.get(key), None | Some(Value::Null) | Some(Value::Array(_)))
 }
 
 fn gitleaks(v: &Value) -> Option<Vec<Finding>> {
@@ -187,8 +192,10 @@ fn osv(v: &Value) -> Option<Vec<Finding>> {
     let results = v.get("results")?.as_array()?;
     let mut out = vec![];
     for r in results {
+        if !r.is_object() || !r.get("packages").is_some_and(Value::is_array) { return None; }
         let path = r.get("source").map(|src| s(src, "path")).unwrap_or_default();
         for p in r.get("packages").and_then(Value::as_array).into_iter().flatten() {
+            if !p.is_object() || !optional_array_is_valid(p, "vulnerabilities") || !optional_array_is_valid(p, "groups") { return None; }
             let pkg = p.get("package").cloned().unwrap_or(Value::Null);
             let package = format!("{}@{}", s(&pkg, "name"), s(&pkg, "version"));
             // Groups carry the aggregated severity (CVSS score as a string) for aliases of one vulnerability.
@@ -215,9 +222,10 @@ fn osv(v: &Value) -> Option<Vec<Finding>> {
 }
 
 fn trivy(v: &Value) -> Option<Vec<Finding>> {
-    let results = v.get("Results")?.as_array();
+    let results = v.get("Results")?.as_array()?;
     let mut out = vec![];
-    for r in results.into_iter().flatten() {
+    for r in results {
+        if !r.is_object() || ["Vulnerabilities", "Secrets", "Misconfigurations"].iter().any(|key| !optional_array_is_valid(r, key)) { return None; }
         let target = s(r, "Target");
         for x in r.get("Vulnerabilities").and_then(Value::as_array).into_iter().flatten() {
             out.push(Finding {
@@ -263,6 +271,16 @@ fn playwright_launch_failure(v: &Value) -> Option<String> {
 
 fn playwright(v: &Value) -> Option<Vec<Finding>> {
     let stats = v.get("stats")?;
+    fn valid_suite(suite: &Value) -> bool {
+        if !suite.is_object() || !optional_array_is_valid(suite, "specs") || !optional_array_is_valid(suite, "suites") { return false; }
+        let specs_valid = suite.get("specs").and_then(Value::as_array).into_iter().flatten().all(|spec| {
+            spec.is_object() && spec.get("tests").and_then(Value::as_array).is_some_and(|tests| tests.iter().all(|t| {
+                matches!(t.get("status").and_then(Value::as_str), Some("expected" | "unexpected" | "flaky" | "skipped"))
+            }))
+        });
+        specs_valid && suite.get("suites").and_then(Value::as_array).into_iter().flatten().all(valid_suite)
+    }
+    if !v.get("suites")?.as_array()?.iter().all(valid_suite) { return None; }
     let mut out = vec![];
     fn walk(suite: &Value, path: &str, out: &mut Vec<Finding>) {
         let title = s(suite, "title");
@@ -290,7 +308,9 @@ fn playwright(v: &Value) -> Option<Vec<Finding>> {
         walk(suite, "", &mut out);
     }
     // The stats are authoritative for the count; a failure without a locatable spec is still a failure.
-    let unexpected = stats.get("unexpected").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let unexpected = stats.get("unexpected")?.as_u64()?;
+    if unexpected > 10_000 { return None; }
+    let unexpected = unexpected as usize;
     while out.len() < unexpected {
         out.push(Finding { rule_id: "unexpected".into(), severity: Severity::High, title: "failing test (not located in the report)".into(), location: None, package: None, fixed_in: None, blocking: true });
     }

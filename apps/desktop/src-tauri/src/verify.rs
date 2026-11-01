@@ -41,6 +41,10 @@ struct Buf {
     pending: Vec<u8>,
     /// Log size cap; 0 means `LOG_CAP_BYTES`.
     cap: u64,
+    truncated: bool,
+    closed: bool,
+    write_failed: bool,
+    in_private_key: bool,
 }
 
 impl Buf {
@@ -50,36 +54,51 @@ impl Buf {
             if self.logged < cap {
                 let room = (cap - self.logged) as usize;
                 let n = bytes.len().min(room);
-                let _ = f.write_all(&bytes[..n]);
+                if f.write_all(&bytes[..n]).is_err() { self.write_failed = true; }
                 self.logged += n as u64;
+                self.truncated |= n < bytes.len();
+            } else if !bytes.is_empty() {
+                self.truncated = true;
             }
+        }
+    }
+
+    fn redact_log_line(&mut self, line: &[u8]) {
+        let text = String::from_utf8_lossy(line);
+        let begin = text.contains("-----BEGIN ") && text.contains("PRIVATE KEY-----");
+        let end = text.contains("-----END ") && text.contains("PRIVATE KEY-----");
+        if begin || self.in_private_key {
+            if begin { self.write_log(b"[REDACTED PRIVATE KEY]\n"); }
+            self.in_private_key = !end;
+        } else {
+            self.write_log(redact::redact_str(&text).as_bytes());
         }
     }
 
     /// Write the log redacted, line by line.
     fn log_chunk(&mut self, chunk: &[u8]) {
+        if self.closed { return; }
         self.pending.extend_from_slice(chunk);
         while let Some(pos) = self.pending.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = self.pending.drain(..=pos).collect();
-            let red = redact::redact_str(&String::from_utf8_lossy(&line));
-            self.write_log(red.as_bytes());
+            self.redact_log_line(&line);
         }
         if self.pending.len() > 64 * 1024 {
             let line: Vec<u8> = std::mem::take(&mut self.pending);
-            let red = redact::redact_str(&String::from_utf8_lossy(&line));
-            self.write_log(red.as_bytes());
+            self.redact_log_line(&line);
         }
     }
 
     fn finish_log(&mut self) {
         if !self.pending.is_empty() {
             let line: Vec<u8> = std::mem::take(&mut self.pending);
-            let red = redact::redact_str(&String::from_utf8_lossy(&line));
-            self.write_log(red.as_bytes());
+            self.redact_log_line(&line);
         }
+        self.closed = true;
     }
 
     fn push(&mut self, chunk: &[u8]) {
+        if self.closed { return; }
         self.total += chunk.len() as u64;
         self.log_chunk(chunk);
         self.tail.extend_from_slice(chunk);
@@ -119,6 +138,33 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
         Ok(c) => c,
         Err(e) => return fail(e.to_string()),
     };
+    let log = match log_path {
+        Some(p) => {
+            let open = || -> std::io::Result<std::fs::File> {
+                if let Some(parent) = p.parent() { std::fs::create_dir_all(parent)?; }
+                std::fs::File::create(p)
+            };
+            match open() {
+                Ok(f) => Some(f),
+                Err(e) => return fail(format!("could not create the check log: {e}")),
+            }
+        }
+        None => None,
+    };
+    // An adapter cannot produce trustworthy evidence if its report cannot be captured.
+    let capture = match stdout_path {
+        Some(p) => {
+            let open = || -> std::io::Result<std::fs::File> {
+                if let Some(parent) = p.parent() { std::fs::create_dir_all(parent)?; }
+                std::fs::File::create(p)
+            };
+            match open() {
+                Ok(f) => Some(Arc::new(Mutex::new(Buf { log: Some(f), cap: STDOUT_CAP_BYTES, ..Default::default() }))),
+                Err(e) => return fail(format!("could not capture the check report: {e}")),
+            }
+        }
+        None => None,
+    };
     cmd.current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -128,29 +174,37 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
         .env("FORCE_COLOR", "0")
         .env("GIT_TERMINAL_PROMPT", "0");
     proc::isolate(&mut cmd);
+    // Assign the check to its Job Object before it can create a child process.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000 | proc::CREATE_SUSPENDED);
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return fail(format!("could not start the command: {e}")),
     };
     let pid = child.id();
-    // Best effort for checks: the timeout path also kills the tree explicitly. (A descendant created in the instant
-    // between spawn and job assignment could escape the job; see SECURITY.md.)
+    #[cfg(windows)]
+    let _containment = match proc::contain(&child) {
+        Ok(job) => job,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return fail(format!("could not contain the check: {e}"));
+        }
+    };
+    #[cfg(windows)]
+    if let Err(e) = proc::resume_suspended(&child) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return fail(format!("could not start the contained check: {e}"));
+    }
+    // Unix process-group containment is best effort for an already-exited short-lived command.
+    #[cfg(not(windows))]
     let _containment = proc::contain(&child).ok();
 
-    let log = log_path.and_then(|p| {
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::File::create(p).ok()
-    });
     let buf = Arc::new(Mutex::new(Buf { log, ..Default::default() }));
-    let capture = stdout_path.and_then(|p| {
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::File::create(p).ok()
-    });
-    let capture = capture.map(|f| Arc::new(Mutex::new(Buf { log: Some(f), cap: STDOUT_CAP_BYTES, ..Default::default() })));
     let mut readers = vec![];
     for (i, stream) in [child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>), child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>)].into_iter().enumerate() {
         let Some(stream) = stream else { continue };
@@ -159,10 +213,12 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
         readers.push(std::thread::spawn(move || {
             let mut s = stream;
             let mut chunk = [0u8; 8192];
-            while let Ok(n) = s.read(&mut chunk) {
-                if n == 0 {
-                    break;
-                }
+            loop {
+                let n = match s.read(&mut chunk) {
+                    Ok(0) => return true,
+                    Ok(n) => n,
+                    Err(_) => return false,
+                };
                 b.lock().unwrap_or_else(|p| p.into_inner()).push(&chunk[..n]);
                 if let Some(c) = &cap {
                     c.lock().unwrap_or_else(|p| p.into_inner()).log_chunk(&chunk[..n]);
@@ -171,7 +227,7 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
         }));
     }
 
-    let state: RunState;
+    let mut state: RunState;
     let mut exit_code = None;
     loop {
         match child.try_wait() {
@@ -203,23 +259,33 @@ pub fn run_check_capture(backend: Backend, command: &str, cwd: &Path, timeout: D
     // Grandchildren holding the pipes open would block the readers forever; the tree is gone or the process
     // exited normally, so give readers a short grace period and then move on.
     let grace = Instant::now();
+    let mut incomplete_output = false;
     for r in readers {
         while !r.is_finished() && grace.elapsed() < Duration::from_secs(2) {
             std::thread::sleep(Duration::from_millis(10));
         }
         if r.is_finished() {
-            let _ = r.join();
+            if !matches!(r.join(), Ok(true)) { incomplete_output = true; }
+        } else {
+            incomplete_output = true;
         }
     }
 
+    let mut capture_error = incomplete_output.then_some("check output was incomplete or did not close");
     if let Some(c) = &capture {
-        c.lock().unwrap_or_else(|p| p.into_inner()).finish_log();
+        let mut c = c.lock().unwrap_or_else(|p| p.into_inner());
+        c.finish_log();
+        if c.write_failed { capture_error = Some("check report could not be written"); }
+        else if c.truncated { capture_error = Some("check report exceeded the capture limit"); }
     }
     let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
     b.finish_log();
+    if b.write_failed { capture_error = Some("check log could not be written"); }
+    if capture_error.is_some() && matches!(state, RunState::Passed | RunState::Failed) { state = RunState::Error; }
     let truncated = b.total as usize > b.tail.len().min(TAIL_BYTES);
     let start = b.tail.len().saturating_sub(TAIL_BYTES);
-    let text = String::from_utf8_lossy(&b.tail[start..]).into_owned();
+    let mut text = String::from_utf8_lossy(&b.tail[start..]).into_owned();
+    if let Some(error) = capture_error { text.push_str(&format!("\n{error}")); }
     RunOutcome {
         state,
         exit_code,
@@ -266,6 +332,15 @@ mod tests {
         let r = run("node -e \"require('child_process').spawn(process.execPath,['-e','setTimeout(()=>{},60000)'],{stdio:'inherit'}); setTimeout(()=>{},60000)\"", 1);
         assert_eq!(r.state, RunState::Timeout);
         assert!(t0.elapsed() < Duration::from_secs(10), "runner must not hang on grandchildren holding pipes: {:?}", t0.elapsed());
+    }
+
+    // Node's Windows child fixture does not retain these inherited pipe handles after its parent exits.
+    #[cfg(unix)]
+    #[test]
+    fn completed_parent_with_open_output_is_not_a_passing_check() {
+        let r = run("node -e \"let c=require('child_process').spawn(process.execPath,['-e','setTimeout(()=>{},5000)'],{stdio:'inherit'});c.unref()\"", 15);
+        assert_eq!(r.state, RunState::Error);
+        assert!(r.output_tail.contains("output was incomplete"));
     }
 
     #[test]
@@ -321,6 +396,87 @@ mod tests {
         assert!(!text.contains("ghp_abcdefghijklmnopqrstuvwxyz0123"), "redacted");
         assert!(serde_json::from_str::<serde_json::Value>(text.trim()).is_ok(), "still valid JSON after redaction: {text}");
         assert!(r.output_tail.contains("progress on stderr"), "the combined tail still has both");
+    }
+
+    #[test]
+    fn missing_report_capture_stops_the_check() {
+        let d = tempfile::tempdir().unwrap();
+        let r = run_check_capture(Backend::TrustedLocal, "node -e \"require('fs').writeFileSync('ran','yes')\"", d.path(), Duration::from_secs(10), None, Some(d.path()), Arc::new(AtomicBool::new(false)));
+        assert_eq!(r.state, RunState::Error);
+        assert!(!d.path().join("ran").exists(), "the check must not run without report capture");
+    }
+
+    #[test]
+    fn missing_log_stops_the_check() {
+        let d = tempfile::tempdir().unwrap();
+        let r = run_check("node -e \"require('fs').writeFileSync('ran','yes')\"", d.path(), Duration::from_secs(10), Some(d.path()), Arc::new(AtomicBool::new(false)));
+        assert_eq!(r.state, RunState::Error);
+        assert!(r.log_path.is_none());
+        assert!(!d.path().join("ran").exists(), "the check must not run without its audit log");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_log_or_report_write_is_not_a_successful_check() {
+        let d = tempfile::tempdir().unwrap();
+        let full = Path::new("/dev/full");
+        let run = |log, report| run_check_capture(Backend::TrustedLocal, "printf '[]\\n'", d.path(), Duration::from_secs(10), log, report, Arc::new(AtomicBool::new(false)));
+        let log = run(Some(full), None);
+        assert_eq!(log.state, RunState::Error);
+        assert!(log.output_tail.contains("log could not be written"));
+        let report = run(None, Some(full));
+        assert_eq!(report.state, RunState::Error);
+        assert!(report.output_tail.contains("report could not be written"));
+    }
+
+    #[test]
+    fn report_capture_rejects_truncation_and_freezes_after_finish() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("report");
+        let mut capture = Buf { log: Some(std::fs::File::create(&path).unwrap()), cap: 4, ..Default::default() };
+        capture.log_chunk(b"[]   \n");
+        capture.finish_log();
+        assert!(capture.truncated, "even a valid JSON prefix must not be treated as a complete report");
+        let before = std::fs::read(&path).unwrap();
+        capture.log_chunk(b"late output\n");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "late readers must not alter completed evidence");
+    }
+
+    #[test]
+    fn multiline_private_keys_are_not_written_to_verification_logs() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("log");
+        let mut log = Buf { log: Some(std::fs::File::create(&path).unwrap()), ..Default::default() };
+        log.log_chunk(b"before\n-----BEGIN PRIVATE ");
+        log.log_chunk(b"KEY-----\nprivate-fixture-part-one\nprivate-fixture-part-two\n-----END PRIVATE KEY-----\nafter\n");
+        log.finish_log();
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(contents.contains("before") && contents.contains("after") && contents.contains("[REDACTED PRIVATE KEY]"));
+        assert!(!contents.contains("private-fixture-part"), "{contents}");
+    }
+
+    #[test]
+    fn verification_command_redacts_a_multiline_private_key_in_log_and_tail() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("run.log");
+        let command = "node -e \"console.log('-----BEGIN '+'PRIVATE KEY-----\\nprivate-fixture-value\\n-----END '+'PRIVATE KEY-----')\"";
+        let result = run_check(command, d.path(), Duration::from_secs(20), Some(&path), Arc::new(AtomicBool::new(false)));
+        assert_eq!(result.state, RunState::Passed);
+        assert!(!result.output_tail.contains("private-fixture-value"));
+        assert!(!std::fs::read_to_string(path).unwrap().contains("private-fixture-value"));
+        let incomplete = run("node -e \"console.log('-----BEGIN '+'PRIVATE KEY-----\\nprivate-fixture-value')\"", 20);
+        assert_eq!(incomplete.state, RunState::Passed);
+        assert!(!incomplete.output_tail.contains("private-fixture-value"), "an absent footer must not leak the partial key");
+    }
+
+    #[test]
+    fn oversized_scanner_output_is_not_successful_evidence() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("report");
+        let r = run_check_capture(Backend::TrustedLocal, "node -e \"process.stdout.write('[]'+' '.repeat(17*1024*1024))\"", d.path(), Duration::from_secs(30), None, Some(&path), Arc::new(AtomicBool::new(false)));
+        assert_eq!(r.state, RunState::Error, "a truncated valid JSON prefix is incomplete evidence");
+        assert!(r.output_tail.contains("capture limit"));
+        assert!(std::fs::metadata(path).unwrap().len() <= STDOUT_CAP_BYTES);
     }
 
     #[test]

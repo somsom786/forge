@@ -21,6 +21,8 @@ fn patterns() -> &'static Patterns {
             r"xox[abprs]-[A-Za-z0-9\-]{10,}",
             r"(?i)bearer\s+[A-Za-z0-9._\-]{20,}",
             r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+            // A command may crash or be truncated before printing the footer; never expose the partial key tail.
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*$",
         ]
         .iter()
         .map(|p| Regex::new(p).expect("valid redaction regex"))
@@ -85,6 +87,14 @@ mod tests {
         let r = redact_str(t);
         assert!(!r.contains("abcdefghijklmnop"), "{r}");
         assert_eq!(r.matches("[REDACTED]").count(), 3, "{r}");
+    }
+
+    #[test]
+    fn redacts_an_unfinished_private_key_block() {
+        let input = ["before\n-----BEGIN ", "PRIVATE KEY-----\nprivate-fixture-value"].concat();
+        let output = redact_str(&input);
+        assert!(output.contains("before") && output.contains("[REDACTED]"));
+        assert!(!output.contains("private-fixture-value"));
     }
 
     #[test]

@@ -85,6 +85,9 @@ pub struct Symbol {
     pub signature: String,
     /// Enclosing class / impl type / trait / module, if any (`None` = top level).
     pub container: Option<String>,
+    /// Identifiers appearing syntactically inside the declaration/body. No name resolution or call graph is claimed.
+    #[serde(skip_serializing)]
+    pub syntactic_identifiers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,6 +123,7 @@ pub struct Index {
     pub fingerprint: String,
     pub files: Vec<IndexedFile>,
     pub symbols: Vec<Symbol>,
+    pub identifier_file_counts: HashMap<String, usize>,
     pub skipped: Skipped,
     /// Set when a limit stopped the build early; the index is then partial.
     pub truncated: Option<String>,
@@ -241,12 +245,24 @@ fn build_with(root: &Path, head: Option<String>, dirty: bool, fingerprint: Strin
         }
         files.push(f);
     }
+    let identifier_file_counts = {
+        // Borrow strings during aggregation so common mentions do not clone a path for every identifier/file pair.
+        let mut by_file: HashMap<&str, HashSet<&str>> = HashMap::new();
+        for s in &symbols {
+            let names = by_file.entry(&s.file).or_default();
+            names.extend(s.syntactic_identifiers.iter().map(String::as_str));
+        }
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for names in by_file.values() { for name in names { *counts.entry((*name).to_string()).or_default() += 1; } }
+        counts
+    };
     Ok(Index {
         head,
         dirty,
         fingerprint,
         files,
         symbols,
+        identifier_file_counts,
         skipped,
         truncated,
         built_at: chrono::Utc::now().to_rfc3339(),
@@ -405,6 +421,11 @@ pub fn code_map(ix: &Index) -> CodeMap {
 pub struct SymbolHit {
     pub symbol: Symbol,
     pub score: f64,
+    pub relationship: &'static str,
+}
+
+fn symbol_for_display(s: &Symbol) -> Symbol {
+    Symbol { name: s.name.clone(), kind: s.kind, file: s.file.clone(), start_line: s.start_line, end_line: s.end_line, signature: s.signature.clone(), container: s.container.clone(), syntactic_identifiers: vec![] }
 }
 
 /// Symbols by name for a search box: exact > prefix > substring > word-part matches. With `file`, only that file's
@@ -418,21 +439,23 @@ pub fn search(ix: &Index, query: &str, file: Option<&str>, limit: usize) -> Vec<
         .filter(|s| file.is_none_or(|f| s.file == f))
         .filter_map(|s| {
             if q.is_empty() {
-                return Some(SymbolHit { symbol: s.clone(), score: 0.0 });
+                return Some(SymbolHit { symbol: symbol_for_display(s), score: 0.0, relationship: "declaration" });
             }
             let n = s.name.to_lowercase();
-            let score = if n == q {
-                100.0
+            let (score, relationship) = if n == q {
+                (100.0, "declaration")
             } else if n.starts_with(&q) {
-                60.0
+                (60.0, "declaration")
             } else if n.contains(&q) {
-                30.0
+                (30.0, "declaration")
             } else {
                 let name_parts = query::split_identifier(&s.name);
                 let m = parts.iter().filter(|p| name_parts.iter().any(|np| np.starts_with(p.as_str()))).count();
-                if m == parts.len() && m > 0 { 10.0 + m as f64 } else { return None }
+                if m == parts.len() && m > 0 { (10.0 + m as f64, "declaration") }
+                else if s.syntactic_identifiers.binary_search(&q).is_ok() { (5.0, "syntactic_mention") }
+                else { return None }
             };
-            Some(SymbolHit { symbol: s.clone(), score: score + if s.container.is_none() { 1.0 } else { 0.0 } })
+            Some(SymbolHit { symbol: symbol_for_display(s), score: score + if s.container.is_none() { 1.0 } else { 0.0 }, relationship })
         })
         .collect();
     hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal).then(a.symbol.file.cmp(&b.symbol.file)).then(a.symbol.start_line.cmp(&b.symbol.start_line)));
@@ -518,6 +541,14 @@ pub fn rank(ix: &Index, objective: &str, path_hints: &[String]) -> Vec<CodeRef> 
         if !name_hits.is_empty() {
             score += 2.0 * name_hits.len() as f64 + name_hits.len() as f64 / name_parts.len().max(1) as f64;
             reasons.push(format!("name matches {}", name_hits.iter().map(|t| format!("\"{t}\"")).collect::<Vec<_>>().join(", ")));
+        }
+        let mentions: Vec<_> = s.syntactic_identifiers.iter().filter(|name| idents.contains(*name) || terms.iter().any(|t| t.len() >= 5 && t == *name)).collect();
+        if !mentions.is_empty() {
+            score += mentions.iter().take(3).map(|name| {
+                let frequency = ix.identifier_file_counts.get(*name).copied().unwrap_or(1) as f64;
+                (if idents.contains(*name) { 3.0 } else { 1.5 }) / (2.0 + frequency).ln()
+            }).sum::<f64>();
+            reasons.push(format!("syntactic identifier mention, unresolved: {}", mentions.iter().take(3).map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
         }
         let hinted = under_hint(&s.file, path_hints);
         if hinted {

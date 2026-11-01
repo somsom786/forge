@@ -26,7 +26,7 @@ fn in_review(f: &Fixture) -> Mission {
 
 fn seen(f: &Fixture, id: &str) -> Seen {
     let r = f.core.verification_report(id).unwrap();
-    Seen { fingerprint: r.fingerprint, contract_sha256: r.contract_sha256 }
+    Seen { fingerprint: r.fingerprint, contract_sha256: r.contract_sha256, agent_instructions_reviewed: false }
 }
 
 fn worktree(f: &Fixture, id: &str) -> PathBuf {
@@ -37,6 +37,42 @@ fn run_check_to_end(f: &Fixture, id: &str) {
     let run = f.core.start_check(id, "exists").unwrap();
     wait_until("check done", || f.core.store.get_run(&run.id).unwrap().state != crate::contract::RunState::Running);
     wait_until("slot released", || !lock(&f.core.checks).contains_key(id));
+}
+
+#[test]
+fn instruction_changes_require_acknowledgement_bound_to_the_current_fingerprint() {
+    let f = fixture();
+    let m = in_review(&f);
+    let file = worktree(&f, &m.id).join("AGENTS.md");
+    std::fs::write(&file, "instructions one\n").unwrap();
+    let mut reviewed = seen(&f, &m.id);
+    let err = f.core.review(&m.id, ReviewDecision::Approve, None, Some("reviewed"), Some(&reviewed)).unwrap_err().to_string();
+    assert!(err.contains("explicitly acknowledge"), "{err}");
+    assert!(f.core.store.review_decisions(&m.id).unwrap().is_empty());
+    reviewed.agent_instructions_reviewed = true;
+    std::fs::write(&file, "instructions changed after review\n").unwrap();
+    assert!(f.core.review(&m.id, ReviewDecision::Approve, None, Some("reviewed"), Some(&reviewed)).unwrap_err().to_string().contains("not the ones you reviewed"));
+    let mut current = seen(&f, &m.id);
+    current.agent_instructions_reviewed = true;
+    f.core.review(&m.id, ReviewDecision::Approve, None, Some("reviewed"), Some(&current)).unwrap();
+    let decisions = f.core.store.review_decisions(&m.id).unwrap();
+    assert!(decisions.iter().any(|d| d.agent_instructions_reviewed));
+    std::fs::write(&file, "changed again after approval\n").unwrap();
+    assert!(f.core.merge_mission(&m.id, false).is_err());
+}
+
+#[test]
+fn legacy_approval_of_instruction_changes_returns_to_review() {
+    let f = fixture();
+    let m = in_review(&f);
+    std::fs::write(worktree(&f, &m.id).join("CLAUDE.md"), "future instructions\n").unwrap();
+    let reviewed = seen(&f, &m.id);
+    // Legacy free-form note text must never be interpreted as the new authorization field.
+    f.core.store.add_review_decision(&m.id, "approve", Some("Explicitly acknowledged agent instruction/configuration changes"), None, &reviewed.fingerprint, None).unwrap();
+    f.core.set_state(&m.id, MissionState::Approved, "legacy approval").unwrap();
+    let err = f.core.merge_mission(&m.id, false).unwrap_err().to_string();
+    assert!(err.contains("explicit acknowledgement"), "{err}");
+    assert_eq!(state(&f, &m.id), "awaiting_review");
 }
 
 #[test]
@@ -193,6 +229,19 @@ fn a_check_cannot_start_while_another_operation_owns_the_mission() {
     assert!(err.contains("another operation owns this mission") || err.contains("stop the agent first"), "{err}");
     drop(guard);
     run_check_to_end(&f, &m.id);
+}
+
+#[test]
+fn a_stale_nonterminal_snapshot_cannot_claim_a_check_after_cancellation() {
+    let f = fixture();
+    let m = new_mission(&f, "cancel before check registration", PermissionProfile::Default);
+    let snapshot = f.core.store.get_mission(&m.id).unwrap();
+    assert!(!MissionState::parse(&snapshot.state).unwrap().is_terminal());
+    f.core.store.transition(&m.id, MissionState::Cancelled, "test cancellation").unwrap();
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let error = f.core.claim_check_slot(&m.id, cancel).unwrap_err().to_string();
+    assert!(error.contains("finished"), "{error}");
+    assert!(!lock(&f.core.checks).contains_key(&m.id));
 }
 
 #[test]

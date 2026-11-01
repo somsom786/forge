@@ -22,6 +22,12 @@ const content = {
 afterEach(cleanup);
 
 describe('ProofSummary', () => {
+  it('highlights instruction changes while accepting older packs', () => {
+    const { rerender } = render(<ProofSummary content={content} />);
+    expect(screen.queryByText('agent instructions changed')).toBeNull();
+    rerender(<ProofSummary content={{ ...content, changes: { ...content.changes, agentInstructionFiles: ['AGENTS.md'] } }} />);
+    expect(screen.getByText('agent instructions changed').getAttribute('title')).toBe('AGENTS.md');
+  });
   it('states what is open, from the recorded content', () => {
     render(<ProofSummary content={content} />);
     expect(screen.getByText('1 not established')).toBeTruthy();

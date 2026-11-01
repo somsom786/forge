@@ -87,7 +87,14 @@ pub fn run(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 pub fn version() -> Result<String> {
-    let out = Command::new(git_binary()?).arg("--version").output()?;
+    let mut command = Command::new(git_binary()?);
+    command.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = command.output()?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -334,7 +341,12 @@ pub fn verify_worktree(repo: &Path, worktree: &Path, expected_branch: Option<&st
 /// Remove a worktree. Refuses when there is uncommitted work unless `force`.
 pub fn worktree_remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
     if !path.exists() {
-        let _ = run(repo, &["worktree", "prune"]);
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => return Err(ForgeError::PathRejected(format!("{} is a link, not a missing worktree", path.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(e.into()),
+        }
+        ensure_worktree_unregistered(repo, path)?;
         return Ok(());
     }
     if !force {
@@ -353,6 +365,21 @@ pub fn worktree_remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
     }
     args.push(&p);
     run(repo, &args)?;
+    Ok(())
+}
+
+/// An incomplete directory cannot prove ownership of its Git registration.
+pub fn ensure_worktree_unregistered(repo: &Path, path: &Path) -> Result<()> {
+    if !path.is_absolute() { return Err(ForgeError::PathRejected("worktree path must be absolute".into())); }
+    let out = run_raw(repo, &["worktree", "list", "--porcelain", "-z"])?;
+    if !out.status.success() { return Err(ForgeError::Git(format!("could not inspect worktree registrations: {}", String::from_utf8_lossy(&out.stderr).trim()))); }
+    let text = std::str::from_utf8(&out.stdout).map_err(|_| ForgeError::Git("worktree registrations contain non-UTF-8 paths; inspect them manually".into()))?;
+    if text.split('\0').filter_map(|s| s.strip_prefix("worktree ")).any(|p| {
+        let other = Path::new(p);
+        crate::paths::is_within(path, other) && crate::paths::is_within(other, path)
+    }) {
+        return Err(ForgeError::InvalidState(format!("{} is still registered with Git; inspect that specific registration before removing it", path.display())));
+    }
     Ok(())
 }
 
@@ -415,6 +442,16 @@ impl Drop for PreviewIndex {
 pub fn changed_files(worktree: &Path, base: &str) -> Result<Vec<ChangedFile>> {
     let idx = PreviewIndex::build(worktree)?;
     let raw = idx.run(worktree, &["diff", "--cached", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", base])?;
+    Ok(parse_changed_files(&raw))
+}
+
+/// Read paths from the immutable tree used for the review fingerprint, not a second worktree snapshot.
+pub fn changed_files_in_tree(worktree: &Path, base: &str, tree: &str) -> Result<Vec<ChangedFile>> {
+    let raw = run(worktree, &["diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", base, tree])?;
+    Ok(parse_changed_files(&raw))
+}
+
+fn parse_changed_files(raw: &str) -> Vec<ChangedFile> {
     let mut out = vec![];
     let mut it = raw.split('\0').peekable();
     while let Some(rec) = it.next() {
@@ -432,13 +469,18 @@ pub fn changed_files(worktree: &Path, base: &str) -> Result<Vec<ChangedFile>> {
         };
         out.push(ChangedFile { path, added: a.parse().ok(), removed: r.parse().ok(), binary: a == "-" });
     }
-    Ok(out)
+    out
 }
 
 /// Unified diff of everything the mission changed relative to its base commit.
 pub fn diff(worktree: &Path, base: &str) -> Result<String> {
     let idx = PreviewIndex::build(worktree)?;
     idx.run(worktree, &["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "-U4", base])
+}
+
+/// Render the diff for a previously captured tree, so it matches its review fingerprint.
+pub fn diff_tree(worktree: &Path, base: &str, tree: &str) -> Result<String> {
+    run(worktree, &["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "-U4", base, tree])
 }
 
 /// Stable identity of the mission's current changes: base-relative content of every changed path.
@@ -549,6 +591,25 @@ u UU N... 100644 100644 100644 100644 a b c conflicted.rs\0\
     }
 
     #[test]
+    fn reviewed_tree_paths_include_both_sides_of_a_rename_and_stay_stable() {
+        let repo = init_repo();
+        std::fs::write(repo.path().join("AGENTS.md"), "instructions\n").unwrap();
+        run(repo.path(), &["add", "AGENTS.md"]).unwrap();
+        run(repo.path(), &["commit", "-m", "instructions"]).unwrap();
+        let base = head_commit(repo.path()).unwrap();
+        std::fs::rename(repo.path().join("AGENTS.md"), repo.path().join("ordinary.md")).unwrap();
+        let (_, tree) = fingerprint_and_tree(repo.path(), &base).unwrap();
+        std::fs::write(repo.path().join("later.md"), "later\n").unwrap();
+        let files = changed_files_in_tree(repo.path(), &base, &tree).unwrap();
+        let paths: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"AGENTS.md") && paths.contains(&"ordinary.md"), "{paths:?}");
+        assert!(!paths.contains(&"later.md"), "{paths:?}");
+        let diff = diff_tree(repo.path(), &base, &tree).unwrap();
+        assert!(diff.contains("AGENTS.md") && diff.contains("ordinary.md"));
+        assert!(!diff.contains("later.md"));
+    }
+
+    #[test]
     fn slugify_is_branch_and_path_safe() {
         assert_eq!(slugify("Implement user auth: reset/password!", 24), "implement-user-auth-rese");
         assert_eq!(slugify("***", 10), "mission");
@@ -586,6 +647,26 @@ u UU N... 100644 100644 100644 100644 a b c conflicted.rs\0\
         worktree_remove(repo.path(), &wt, true).unwrap();
         assert!(!wt.exists());
         delete_branch(repo.path(), "forge/m1", true).unwrap();
+    }
+
+    #[test]
+    fn removing_a_missing_worktree_does_not_prune_an_unrelated_registration() {
+        let repo = init_repo();
+        let parent = tempfile::tempdir().unwrap();
+        let external = parent.path().join("external");
+        let moved = parent.path().join("external-moved");
+        let base = head_commit(repo.path()).unwrap();
+        worktree_add(repo.path(), &external, "forge/unrelated-fixture", &base).unwrap();
+        run(repo.path(), &["config", "gc.worktreePruneExpire", "now"]).unwrap();
+        assert!(external.starts_with(parent.path()) && moved.starts_with(parent.path()));
+        std::fs::rename(&external, &moved).unwrap();
+        assert!(run(repo.path(), &["worktree", "list", "--porcelain"]).unwrap().contains("forge/unrelated-fixture"));
+        worktree_remove(repo.path(), &parent.path().join("missing-own"), false).unwrap();
+        assert!(run(repo.path(), &["worktree", "list", "--porcelain"]).unwrap().contains("forge/unrelated-fixture"), "unrelated worktree metadata was pruned");
+        assert!(moved.join("README.md").exists(), "the fixture's worktree files remain intact");
+        let error = worktree_remove(repo.path(), &external, false).unwrap_err().to_string();
+        assert!(error.contains("still registered"), "{error}");
+        assert!(run(repo.path(), &["worktree", "list", "--porcelain"]).unwrap().contains("forge/unrelated-fixture"));
     }
 
     #[test]

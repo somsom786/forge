@@ -22,6 +22,29 @@ fn find<'a>(ix: &'a Index, name: &str) -> &'a Symbol {
     ix.symbols.iter().find(|s| s.name == name).unwrap_or_else(|| panic!("no symbol {name}; have {:?}", ix.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()))
 }
 
+#[test]
+fn syntactic_body_mentions_find_code_without_claiming_resolution_or_matching_comments() {
+    let repo = repo_with(&[
+        ("src/normalize.ts", "export function normalize(value: string) { return value.trimRight(); }"),
+        ("src/other.ts", "// trimRight\nexport function unrelated() { return 'trimRight'; }"),
+        ("src/control.rs", "pub fn dispatch() { send_packet(); }"),
+        ("src/worker.py", "def run():\n    queue.shutdown()\n"),
+    ]);
+    let ix = build(repo.path()).unwrap();
+    assert!(find(&ix, "normalize").syntactic_identifiers.contains(&"trimright".into()));
+    assert!(!find(&ix, "unrelated").syntactic_identifiers.contains(&"trimright".into()));
+    assert!(find(&ix, "dispatch").syntactic_identifiers.contains(&"send_packet".into()));
+    assert!(find(&ix, "run").syntactic_identifiers.contains(&"shutdown".into()));
+    assert_eq!(ix.identifier_file_counts.get("trimright"), Some(&1));
+    let ranked = rank(&ix, "Handle trimRight deprecation", &[]);
+    assert_eq!(ranked[0].file, "src/normalize.ts");
+    assert!(ranked[0].reasons.iter().any(|r| r.contains("unresolved")));
+    let hits = search(&ix, "trimRight", None, 10);
+    assert!(hits.iter().any(|h| h.symbol.name == "normalize" && h.relationship == "syntactic_mention"));
+    assert!(!hits.iter().any(|h| h.symbol.name == "unrelated"));
+    assert!(hits.iter().all(|h| h.symbol.syntactic_identifiers.is_empty()), "search results do not clone the internal reference index");
+}
+
 const RUST: &str = r#"//! Tokens.
 use std::time::Duration;
 

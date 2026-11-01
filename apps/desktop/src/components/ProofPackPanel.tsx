@@ -71,6 +71,7 @@ export function ProofSummary({ content }: { content: Record<string, any> }) {
   const never = checks.filter((c) => !c.latest).length;
   const stale = checks.filter((c) => c.latest?.state === 'passed' && !c.fresh).length;
   const files = content.changes?.files?.length ?? 0;
+  const instructionFiles: string[] = content.changes?.agentInstructionFiles ?? [];
   // Packs from before sessions recorded this have no `ranOn`: those sessions ran on the host. `null` means the session
   // never started, so it ran nowhere.
   const ranOn = [...new Set<string>((content.sessions ?? []).map((s: any) => ('ranOn' in s ? s.ranOn : 'agent_host')).filter((r: string | null) => r !== null))];
@@ -85,6 +86,7 @@ export function ProofSummary({ content }: { content: Record<string, any> }) {
         </Badge>
       )}
       <Badge>{files} file{files === 1 ? '' : 's'} changed</Badge>
+      {instructionFiles.length > 0 && <Badge tone="warn" title={instructionFiles.join('\n')}>agent instructions changed</Badge>}
       {ranOn.length > 0 && <Badge tone={isolated ? 'ok' : 'warn'} title="Where the agent process and the commands it ran executed">{isolated ? 'agent isolated' : 'agent ran on the host'}</Badge>}
     </div>
   );

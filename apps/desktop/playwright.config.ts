@@ -14,7 +14,7 @@ export default defineConfig({
     // The desktop window's minimum size (src-tauri/tauri.conf.json): layouts must hold at this size.
     viewport: { width: 1100, height: 700 },
     trace: 'retain-on-failure',
-    ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } } : {}),
+    launchOptions: { args: ['--disable-gpu'], ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}) },
   },
   webServer: {
     command: 'npx vite --port 1420 --strictPort',

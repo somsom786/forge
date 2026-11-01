@@ -186,11 +186,12 @@ function SearchResults({ hits, query, onOpen }: { hits: SymbolHit[]; query: stri
     <section aria-label="Symbol search results" className="min-h-0 flex-1 overflow-auto p-3">
       <div className="mb-2 text-[12px] text-muted">{hits.length === 0 ? `No symbol named like “${query.trim()}”.` : `${hits.length}${hits.length === 100 ? '+' : ''} symbols`}</div>
       <ul className="m-0 list-none space-y-1 p-0">
-        {hits.map(({ symbol: s }) => (
+        {hits.map(({ symbol: s, relationship }) => (
           <li key={`${s.file}:${s.startLine}:${s.name}`}>
             <button className="w-full text-left hover:text-accent" onClick={() => onOpen(s.file)}>
               <div className="flex items-baseline gap-2">
                 <Badge>{kindShort(s.kind)}</Badge><span className="mono font-medium">{s.name}</span>
+                {relationship === 'syntactic_mention' && <Badge tone="warn">unresolved syntax mention</Badge>}
                 {s.container && <span className="text-[11px] text-faint">in {s.container}</span>}
                 <span className="mono ml-auto text-[11px] text-faint">{s.file}:{s.startLine}</span>
               </div>

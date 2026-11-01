@@ -71,6 +71,12 @@ pub async fn providers_detect(core: CoreState<'_>) -> Result<Vec<ProviderInfo>> 
             providers::detect_codex(c.cfg.codex.clone()),
             crate::acp::provider_info(&c.acp_agents()?),
         ];
+        if let Err(reason) = providers::locate_claude_sdk(c.cfg.engine_script.as_deref()) {
+            for p in v.iter_mut().filter(|p| matches!(p.id.as_str(), "claude" | "claude-local")) {
+                p.adapter_available = false;
+                p.notes.push(reason.clone());
+            }
+        }
         if c.cfg.allow_fake {
             v.push(ProviderInfo {
                 id: "fake".into(),
@@ -479,14 +485,25 @@ pub async fn knowledge_forget(core: CoreState<'_>, page_id: String) -> Result<()
 pub async fn knowledge_open_in_obsidian(core: CoreState<'_>, page_id: String) -> Result<()> {
     blocking(&core, move |c| {
         let uri = c.knowledge_open_in_obsidian(&page_id)?;
-        // rundll32 hands the URI to the registered handler without any shell parsing of `%` or `&`.
+        // Pass the encoded URI as one argument; never interpret it as a shell command.
+        #[cfg(windows)]
         let mut cmd = std::process::Command::new("rundll32");
+        #[cfg(windows)]
         cmd.args(["url.dll,FileProtocolHandler", &uri]);
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000);
         }
+        #[cfg(target_os = "linux")]
+        let mut cmd = std::process::Command::new("xdg-open");
+        #[cfg(target_os = "macos")]
+        let mut cmd = std::process::Command::new("open");
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+        return Err(crate::error::ForgeError::Other("opening Obsidian is not supported on this platform".into()));
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        cmd.arg(&uri);
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         cmd.spawn()?;
         Ok(())
     })
@@ -683,6 +700,11 @@ pub async fn project_set_execution_backend(core: CoreState<'_>, project_id: Stri
 #[tauri::command]
 pub async fn storage_usage(core: CoreState<'_>) -> Result<crate::supervisor::storage::StorageUsage> {
     blocking(&core, move |c| c.storage_usage()).await
+}
+
+#[tauri::command]
+pub async fn storage_compact(core: CoreState<'_>) -> Result<crate::supervisor::storage::CompactResult> {
+    blocking(&core, move |c| c.storage_compact()).await
 }
 
 #[tauri::command]

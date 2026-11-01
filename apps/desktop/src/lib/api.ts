@@ -135,6 +135,7 @@ export const api = {
   /** Refused for a backend that cannot run on this machine; never downgraded. */
   projectSetExecutionBackend: (projectId: string, backend: ExecutionBackendId) => invoke<Project>('project_set_execution_backend', { projectId, backend }),
   storageUsage: () => invoke<StorageUsage>('storage_usage'),
+  storageCompact: () => invoke<{ pagesBefore: number; pagesAfter: number; freePagesBefore: number }>('storage_compact'),
   storageCleanupPreview: (olderThanDays: number) => invoke<CleanupPlan>('storage_cleanup_preview', { olderThanDays }),
   storageCleanupApply: (olderThanDays: number, token: string) => invoke<CleanupResult>('storage_cleanup_apply', { olderThanDays, token }),
   projectSetAgentBackend: (projectId: string, backend: ExecutionBackendId) => invoke<Project>('project_set_agent_backend', { projectId, backend }),

@@ -17,6 +17,9 @@ export function ReviewBar({ mission, report, onReload }: { mission: Mission; rep
   const [which, setWhich] = useState<Which>(null);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const [reviewedFingerprint, setReviewedFingerprint] = useState<string | null>(null);
+  const reviewKey = report ? `${report.fingerprint}:${report.contractSha256}` : null;
+  const instructionsReviewed = !!reviewKey && reviewedFingerprint === reviewKey;
   const [mergeError, setMergeError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<MergeOutcome | null>(null);
   const [lossMessage, setLossMessage] = useState<string | null>(null);
@@ -29,13 +32,13 @@ export function ReviewBar({ mission, report, onReload }: { mission: Mission; rep
 
   if (state !== 'awaiting_review' && state !== 'approved' && !canCleanup && !outcome) return null;
 
-  const close = () => { setWhich(null); setText(''); setLossMessage(null); setReviewError(null); };
+  const close = () => { setWhich(null); setText(''); setLossMessage(null); setReviewError(null); setReviewedFingerprint(null); };
 
   const doReview = async (decision: 'approve' | 'reject' | 'request_changes') => {
     setBusy(true);
     setReviewError(null);
     // `seen` comes from the report on screen, not a fresh fetch.
-    const r = await submitReview(mission.id, decision, decision === 'approve' ? undefined : text, decision === 'approve' && gate.needsOverride ? text : undefined, seenFrom(report) ?? undefined);
+    const r = await submitReview(mission.id, decision, decision === 'approve' ? undefined : text, decision === 'approve' && gate.needsOverride ? text : undefined, report ? { ...seenFrom(report)!, agentInstructionsReviewed: instructionsReviewed } : undefined);
     setBusy(false);
     if (r.mission) { close(); return; }
     if (r.error) {
@@ -80,6 +83,7 @@ export function ReviewBar({ mission, report, onReload }: { mission: Mission; rep
             <button className="btn btn-primary" onClick={() => setWhich('approve')}><Check className="size-3.5" aria-hidden /> Approve…</button>
             <button className="btn" onClick={() => setWhich('changes')}><MessageSquareWarning className="size-3.5" aria-hidden /> Request changes…</button>
             <button className="btn btn-danger" onClick={() => setWhich('reject')}><X className="size-3.5" aria-hidden /> Reject…</button>
+            {!!report?.agentInstructionFiles.length && <span className="text-[12px] text-warn">Agent instructions changed: review required</span>}
             {report && report.unresolved.length > 0 && <span className="text-[12px] text-warn">{report.unresolved.length} thing{report.unresolved.length === 1 ? '' : 's'} not established</span>}
             {report && report.hardBlockers.length > 0 && <span className="text-[12px] text-bad">Approval blocked: {report.hardBlockers[0]}</span>}
           </>
@@ -115,7 +119,7 @@ export function ReviewBar({ mission, report, onReload }: { mission: Mission; rep
         footer={
           <>
             <button className="btn" onClick={close} disabled={busy}>Cancel</button>
-            <button className="btn btn-primary" disabled={!gate.canApprove || busy} onClick={() => void doReview('approve')}>{gate.needsOverride ? 'Approve anyway' : 'Approve'}</button>
+            <button className="btn btn-primary" disabled={!gate.canApprove || busy || (!!report?.agentInstructionFiles.length && !instructionsReviewed)} onClick={() => void doReview('approve')}>{gate.needsOverride ? 'Approve anyway' : 'Approve'}</button>
           </>
         }
       >
@@ -123,6 +127,13 @@ export function ReviewBar({ mission, report, onReload }: { mission: Mission; rep
           <Callout tone="bad" title={isStaleReviewRefusal(reviewError) ? 'The review state changed' : 'Review not recorded'}>
             {isStaleReviewRefusal(reviewError) && <div className="mb-1">{STALE_REVIEW_NOTICE}</div>}
             <pre className="whitespace-pre-wrap break-words text-[12px]">{reviewError}</pre>
+          </Callout>
+        )}
+        {!!report?.agentInstructionFiles.length && (
+          <Callout tone="warn" title="Agent instruction/configuration changes">
+            <p>These files can change future agent behavior. Inspect their exact changes in the Changes tab before approving.</p>
+            <ul className="list-disc pl-4">{report.agentInstructionFiles.map((path) => <li key={path} className="mono break-all">{path}</li>)}</ul>
+            <label><input type="checkbox" checked={instructionsReviewed} onChange={(e) => setReviewedFingerprint(e.target.checked ? reviewKey : null)} /> I reviewed these changes for this revision.</label>
           </Callout>
         )}
         {gate.blockers.length > 0 && (

@@ -42,7 +42,13 @@ impl Drop for FakeModel {
 
 fn fake_model() -> FakeModel {
     let node = which::which("node").expect("node");
-    let mut child = Command::new(node).arg(fixture_js("fake-anthropic.mjs")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+    let mut command = Command::new(node);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let mut child = command.arg(fixture_js("fake-anthropic.mjs")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
     let port = serde_json::from_str::<Value>(&line).unwrap()["port"].as_u64().unwrap() as u16;

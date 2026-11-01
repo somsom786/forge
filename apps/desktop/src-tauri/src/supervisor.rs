@@ -31,7 +31,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -139,6 +139,8 @@ struct SessionHandle {
     waiters: Mutex<HashMap<String, Vec<String>>>,
     /// approval id -> the exact (tool, input) the agent asked for, unredacted, so policy can be re-checked at decision time.
     requests: Mutex<HashMap<String, (String, Value)>>,
+    /// In-session deadlines cannot be extended by moving the system wall clock backwards.
+    approval_deadlines: Mutex<HashMap<String, Instant>>,
     /// Approvals whose single permitted reuse (provider prompt after FORGE's hook for the same call) has been spent.
     reused: Mutex<std::collections::HashSet<String>>,
     fatal: Mutex<Option<String>>,
@@ -226,16 +228,24 @@ const MAX_ENGINE_LINE: usize = 16 * 1024 * 1024;
 pub(crate) const APPROVAL_TTL_SECS: u64 = 30 * 60;
 
 /// What a human approves: one digest over everything the decision is about. A different mission, session, provider, tool,
-/// input, worktree, permission profile, policy revision or execution place is a different binding.
+/// input, worktree, permission profile, policy revision, execution place or expiry is a different binding.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn approval_binding(mission_id: &str, session_id: &str, provider: &str, tool: &str, input: &Value, worktree: &Path, profile: &str, executes_on: &str) -> String {
+pub(crate) fn approval_binding(mission_id: &str, session_id: &str, provider: &str, tool: &str, input: &Value, worktree: &Path, profile: &str, executes_on: &str, expires_at: &str) -> String {
     let doc = json!({
         "mission": mission_id, "session": session_id, "provider": provider, "tool": tool, "input": input,
-        "worktree": worktree.to_string_lossy(), "profile": profile, "policyRev": policy::REVISION, "executesOn": executes_on,
+        "worktree": worktree.to_string_lossy(), "profile": profile, "policyRev": policy::REVISION, "executesOn": executes_on, "expiresAt": expires_at,
     });
     let mut h = Sha256::new();
     h.update(canonical_json(&doc).as_bytes());
     format!("{:x}", h.finalize())
+}
+
+fn approval_expired(expires_at: Option<&str>, now: &str) -> bool {
+    expires_at.is_some_and(|expiry| expiry <= now)
+}
+
+fn approval_deadline_elapsed(handle: &SessionHandle, approval_id: &str) -> bool {
+    lock(&handle.approval_deadlines).get(approval_id).is_none_or(|deadline| Instant::now() >= *deadline)
 }
 
 /// Identity of one exact tool call: the provider's id *and* a digest of tool + input.
@@ -548,13 +558,23 @@ impl Core {
         // Where the agent runs: the project's agent backend, required (never a silent fallback to the host). Decided, and
         // what a contained agent may see checked, before a session is recorded: a refusal here leaves no session behind.
         let project = self.store.get_project(&m.project_id)?;
+        let sdk_dir = if matches!(m.provider.as_str(), "claude" | "claude-local") {
+            Some(crate::providers::locate_claude_sdk(Some(&script)).map_err(ForgeError::Provider)?)
+        } else { None };
         let backend = crate::execution::Backend::parse(&project.agent_backend)?;
         let executes_on = if backend == crate::execution::Backend::TrustedLocal { AGENT_EXECUTES_ON.to_string() } else { backend.as_str().to_string() };
-        let (read_only, read_write) = if backend == crate::execution::Backend::TrustedLocal {
+        let (mut read_only, read_write) = if backend == crate::execution::Backend::TrustedLocal {
             (vec![], vec![])
         } else {
             (self.agent_read_only_paths(&node, &script, worktree, acp_agent.as_ref(), &mcp_servers)?, self.agent_state_paths(&m.provider, worktree)?)
         };
+        if backend != crate::execution::Backend::TrustedLocal {
+            if let Some(sdk) = &sdk_dir {
+                let root = sdk.ancestors().find(|p| p.file_name().is_some_and(|n| n == "node_modules")).unwrap_or(sdk);
+                self.narrow_enough(root, worktree).map_err(ForgeError::Provider)?;
+                read_only.push(root.to_path_buf());
+            }
+        }
         let session = self.store.create_session(&m.id, &m.provider, resume)?;
         let fail_session = |reason: String| {
             let _ = self.store.end_session(&session.id, "lost", &reason);
@@ -564,12 +584,18 @@ impl Core {
         let script_arg = [script.clone().into_os_string()];
         let spec = crate::execution::AgentSpec { program: &node, args: &script_arg, workspace: worktree, read_only, read_write };
         let mut cmd = crate::execution::agent_command(backend, &spec).map_err(|e| fail_session(e.to_string()))?;
+        if backend != crate::execution::Backend::TrustedLocal {
+            let base = std::env::vars_os().chain(self.cfg.engine_env.iter().map(|(k, v)| (k.into(), v.into())));
+            cmd.env_clear().envs(crate::execution::contained_agent_env(base)).env("TMPDIR", "/tmp");
+        } else {
+            cmd.envs(self.cfg.engine_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        }
+        if let Some(sdk) = sdk_dir { cmd.env("FORGE_CLAUDE_SDK_PATH", sdk); }
         cmd.current_dir(worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("FORGE_ALLOW_FAKE_PROVIDER", if self.cfg.allow_fake { "1" } else { "0" })
-            .envs(self.cfg.engine_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+            .env("FORGE_ALLOW_FAKE_PROVIDER", if self.cfg.allow_fake { "1" } else { "0" });
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -607,6 +633,7 @@ impl Core {
             life: Mutex::new(()),
             waiters: Mutex::new(HashMap::new()),
             requests: Mutex::new(HashMap::new()),
+            approval_deadlines: Mutex::new(HashMap::new()),
             reused: Mutex::new(std::collections::HashSet::new()),
             fatal: Mutex::new(None),
             stderr_tail: Mutex::new(String::new()),
@@ -765,7 +792,11 @@ impl Core {
             }
             EngineMsg::PermissionCancelled { request_id } => self.on_permission_cancelled(h, &request_id),
             EngineMsg::TurnComplete { status, message, provider_session_id, usage, permission_denials } => {
-                h.completed.store(true, Ordering::SeqCst);
+                {
+                    // Serialize completion with approval decisions, just as stop is serialized below.
+                    let _life = lock(&h.life);
+                    h.completed.store(true, Ordering::SeqCst);
+                }
                 if let Some(id) = provider_session_id {
                     let _ = self.store.set_mission_provider_session(&h.mission_id, &id);
                 }
@@ -800,8 +831,8 @@ impl Core {
         // Everything below happens under the lifecycle lock: insert, register waiter, change state, announce.
         let _life = lock(&h.life);
         // After the turn has ended nothing may still be granted (a late callback from a lingering agent process).
-        if h.completed.load(Ordering::SeqCst) {
-            return reply("deny", Some("the turn has ended; FORGE does not grant anything after it"));
+        if h.completed.load(Ordering::SeqCst) || h.stopping.load(Ordering::SeqCst) {
+            return reply("deny", Some("the session is stopping or the turn has ended; FORGE does not grant further actions"));
         }
         let key = request_key(&req.tool_use_id, &req.tool, &req.input);
 
@@ -812,6 +843,22 @@ impl Core {
                 match existing.state.as_str() {
                     "pending" => lock(&h.waiters).entry(existing.id).or_default().push(req.request_id.clone()),
                     "approved" | "auto_allowed" => {
+                        if existing.state == "approved" {
+                            let valid = existing.expires_at.as_deref().is_some_and(|expiry| {
+                                !approval_expired(Some(expiry), &crate::store::now())
+                                    && !approval_deadline_elapsed(h, &existing.id)
+                                    && existing.policy_rev.as_deref() == Some(policy::REVISION)
+                                    && existing.executes_on.as_deref() == Some(h.executes_on.as_str())
+                                    && self.store.get_mission(&h.mission_id).ok().is_some_and(|m| {
+                                        let binding = approval_binding(&h.mission_id, &h.session_id, &m.provider, &req.tool, &req.input, &h.worktree, h.profile.as_str(), &h.executes_on, expiry);
+                                        existing.binding_sha256.as_deref() == Some(binding.as_str())
+                                    })
+                            });
+                            if !valid {
+                                self.store.audit("system", "approval.reuse_denied", Some(&existing.id), &json!({"tool": req.tool, "reason": "expired or changed context"}));
+                                return reply("deny", Some("the earlier approval expired or its context changed"));
+                            }
+                        }
                         // The only legitimate repeat is the provider's own prompt following FORGE's hook for the same call, so
                         // an allow is reused once, and only if policy still allows it now (the world may have changed).
                         let first_reuse = lock(&h.reused).insert(existing.id.clone());
@@ -869,15 +916,19 @@ impl Core {
                     Risk::High => "high",
                 };
                 let provider = self.store.get_mission(&h.mission_id).map(|m| m.provider).unwrap_or_default();
-                let binding = approval_binding(&h.mission_id, &h.session_id, &provider, &req.tool, &req.input, &h.worktree, h.profile.as_str(), &h.executes_on);
                 let ttl = self.approval_ttl.load(Ordering::SeqCst);
+                let Some(deadline) = Instant::now().checked_add(Duration::from_secs(ttl)) else {
+                    return reply("deny", Some("FORGE could not establish an approval deadline"));
+                };
                 let expires = (chrono::Utc::now() + chrono::Duration::seconds(ttl as i64)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                let binding = approval_binding(&h.mission_id, &h.session_id, &provider, &req.tool, &req.input, &h.worktree, h.profile.as_str(), &h.executes_on, &expires);
                 let created = self
                     .store
                     .create_approval(&h.mission_id, &h.session_id, &key, &req.tool, &redact::redact_str(&summary), &detail, risk_s, &warnings, "pending", None, None)
                     .and_then(|a| self.store.bind_approval(&a.id, &binding, policy::REVISION, &h.executes_on, &expires));
                 match created {
                     Ok(a) => {
+                        lock(&h.approval_deadlines).insert(a.id.clone(), deadline);
                         lock(&h.requests).insert(a.id.clone(), (req.tool.clone(), req.input.clone()));
                         lock(&h.waiters).entry(a.id.clone()).or_default().push(req.request_id.clone());
                         self.core_event(h, "approval.requested", json!({"approvalId": a.id, "tool": req.tool, "summary": a.summary, "risk": risk_s}));
@@ -1028,6 +1079,7 @@ impl Core {
         waiters.remove(&approval_id);
         drop(waiters);
         lock(&h.requests).remove(&approval_id);
+        lock(&h.approval_deadlines).remove(&approval_id);
         if let Ok(Some(a)) = self.store.expire_approval(&approval_id, "the agent withdrew this request") {
             self.emit(UiEvent::Approval { approval: a });
         }
@@ -1050,7 +1102,7 @@ impl Core {
         let now = crate::store::now();
         for id in ids {
             let Ok(a) = self.store.get_approval(&id) else { continue };
-            if a.state == "pending" && a.expires_at.as_deref().is_some_and(|e| e < now.as_str()) {
+            if a.state == "pending" && (approval_expired(a.expires_at.as_deref(), &now) || approval_deadline_elapsed(h, &id)) {
                 if let Ok(Some(a)) = self.store.expire_approval(&id, "no decision before it expired") {
                     self.store.audit("system", "approval.expired", Some(&a.id), &json!({"tool": a.tool}));
                     self.core_event(h, "approval.decided", json!({"approvalId": a.id, "tool": a.tool, "decision": "expired"}));
@@ -1060,6 +1112,9 @@ impl Core {
                 }
             }
         }
+        // Approved entries are needed only until their deadline for the single permitted reuse.
+        let now = Instant::now();
+        lock(&h.approval_deadlines).retain(|_, deadline| *deadline > now);
     }
 
     #[cfg(test)]
@@ -1078,6 +1133,7 @@ impl Core {
     fn release_waiters(&self, handle: &SessionHandle, approval_id: &str, allow: bool, message: Option<String>) {
         let waiting = lock(&handle.waiters).remove(approval_id).unwrap_or_default();
         lock(&handle.requests).remove(approval_id);
+        if !allow { lock(&handle.approval_deadlines).remove(approval_id); }
         for r in waiting {
             handle.send(json!({"t": "permission_result", "requestId": r, "behavior": if allow { "allow" } else { "deny" }, "message": message}));
         }
@@ -1098,6 +1154,9 @@ impl Core {
             .ok_or_else(|| ForgeError::InvalidState("the agent session for this request has ended".into()))?;
         let _life = lock(&handle.life);
         let existing = self.store.get_approval(approval_id)?; // re-read under the lock
+        if approved && (handle.stopping.load(Ordering::SeqCst) || handle.completed.load(Ordering::SeqCst)) {
+            return Err(ForgeError::InvalidState("the session is stopping or has ended; no further approval can be granted".into()));
+        }
         match (expected_binding, existing.binding_sha256.as_deref()) {
             (Some(expected), stored) if stored != Some(expected) => {
                 return Err(ForgeError::InvalidState("this request is not the one you were shown; reload and decide again".into()));
@@ -1108,7 +1167,7 @@ impl Core {
             }
             _ => {}
         }
-        if existing.state == "pending" && existing.expires_at.as_deref().is_some_and(|e| e < crate::store::now().as_str()) {
+        if existing.state == "pending" && (approval_expired(existing.expires_at.as_deref(), &crate::store::now()) || approval_deadline_elapsed(&handle, approval_id)) {
             if let Ok(Some(a)) = self.store.expire_approval(approval_id, "no decision before it expired") {
                 self.store.audit("system", "approval.expired", Some(&a.id), &json!({"tool": a.tool}));
                 self.release_waiters(&handle, approval_id, false, Some("The request expired before anyone decided it".into()));
@@ -1118,10 +1177,19 @@ impl Core {
             return Err(ForgeError::InvalidState("this request expired before it was decided; the agent was told it was denied".into()));
         }
         if approved && existing.state == "pending" {
+            if existing.binding_sha256.is_none() || existing.policy_rev.as_deref() != Some(policy::REVISION)
+                || existing.executes_on.as_deref() != Some(handle.executes_on.as_str()) || existing.expires_at.is_none() {
+                return Err(ForgeError::InvalidState("the approval context is missing or has changed; deny this request and ask again".into()));
+            }
             let original = lock(&handle.requests).get(approval_id).cloned();
             let Some((tool, input)) = original else {
                 return Err(ForgeError::InvalidState("FORGE no longer holds the original request, so it cannot be approved safely; deny it instead".into()));
             };
+            let provider = self.store.get_mission(&existing.mission_id)?.provider;
+            let binding = approval_binding(&existing.mission_id, &existing.session_id, &provider, &tool, &input, &handle.worktree, handle.profile.as_str(), &handle.executes_on, existing.expires_at.as_deref().unwrap_or_default());
+            if existing.binding_sha256.as_deref() != Some(binding.as_str()) {
+                return Err(ForgeError::InvalidState("the approval no longer matches the original request; deny it and ask again".into()));
+            }
             if let Decision::Deny { reason } = policy::evaluate(&tool, &input, &handle.worktree, handle.profile) {
                 let why = format!("Blocked by FORGE policy at decision time: {reason}");
                 let a = self.store.decide_approval(approval_id, false, "policy", Some(&why))?;
@@ -1146,8 +1214,12 @@ impl Core {
     /// Ask the agent to stop; terminate its process tree if it does not exit promptly.
     pub fn stop_mission(self: &Arc<Self>, mission_id: &str) -> Result<()> {
         let h = self.handle_for_mission(mission_id).ok_or_else(|| ForgeError::InvalidState("this mission has no running session".into()))?;
-        h.stopping.store(true, Ordering::SeqCst);
-        h.send(json!({"t": "cancel"}));
+        {
+            // Serialize stopping with permission decisions: once stop is recorded, no later decision can grant a call.
+            let _life = lock(&h.life);
+            h.stopping.store(true, Ordering::SeqCst);
+            h.send(json!({"t": "cancel"}));
+        }
         self.store.audit("user", "mission.stop", Some(mission_id), &json!({}));
         let core = self.clone();
         let h2 = h.clone();
@@ -1255,6 +1327,7 @@ impl Core {
         self.recover_knowledge();
         self.recover_harness();
         self.recover_experiments();
+        self.recover_storage_cleanup();
         let orphaned = self.store.fail_orphaned_runs()?;
         if orphaned > 0 {
             self.store.audit("system", "recovery.checks", None, &json!({"orphanedRuns": orphaned}));
@@ -1328,7 +1401,7 @@ impl Core {
     /// branch, under FORGE's own worktrees folder, and not a link to somewhere else (another mission's worktree, user data).
     pub(crate) fn removable_worktree(&self, root: &Path, wt: &Path, branch: Option<&str>) -> Result<()> {
         if !wt.exists() && std::fs::symlink_metadata(wt).is_err() {
-            return Ok(()); // already gone; git worktree prune handles the registration
+            return Ok(()); // the caller separately checks whether Git still has a registration
         }
         let real = self.inside_worktrees_folder(wt)?;
         git::verify_worktree(root, &real, branch)
@@ -1378,23 +1451,33 @@ impl Core {
                 return Err(ForgeError::InvalidState(format!("an earlier attempt removed part of {}; confirm to finish removing what is left", wt.display())));
             }
             let real = self.inside_worktrees_folder(wt)?;
+            git::ensure_worktree_unregistered(root, wt)?;
             std::fs::remove_dir_all(&real).map_err(|e| ForgeError::Other(format!("could not finish removing {}: {e}. Close any program using files in it and try again.", real.display())))?;
-            let _ = git::run(root, &["worktree", "prune"]);
-            return Ok(());
+            return git::worktree_remove(root, wt, confirm_loss);
         }
         self.removable_worktree(root, wt, branch)?;
         Self::ensure_not_in_use(wt)?;
         git::worktree_remove(root, wt, confirm_loss)
     }
 
-    /// On Windows a folder cannot be renamed while a program holds a file in it open, and git would delete part of the
-    /// worktree before failing on that file. Renaming it aside and back first turns that into a clean refusal. (On Unix
-    /// the rename always succeeds and nothing changes.)
+    /// On Windows, renaming aside and back can detect a file held open before git partially removes the worktree.
+    /// Unix does not need this probe: renaming there can replace an existing empty directory at the destination.
+    #[cfg(not(windows))]
+    fn ensure_not_in_use(_wt: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(windows)]
     fn ensure_not_in_use(wt: &Path) -> Result<()> {
         if !wt.exists() {
             return Ok(());
         }
         let probe = wt.with_file_name(format!("{}.forge-in-use-check", wt.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        match std::fs::symlink_metadata(&probe) {
+            Ok(_) => return Err(ForgeError::InvalidState(format!("cannot check {} while {} already exists; inspect it before retrying", wt.display(), probe.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(ForgeError::Other(format!("cannot inspect {} before checking the worktree: {e}", probe.display()))),
+        }
         match std::fs::rename(wt, &probe) {
             Ok(()) => std::fs::rename(&probe, wt).map_err(|e| ForgeError::Other(format!("FORGE moved {} to {} to check it was not in use and could not move it back: {e}", wt.display(), probe.display()))),
             Err(e) => Err(ForgeError::InvalidState(format!(

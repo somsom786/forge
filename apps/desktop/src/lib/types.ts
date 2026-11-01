@@ -367,6 +367,7 @@ export interface CheckReport {
 export interface Seen {
   fingerprint: string;
   contractSha256: string;
+  agentInstructionsReviewed?: boolean;
 }
 
 export interface ScopeReport { outsideInScope: string[]; inOutOfScope: string[] }
@@ -377,6 +378,7 @@ export interface VerificationReport {
   contractSha256: string;
   headCommit: string | null;
   files: ChangedFile[];
+  agentInstructionFiles: string[];
   scope: ScopeReport;
   scopeConfigured: boolean;
   criteria: CriterionReport[];
@@ -559,6 +561,7 @@ export interface ContextPackage {
   items: ContextItem[];
   omitted: ContextOmitted[];
   query: string;
+  queryExpansion?: string | null;
   charBudget: number;
   /** Exactly what is appended to the agent's first prompt ('' when nothing qualified). */
   text: string;
@@ -574,7 +577,7 @@ export interface ContextPackageRow {
   createdAt: string;
   query: string;
   /** `relevantCode` is absent in packages recorded before code intelligence existed. */
-  params: { budgetChars?: number; pathHints?: string[]; relevantCode?: RelevantCode };
+  params: { budgetChars?: number; pathHints?: string[]; relevantCode?: RelevantCode; queryExpansion?: string | null };
   items: ContextItem[];
   omitted: ContextOmitted[];
   injectedText: string;
@@ -1002,6 +1005,7 @@ export interface ExecutionBackendInfo {
     interactiveTerminal: boolean;
     concurrentInstances: boolean;
   };
+  agentCapabilities: ExecutionBackendInfo['capabilities'];
 }
 
 // ---- Agents overview ----
@@ -1050,7 +1054,7 @@ export interface CodeSymbol {
   /** Enclosing class / impl type / trait / module; null at top level. */
   container: string | null;
 }
-export interface SymbolHit { symbol: CodeSymbol; score: number }
+export interface SymbolHit { symbol: CodeSymbol; score: number; relationship?: 'declaration' | 'syntactic_mention' }
 
 export interface IndexedFile {
   path: string;
@@ -1135,6 +1139,8 @@ export interface CleanupMission { id: string; title: string; state: string; upda
 export interface CleanupPlan {
   olderThanDays: number;
   missions: CleanupMission[];
+  experiments: { id: string; name: string; state: string; attempt: number; finishedAt: string | null; files: { path: string; bytes: number; modified: string }[]; directories: string[]; bytes: number }[];
+  skippedExperiments: string[];
   orphanFiles: string[];
   events: number;
   files: number;

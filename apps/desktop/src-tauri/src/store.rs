@@ -211,6 +211,12 @@ impl Store {
         }
     }
 
+    /// Destructive maintenance must record its intent before touching files; an audit failure refuses the operation.
+    pub(crate) fn audit_required(&self, actor: &str, action: &str, subject: Option<&str>, detail: &serde_json::Value) -> Result<()> {
+        self.c().execute("INSERT INTO audit_event(at,actor,action,subject,detail_json) VALUES (?1,?2,?3,?4,?5)", params![now(), actor, action, subject, detail.to_string()])?;
+        Ok(())
+    }
+
     pub fn audit_count(&self, action: &str) -> Result<i64> {
         Ok(self.c().query_row("SELECT count(*) FROM audit_event WHERE action=?1", [action], |r| r.get(0))?)
     }
@@ -534,6 +540,12 @@ impl Store {
             return Err(ForgeError::InvalidState(format!("approval {id} is already bound")));
         }
         self.get_approval(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_approval_metadata_for_test(&self, id: &str, binding: Option<&str>, policy_rev: Option<&str>, executes_on: Option<&str>, expires_at: Option<&str>) -> Result<()> {
+        self.c().execute("UPDATE approval_request SET binding_sha256=?2, policy_rev=?3, executes_on=?4, expires_at=?5 WHERE id=?1", params![id, binding, policy_rev, executes_on, expires_at])?;
+        Ok(())
     }
 
     pub fn get_approval(&self, id: &str) -> Result<Approval> {

@@ -1,5 +1,28 @@
 # FORGE — Engineering Reviews
 
+## Process utility lookup (2026-11-01)
+
+Windows process cleanup and liveness checks resolved taskkill and tasklist by name, allowing the current directory or PATH to influence which program was launched. Both now use the OS-reported system directory and a neutral working directory. Three Windows process tests passed; this is process cleanup, not agent isolation.
+
+## Worktree cleanup review (2026-11-01)
+
+A disposable Windows repository reproduced repository-wide `git worktree prune` deleting an unrelated missing worktree registration. Cleanup no longer invokes prune: absent registered paths fail closed, and experiment recovery limits removal to recorded variant paths after link and repository checks. Windows regression and experiment tests passed. Filesystem path-swap races and manual repair of missing registrations remain limitations.
+
+## Continuation: verification evidence and sandbox mounts (2026-10-31)
+
+- Confirmed from the check runner and regression fixtures: an uncreated, truncated, failed or still-open scanner capture could previously be evaluated as complete; valid JSON prefixes with trailing output and malformed nested fields could be accepted. Capture now fails closed and freezes, and report parsing rejects these shapes. Windows targeted tests and full Linux/Windows CI at `4c7d5c1` passed, including real Gitleaks and OSV-Scanner checks on Linux. Later Playwright schema checks have targeted Windows tests and await full CI.
+- A custom FORGE data directory beneath a PATH toolchain root could be included in an optional read-only mount. Root selection now excludes overlaps and refuses unresolved protected paths; portable root-selection tests passed on Windows and Linux CI. Mandatory system, workspace, provider and Git mounts remain overlap risks.
+- A private network namespace does not prevent access to filesystem Unix sockets present in mounted directories. A harmless host-listener fixture confirmed the connection through real bubblewrap in Linux CI (`41220233133`). Capability reporting states this limitation; this is not complete network isolation.
+- The verification log redacted each line independently, so a standard multiline private-key block could reach the log. Log capture now suppresses those blocks, and complete or unfinished blocks are redacted in output tails. Harmless Windows fixtures passed; secrets with missing beginnings, unusual formats or boundary cases can still evade pattern-based redaction.
+- Approval decisions previously compared the UI value with stored metadata without recomputing the digest from the held request, and expiry was accepted at the exact deadline. Decisions now check policy and backend metadata, bind the deadline, and recompute from the held request; Windows scripted approval and ACP tests and a real Claude Code test with a local scripted model passed. This remains subject to the trusted-webview and same-user host boundaries.
+- An already approved request could be reused after its deadline. A delayed scripted-agent fixture reproduced this on Windows; reuse now rechecks its deadline, policy, execution context and binding before the existing one-time reuse check. The regression passed after the fix; Linux CI remains pending.
+- A pending request could be approved while its session was stopping. A disposable Windows fixture reproduced the grant; stop now takes the lifecycle lock and both new permission requests and approvals are refused once stopping begins. The regression passed after the fix; Linux CI and live-provider cancellation remain pending.
+- Wall-clock rollback could extend a live approval. The session now enforces a separate monotonic deadline and prunes expired entries; a simulated elapsed-deadline fixture passed on Windows. Actual clock changes and suspend/resume were not performed on the user's machine.
+
+## Continuation: agent instruction review (2026-10-27)
+
+Agent-controlled instruction files can steer later sessions. The review report identifies supported paths from the same immutable Git tree as the changes fingerprint; approvals require a separate acknowledgement and older approvals without it return to review before merge. The Proof Pack records the paths, acknowledgement in the review decision, and the exact-diff artifact. The diff is now rendered from the fingerprinted tree rather than a separate worktree snapshot. Renames are treated as deletion plus addition. This remains a path heuristic and uses the existing trusted-webview model; it does not attest that a person read the diff or detect arbitrary provider-specific conventions. Existing OS isolation limitations remain unchanged.
+
 Independent reviews by GPT-6 Astra (High reasoning, via the user's locally authenticated Codex CLI with a read-only,
 ephemeral sandbox and no API billing). Claude remains the implementing engineer: every finding below was evaluated
 independently, reproduced or checked against the code, and only then adopted, adapted or declined.

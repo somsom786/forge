@@ -41,7 +41,7 @@ export function MemoryTab({ mission }: { mission: Mission }) {
 
 function newest(rows: ContextPackageRow[]): ContextShape {
   const r = [...rows].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  return { items: r.items, omitted: r.omitted, charBudget: r.charBudget, text: r.injectedText, sha256: r.injectedSha256, code: r.params.relevantCode };
+  return { items: r.items, omitted: r.omitted, charBudget: r.charBudget, text: r.injectedText, sha256: r.injectedSha256, code: r.params.relevantCode, queryExpansion: r.params.queryExpansion };
 }
 
 function Settings({ mission, readOnly }: { mission: Mission; readOnly: boolean }) {

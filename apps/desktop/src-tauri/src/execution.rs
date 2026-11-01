@@ -7,7 +7,8 @@
 //! * `trusted_local` — the user's own shell, privileges, home directory and network. **Not isolated.** Kept for compatibility.
 //! * `linux_namespaces` — bubblewrap (an external program, LGPL-2.0-or-later, invoked not linked): new user/pid/net/ipc/uts
 //!   namespaces, an empty filesystem with only system and toolchain directories mounted read-only, the workspace mounted
-//!   read-write, no home directory, a cleared environment and no network. Linux only. On Windows this is the planned inner
+//!   read-write, no home directory, a cleared environment and isolated IP networking. Mounted Unix sockets can still reach
+//!   host services. Linux only. On Windows this is the planned inner
 //!   layer of the isolated-WSL backend.
 //! * `windows_sandbox`, `isolated_wsl` — designed (docs/EXECUTION.md), **not implemented**; always reported unavailable.
 //!
@@ -100,6 +101,7 @@ pub struct BackendInfo {
     pub available: bool,
     pub unavailable_reason: Option<String>,
     pub capabilities: Capabilities,
+    pub agent_capabilities: Capabilities,
 }
 
 pub fn capabilities(b: Backend) -> Capabilities {
@@ -119,12 +121,12 @@ pub fn capabilities(b: Backend) -> Capabilities {
         },
         Backend::LinuxNamespaces => Capabilities {
             operating_systems: vec!["linux".into()],
-            filesystem_isolation: prop(Enforced, "Empty root filesystem: only /usr, the system library and binary directories, a short list of /etc files and toolchain directories from PATH outside your home are mounted, read-only. Your home directory, other repositories and FORGE's data are not mounted."),
+            filesystem_isolation: prop(Partial, "Empty root filesystem with read-only system, selected /etc and external PATH toolchain mounts, plus the workspace and linked Git metadata. Custom FORGE data, home or other sensitive files placed within those mounts may be exposed; mount selection is not a complete secret boundary."),
             process_isolation: prop(Enforced, "New user, PID, IPC and UTS namespaces; no capabilities; every process inside ends when the run ends."),
-            network_control: prop(Enforced, "New network namespace with only a private loopback: no outbound or host-loopback connections."),
+            network_control: prop(Partial, "A private network namespace blocks outbound IP and host-loopback connections. Unix sockets exposed by mounted directories can still connect to host services."),
             resource_limits: prop(Partial, "Time limit, output caps, no core dumps and a per-file size cap. No memory or CPU limit (needs cgroups; not implemented)."),
             workspace_mapping: prop(Enforced, "The mission worktree is mounted read-write at its own path; the repository's git directory is mounted read-only so git can read history."),
-            credential_exposure: prop(Enforced, "Environment cleared to a fixed minimal set; no home directory, SSH agent, git credentials or provider logins are reachable. Toolchains installed under your home (rustup, nvm) are therefore not available."),
+            credential_exposure: prop(Partial, "Environment cleared to a fixed minimal set; home and SSH agent are not deliberately mounted. Credentials within the workspace, Git metadata, system directories or selected toolchain mounts may still be reachable. Toolchains under your home are normally unavailable."),
             persistent_state: prop(Partial, "Only the workspace persists; /tmp and the home directory are discarded after each run."),
             interactive_terminal: false,
             concurrent_instances: true,
@@ -201,7 +203,31 @@ pub fn info(b: Backend) -> BackendInfo {
         available: a.is_ok(),
         unavailable_reason: a.err(),
         capabilities: capabilities(b),
+        agent_capabilities: agent_capabilities(b),
     }
+}
+
+/// Agent sessions need provider connectivity and persistent login state; checks do not.
+pub fn agent_capabilities(b: Backend) -> Capabilities {
+    let mut c = capabilities(b);
+    if b == Backend::LinuxNamespaces {
+        c.network_control = prop(Level::None, "Network shared with the host so the provider can connect. Anything the agent can read can be sent over the network.");
+        c.credential_exposure = prop(Level::Partial, "Environment restricted to runtime, provider-state and proxy settings. Provider login and other-project transcripts remain accessible; credentials in the workspace, Git metadata, system or toolchain mounts may also be exposed. SSH agents, cloud tokens and unrelated environment secrets are not inherited.");
+        c.persistent_state = prop(Level::Partial, "Workspace and selected provider state persist. Other home files are not deliberately mounted, but may be reachable through overlapping mounts; temporary files are discarded.");
+    }
+    c
+}
+
+/// Explicit allow-list for contained sessions. Never forward loader injection, shell startup configuration, SSH agents,
+/// cloud credentials or arbitrary FORGE environment variables. Provider authentication remains in its mounted state.
+pub fn contained_agent_env<I>(base: I) -> Vec<(std::ffi::OsString, std::ffi::OsString)>
+where I: IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)> {
+    const ALLOWED: &[&str] = &[
+        "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM",
+        "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+    ];
+    base.into_iter().filter(|(k, _)| k.to_str().is_some_and(|s| ALLOWED.contains(&s))).collect()
 }
 
 pub fn all() -> Vec<BackendInfo> {
@@ -254,11 +280,26 @@ const SYSTEM_PREFIXES: &[&str] = &["/usr", "/bin", "/sbin", "/lib", "/lib64", "/
 /// /opt/node22). Directories under the home are left out on purpose: mounting them would expose the home directory.
 pub fn toolchain_roots(path_var: &str, home: Option<&Path>) -> Vec<PathBuf> {
     let system: Vec<&Path> = SYSTEM_PREFIXES.iter().map(Path::new).collect();
-    toolchain_roots_excluding(path_var, home, &system)
+    let forge_home = crate::forge_home();
+    // A not-yet-created default under HOME is already covered by the home exclusion. Explicit overrides and
+    // existing or externally located defaults must resolve before any optional mount is admitted.
+    let covered_missing_default = std::env::var_os("FORGE_HOME").is_none() && !forge_home.exists() && home.is_some_and(|h| forge_home.starts_with(h));
+    let protected = if covered_missing_default { vec![] } else { vec![forge_home.as_path()] };
+    toolchain_roots_excluding_protected(path_var, home, &system, &protected)
 }
 
+#[cfg(test)]
 fn toolchain_roots_excluding(path_var: &str, home: Option<&Path>, system: &[&Path]) -> Vec<PathBuf> {
+    toolchain_roots_excluding_protected(path_var, home, system, &[])
+}
+
+fn toolchain_roots_excluding_protected(path_var: &str, home: Option<&Path>, system: &[&Path], protected: &[&Path]) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = vec![];
+    // Without a verifiable home, we cannot prove that a path alias does not expose it.
+    let Some(resolved_home) = home.and_then(|h| std::fs::canonicalize(h).ok()) else { return out };
+    // A custom FORGE_HOME can live outside the user's home, including beneath an otherwise valid PATH root.
+    // If it cannot be resolved, do not guess which optional toolchain roots are safe.
+    let Ok(protected): std::result::Result<Vec<_>, _> = protected.iter().map(std::fs::canonicalize).collect() else { return out };
     for d in std::env::split_paths(path_var) {
         if !d.is_absolute() || !d.is_dir() {
             continue;
@@ -271,6 +312,14 @@ fn toolchain_roots_excluding(path_var: &str, home: Option<&Path>, system: &[&Pat
         if root.components().count() < 3 {
             continue; // never a top-level directory such as /opt or /nix itself
         }
+        // PATH entries and installation roots may be symlinks. A lexical check alone could bind a user's entire home
+        // through an alias outside it, or bind an ancestor that contains the home. Fail closed if resolution fails.
+        let Ok(resolved_root) = std::fs::canonicalize(&root) else { continue };
+        if resolved_root.components().count() < 3 || resolved_root.starts_with(&resolved_home) || resolved_home.starts_with(&resolved_root)
+            || protected.iter().any(|p| resolved_root.starts_with(p) || p.starts_with(&resolved_root))
+            || system.iter().any(|p| resolved_root.starts_with(p)) {
+            continue;
+        }
         if !out.iter().any(|o| root.starts_with(o)) {
             out.retain(|o| !o.starts_with(&root));
             out.push(root);
@@ -279,14 +328,46 @@ fn toolchain_roots_excluding(path_var: &str, home: Option<&Path>, system: &[&Pat
     out
 }
 
-/// The git directory shared by a worktree (read from its `.git` file), so it can be mounted read-only.
-fn git_common_dir(workspace: &Path) -> Option<PathBuf> {
-    let gitfile = std::fs::read_to_string(workspace.join(".git")).ok()?;
-    let gitdir = PathBuf::from(gitfile.trim().strip_prefix("gitdir:")?.trim());
-    let gitdir = if gitdir.is_absolute() { gitdir } else { workspace.join(gitdir) };
-    // <repo>/.git/worktrees/<name> -> <repo>/.git
-    let common = gitdir.parent()?.parent()?.to_path_buf();
-    common.is_dir().then_some(common)
+fn read_git_metadata(path: &Path, label: &str) -> Result<String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ForgeError::PathRejected(format!("invalid linked-worktree Git metadata: {label} is unavailable")))?;
+    if !metadata.is_file() || metadata.len() > 16_384 {
+        return Err(ForgeError::PathRejected(format!("invalid linked-worktree Git metadata: {label} is not a small regular file")));
+    }
+    std::fs::read_to_string(path).map_err(|_| ForgeError::PathRejected(format!("invalid linked-worktree Git metadata: {label} is unreadable")))
+}
+
+/// Validate both sides of Git's linked-worktree metadata before mounting its shared directory. Never infer a mount
+/// from an arbitrary path in an agent-controlled `.git` file. Ordinary directories without linked metadata need no mount.
+fn git_common_dir(workspace: &Path) -> Result<Option<PathBuf>> {
+    let gitfile = workspace.join(".git");
+    let metadata = match std::fs::symlink_metadata(&gitfile) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let invalid = |message: &str| ForgeError::PathRejected(format!("invalid linked-worktree Git metadata: {message}"));
+    if metadata.file_type().is_symlink() { return Err(invalid(".git is a link")); }
+    if metadata.is_dir() { return Ok(None) }
+    let contents = read_git_metadata(&gitfile, ".git")?;
+    let pointer = contents.trim().strip_prefix("gitdir:").map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| invalid("missing gitdir pointer"))?;
+    let pointer = PathBuf::from(pointer);
+    let gitdir = dunce::canonicalize(if pointer.is_absolute() { pointer } else { workspace.join(pointer) })
+        .map_err(|_| invalid("gitdir does not exist"))?;
+    let worktrees = gitdir.parent().filter(|p| p.file_name().is_some_and(|n| n == "worktrees"))
+        .ok_or_else(|| invalid("gitdir is not a linked-worktree directory"))?;
+    let common = worktrees.parent().ok_or_else(|| invalid("missing common Git directory"))?.to_path_buf();
+    let back = read_git_metadata(&gitdir.join("gitdir"), "worktree backlink")?;
+    let back = PathBuf::from(back.trim());
+    let back = dunce::canonicalize(if back.is_absolute() { back } else { gitdir.join(back) })
+        .map_err(|_| invalid("worktree backlink does not exist"))?;
+    let expected = dunce::canonicalize(&gitfile).map_err(|_| invalid("workspace .git file is unavailable"))?;
+    if back != expected { return Err(invalid("worktree backlink names a different workspace")); }
+    let common_link = read_git_metadata(&gitdir.join("commondir"), "common-directory pointer")?;
+    let common_link = PathBuf::from(common_link.trim());
+    let resolved_common = dunce::canonicalize(if common_link.is_absolute() { common_link } else { gitdir.join(common_link) })
+        .map_err(|_| invalid("common Git directory is unavailable"))?;
+    if resolved_common != common { return Err(invalid("common-directory pointer is inconsistent")); }
+    Ok(Some(common))
 }
 
 const SANDBOX_HOME: &str = "/home/forge";
@@ -312,7 +393,7 @@ pub fn command(b: Backend, spec: &RunSpec) -> Result<Command> {
                 c.arg("--ro-bind-try").arg(r).arg(r);
             }
             c.args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/home", "--dir", SANDBOX_HOME]);
-            if let Some(common) = git_common_dir(&ws) {
+            if let Some(common) = git_common_dir(&ws)? {
                 c.arg("--ro-bind").arg(&common).arg(&common);
             }
             c.arg("--bind").arg(&ws).arg(&ws).arg("--chdir").arg(&ws);
@@ -345,9 +426,9 @@ pub struct AgentSpec<'a> {
 /// The process to spawn for an agent session on backend `b`. `trusted_local` is the plain process (today's behaviour).
 ///
 /// `linux_namespaces` for agents differs from checks in two deliberate ways: the network is shared (the agent must reach its
-/// model), and the environment is inherited (the engine already removed billing credentials). Everything else is the same
-/// empty root: no home directory except the provider's own state, no other repositories, read-only system and toolchains,
-/// the git directory read-only, a private /tmp, no new privileges, and the whole tree dies with FORGE.
+/// model). The supervisor restricts the environment before spawning this process. Everything else is the same
+/// empty root with selected provider state, read-only system and toolchain mounts, read-only Git metadata and a private /tmp.
+/// Overlapping mounts can expose other data; the mounts are not a complete credential boundary.
 pub fn agent_command(b: Backend, spec: &AgentSpec) -> Result<Command> {
     require(b)?;
     match b {
@@ -380,7 +461,7 @@ pub fn agent_command(b: Backend, spec: &AgentSpec) -> Result<Command> {
             for rw in &spec.read_write {
                 c.arg("--bind-try").arg(rw).arg(rw);
             }
-            if let Some(common) = git_common_dir(&ws) {
+            if let Some(common) = git_common_dir(&ws)? {
                 c.arg("--ro-bind").arg(&common).arg(&common);
             }
             c.arg("--bind").arg(&ws).arg(&ws).arg("--chdir").arg(&ws);
@@ -420,6 +501,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn contained_environment_drops_secrets_and_loader_injection_but_keeps_provider_runtime() {
+        let base = ["PATH", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HTTPS_PROXY", "NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "BASH_ENV", "SSH_AUTH_SOCK", "GH_TOKEN", "AWS_SESSION_TOKEN", "unusual_private_value", "FORGE_ALLOW_FAKE_PROVIDER"];
+        let kept: Vec<_> = contained_agent_env(base.map(|k| (k.into(), "fixture".into()))).into_iter().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
+        assert_eq!(kept, vec!["PATH", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HTTPS_PROXY"]);
+        assert_eq!(capabilities(Backend::LinuxNamespaces).network_control.level, Level::Partial);
+        assert_eq!(capabilities(Backend::LinuxNamespaces).filesystem_isolation.level, Level::Partial);
+        assert_eq!(capabilities(Backend::LinuxNamespaces).credential_exposure.level, Level::Partial);
+        assert_eq!(agent_capabilities(Backend::LinuxNamespaces).network_control.level, Level::None);
+        assert_eq!(agent_capabilities(Backend::LinuxNamespaces).credential_exposure.level, Level::Partial);
+    }
+
+    #[test]
     fn unimplemented_backends_are_never_available_and_say_so() {
         for b in [Backend::WindowsSandbox, Backend::IsolatedWsl] {
             let i = info(b);
@@ -446,10 +539,113 @@ mod tests {
         let path = std::env::join_paths([d.path().join("opt/node22/bin"), d.path().join("opt/tools"), home.join(".cargo/bin"), PathBuf::from("/usr/bin"), PathBuf::from("relative")]).unwrap();
         let roots = toolchain_roots_excluding(&path.to_string_lossy(), Some(&home), &[Path::new("/usr")]);
         assert_eq!(roots, vec![d.path().join("opt/node22"), d.path().join("opt/tools")]);
+        assert!(toolchain_roots_excluding(&path.to_string_lossy(), None, &[]).is_empty(), "unknown home cannot be protected from aliases");
+    }
+
+    #[test]
+    fn toolchain_roots_do_not_expose_custom_forge_data() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let bin = d.path().join("opt/tool/bin");
+        let private = d.path().join("opt/tool/private-data");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&private).unwrap();
+        let path = std::env::join_paths([&bin]).unwrap();
+        assert!(toolchain_roots_excluding_protected(&path.to_string_lossy(), Some(&home), &[], &[&private]).is_empty());
+        assert!(toolchain_roots_excluding_protected(&path.to_string_lossy(), Some(&home), &[], &[&d.path().join("opt")]).is_empty());
+        assert!(toolchain_roots_excluding_protected(&path.to_string_lossy(), Some(&home), &[], &[&d.path().join("missing")]).is_empty());
+        assert!(!toolchain_roots_excluding_protected(&path.to_string_lossy(), Some(&home), &[], &[]).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn toolchain_aliases_cannot_mount_home_or_its_ancestor() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home/user");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::create_dir_all(d.path().join("aliases")).unwrap();
+        symlink(&home, d.path().join("aliases/home-alias")).unwrap();
+        symlink(home.parent().unwrap(), d.path().join("aliases/parent-alias")).unwrap();
+        let system = d.path().join("system");
+        std::fs::create_dir(&system).unwrap();
+        symlink(&system, d.path().join("aliases/system-alias")).unwrap();
+        let path = std::env::join_paths([d.path().join("aliases/home-alias/bin"), d.path().join("aliases/parent-alias"), d.path().join("aliases/system-alias")]).unwrap();
+        assert!(toolchain_roots_excluding(&path.to_string_lossy(), Some(&home), &[system.as_path()]).is_empty());
     }
 
     #[test]
     fn quoting_survives_hostile_commands() {
         assert_eq!(sh_quote("echo 'a'; rm -rf x"), r"'echo '\''a'\''; rm -rf x'");
+    }
+
+    #[test]
+    fn forged_git_pointer_cannot_select_an_unrelated_mount() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let private = root.path().join("private-fixture");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&private).unwrap();
+        std::fs::write(private.join("fixture.txt"), "harmless").unwrap();
+        std::fs::write(workspace.join(".git"), format!("gitdir: {}\n", private.join("worktrees/nonexistent").display())).unwrap();
+        assert!(git_common_dir(&workspace).is_err(), "an unrelated directory must not become a sandbox mount");
+        let fake_gitdir = private.join("worktrees/fake");
+        std::fs::create_dir_all(&fake_gitdir).unwrap();
+        std::fs::write(fake_gitdir.join("gitdir"), private.join("fixture.txt").to_string_lossy().as_bytes()).unwrap();
+        std::fs::write(fake_gitdir.join("commondir"), "../..\n").unwrap();
+        std::fs::write(workspace.join(".git"), format!("gitdir: {}\n", fake_gitdir.display())).unwrap();
+        assert!(git_common_dir(&workspace).is_err(), "a backlink to another file must be refused");
+    }
+
+    #[test]
+    fn legitimate_linked_worktree_resolves_its_git_directory() {
+        let repo = crate::git::testutil::init_repo();
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("linked");
+        let base = crate::git::head_commit(repo.path()).unwrap();
+        crate::git::worktree_add(repo.path(), &workspace, "forge/sandbox-fixture", &base).unwrap();
+        let common = git_common_dir(&workspace).unwrap().unwrap();
+        assert_eq!(common, dunce::canonicalize(repo.path().join(".git")).unwrap());
+        crate::git::worktree_remove(repo.path(), &workspace, true).unwrap();
+    }
+
+    #[test]
+    fn ordinary_or_missing_git_directories_need_no_separate_mount() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(git_common_dir(root.path()).unwrap().is_none());
+        std::fs::create_dir(root.path().join(".git")).unwrap();
+        assert!(git_common_dir(root.path()).unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_git_metadata_cannot_be_read_through_a_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let private = root.path().join("private-fixture");
+        let link = root.path().join("gitdir");
+        std::fs::write(&private, "harmless fixture").unwrap();
+        std::os::unix::fs::symlink(&private, &link).unwrap();
+        assert!(read_git_metadata(&link, "worktree backlink").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sandbox_refuses_forged_git_metadata_before_spawning() {
+        if availability(Backend::LinuxNamespaces).is_err() {
+            assert!(std::env::var("FORGE_REQUIRE_SANDBOX_TESTS").as_deref() != Ok("1"), "sandbox required");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let private = root.path().join("outside");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&private).unwrap();
+        std::fs::write(private.join("fixture.txt"), "harmless host fixture").unwrap();
+        assert_eq!(std::fs::read_to_string(private.join("fixture.txt")).unwrap(), "harmless host fixture");
+        std::fs::write(workspace.join(".git"), format!("gitdir: {}\n", private.join("worktrees/absent").display())).unwrap();
+        let spec = RunSpec { command: "true", workspace: &workspace };
+        let error = command(Backend::LinuxNamespaces, &spec).unwrap_err().to_string();
+        assert!(error.contains("linked-worktree Git metadata"), "{error}");
     }
 }

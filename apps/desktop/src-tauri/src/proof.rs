@@ -43,6 +43,7 @@ pub struct VerificationReport {
     pub contract_sha256: String,
     pub head_commit: Option<String>,
     pub files: Vec<ChangedFile>,
+    pub agent_instruction_files: Vec<String>,
     pub scope: ScopeReport,
     pub scope_configured: bool,
     pub criteria: Vec<CriterionReport>,
@@ -80,6 +81,7 @@ pub struct ReportInput<'a> {
 
 pub fn build_report(i: ReportInput) -> crate::error::Result<VerificationReport> {
     let paths: Vec<String> = i.files.iter().map(|f| f.path.clone()).collect();
+    let agent_instruction_files = paths.iter().filter(|p| is_agent_instruction_file(p)).cloned().collect();
     let scope = contract::check_scope(i.contract, &paths)?;
     let scope_configured = !i.contract.in_scope.is_empty() || !i.contract.out_of_scope.is_empty();
 
@@ -175,6 +177,7 @@ pub fn build_report(i: ReportInput) -> crate::error::Result<VerificationReport> 
         fingerprint: i.fingerprint,
         head_commit: i.head_commit,
         files: i.files,
+        agent_instruction_files,
         scope,
         scope_configured,
         criteria,
@@ -184,6 +187,20 @@ pub fn build_report(i: ReportInput) -> crate::error::Result<VerificationReport> 
         hard_blockers,
         contract: i.contract.clone(),
     })
+}
+
+/// Conservative path-based identification; renames are represented as delete + add by changed_files.
+pub fn is_agent_instruction_file(path: &str) -> bool {
+    let p = path.replace('\\', "/").to_lowercase();
+    let parts: Vec<&str> = p.split('/').collect();
+    let name = parts.last().copied().unwrap_or("");
+    matches!(name, "claude.md" | "claude.local.md" | "agents.md" | "agents.override.md" | "gemini.md" | ".mcp.json")
+        || parts.iter().any(|part| matches!(*part, ".claude" | ".codex" | ".gemini" | ".cursor"))
+        || parts.windows(2).any(|p| p == [".agents", "skills"])
+        || p == ".github/copilot-instructions.md"
+        || p.starts_with(".github/instructions/")
+        || p.starts_with(".github/agents/")
+        || p.starts_with(".github/prompts/")
 }
 
 /// Files the agent changed that define or configure a check: the check's own command tokens, build/test manifests and CI.
@@ -243,7 +260,7 @@ pub fn build_pack(i: PackInput) -> (Value, String) {
             "usageNote": "token and cost figures are provider-reported estimates, not billing",
         })).collect::<Vec<_>>(),
         "changes": {
-            "files": i.report.files, "diffSha256": i.diff_sha256, "diffBytes": i.diff_bytes, "diffPath": i.diff_path,
+            "files": i.report.files, "agentInstructionFiles": i.report.agent_instruction_files, "diffSha256": i.diff_sha256, "diffBytes": i.diff_bytes, "diffPath": i.diff_path,
         },
         "scope": { "configured": i.report.scope_configured, "report": i.report.scope },
         "criteria": i.report.criteria,
@@ -411,6 +428,12 @@ pub fn render_markdown(c: &Value) -> String {
     }
 
     o.push_str("## Changes\n\n");
+    let sensitive = c["changes"]["agentInstructionFiles"].as_array().cloned().unwrap_or_default();
+    if !sensitive.is_empty() {
+        o.push_str("**Agent instruction/configuration changes:** These files can affect future agent behavior. Review their changes in the accompanying diff.\n\n");
+        for p in sensitive { o.push_str(&format!("- `{}`\n", p.as_str().unwrap_or(""))); }
+        o.push('\n');
+    }
     let files = c["changes"]["files"].as_array().cloned().unwrap_or_default();
     o.push_str(&format!("{} file(s) changed · diff sha256 `{}`\n\n", files.len(), c["changes"]["diffSha256"].as_str().unwrap_or("")));
     for f in files {
@@ -448,6 +471,9 @@ pub fn render_markdown(c: &Value) -> String {
         o.push_str("_No review decision recorded yet._\n");
     }
     for d in ds {
+        if d["agentInstructionsReviewed"] == true {
+            o.push_str("- Explicitly acknowledged agent instruction/configuration changes for this review fingerprint.\n");
+        }
         o.push_str(&format!(
             "- {} at {}{}{}\n",
             d["decision"].as_str().unwrap_or(""),
@@ -463,6 +489,18 @@ pub fn render_markdown(c: &Value) -> String {
 mod tests {
     use super::*;
     use crate::contract::CheckKind;
+
+    #[test]
+    fn agent_instruction_paths_include_nested_and_case_variants() {
+        for path in ["AGENTS.md", "src/AGENTS.override.md", "src/CLAUDE.md", ".claude/rules/review.md", "nested/.codex/config.toml", ".agents/skills/release/SKILL.md", "nested/.AGENTS/skills/release/scripts/run.sh", ".github/copilot-instructions.md", ".github/instructions/a.md", ".github/agents/reviewer.md", ".mcp.json", "x\\.gemini\\settings.json"] {
+            assert!(is_agent_instruction_file(path), "{path}");
+        }
+        for path in ["src/agents.rs", "docs/claude.md.txt", ".github/workflows/ci.yml", "claude/file.md"] {
+            assert!(!is_agent_instruction_file(path), "{path}");
+        }
+        let r = report(vec![], vec![], &["AGENTS.md", "src/main.rs"], 0, false);
+        assert_eq!(r.agent_instruction_files, vec!["AGENTS.md"]);
+    }
 
     fn contract() -> Contract {
         Contract {
@@ -569,7 +607,7 @@ mod tests {
 
     #[test]
     fn markdown_states_evidence_honestly_and_contains_no_scores() {
-        let r = report(vec![vrun("t", RunState::Passed, "F", false)], vec![], &["src/auth/reset.rs"], 0, false);
+        let r = report(vec![vrun("t", RunState::Passed, "F", false)], vec![], &["src/auth/reset.rs", "AGENTS.md"], 0, false);
         let m = Mission { id: "m1".into(), project_id: "p".into(), title: "Implement password reset".into(), objective: "Do it".into(), state: "awaiting_review".into(), provider: "claude".into(), model: None, permission_profile: "default".into(), base_ref: Some("main".into()), base_commit: Some("0123456789abcdef".into()), branch: Some("forge/x".into()), worktree_path: None, provider_session_id: None, last_error: None, created_at: "t".into(), updated_at: "t".into(), use_memory: true, memory_pins: vec![] };
         let (content, md) = build_pack(PackInput { mission: &m, project_name: "demo", report: &r, runs: &[], sessions: &[], approvals: &[], decisions: &[], diff_sha256: "deadbeef", diff_bytes: 10, diff_path: Some("/x.diff"), generated_at: "2026-10-23T00:00:00Z" });
         assert!(md.contains("# Proof Pack — Implement password reset"));
@@ -578,6 +616,8 @@ mod tests {
         assert!(md.contains("## Not established"));
         assert!(!md.to_lowercase().contains("confidence") && !md.contains('%'), "no invented scores");
         assert_eq!(content["changes"]["diffSha256"], "deadbeef");
+        assert_eq!(content["changes"]["agentInstructionFiles"][0], "AGENTS.md");
+        assert!(md.contains("future agent behavior") && md.contains("AGENTS.md"));
         assert_eq!(content["mission"]["baseCommit"], "0123456789abcdef");
         assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }

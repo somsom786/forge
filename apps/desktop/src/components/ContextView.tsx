@@ -13,6 +13,7 @@ export interface ContextShape {
   sha256: string;
   /** The "Relevant code" section; undefined for packages recorded before it existed. */
   code?: RelevantCode | null;
+  queryExpansion?: string | null;
 }
 
 /** Shows exactly what an agent was (or would be) told: included notes with their trust, omissions with reasons, the verbatim text. */
@@ -26,6 +27,8 @@ export function ContextView({ ctx, heading, onOpenPage }: { ctx: ContextShape; h
         <span>{ctx.text.length.toLocaleString()} characters sent (knowledge budget {ctx.charBudget.toLocaleString()}{ctx.code ? `, code budget ${ctx.code.budgetBytes.toLocaleString()} bytes` : ''})</span>
         <span className="mono">sha256 {shortHash(ctx.sha256)}</span>
       </div>
+
+      {ctx.queryExpansion && <div className="text-[12px] text-muted">Related terminology used (heuristic): {ctx.queryExpansion.replace(/["*]/g, '').split(' OR ').join(', ')}</div>}
 
       {ctx.items.length === 0 && <div className="text-muted">No project knowledge qualified.</div>}
       <ul className="m-0 list-none space-y-2 p-0">

@@ -28,32 +28,117 @@ pub struct ProviderInfo {
     pub models: Vec<String>,
 }
 
+pub const CLAUDE_SDK_VERSION: &str = "0.3.309";
+
+pub fn claude_sdk_install_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")));
+    base.filter(|p| p.is_absolute()).map(|p| p.join("FORGEProviderDeps").join("claude-sdk"))
+}
+
+fn valid_claude_sdk(path: &Path) -> bool {
+    let p = std::fs::read_to_string(path.join("package.json")).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    p.is_some_and(|p| p["name"] == "@anthropic-ai/claude-agent-sdk" && p["version"] == CLAUDE_SDK_VERSION) && path.join("sdk.mjs").is_file()
+}
+
+/// Metadata only; never executes code or reads provider credentials. Explicit overrides never fall back.
+pub fn locate_claude_sdk(engine: Option<&Path>) -> std::result::Result<PathBuf, String> {
+    if let Some(p) = std::env::var_os("FORGE_CLAUDE_SDK_PATH") {
+        let p = PathBuf::from(p);
+        if p.is_absolute() && valid_claude_sdk(&p) { return dunce::canonicalize(p).map_err(|e| e.to_string()); }
+        return Err(format!("FORGE_CLAUDE_SDK_PATH must name an installed @anthropic-ai/claude-agent-sdk {CLAUDE_SDK_VERSION} package directory"));
+    }
+    let mut candidates = vec![];
+    if let Some(dir) = claude_sdk_install_dir() { candidates.push(dir.join("node_modules/@anthropic-ai/claude-agent-sdk")); }
+    if let Some(engine) = engine {
+        for parent in engine.ancestors().skip(1) { candidates.push(parent.join("node_modules/@anthropic-ai/claude-agent-sdk")); }
+    }
+    candidates.into_iter().find(|p| valid_claude_sdk(p)).and_then(|p| dunce::canonicalize(p).ok()).ok_or_else(|| {
+        let dir = claude_sdk_install_dir().map(|p| p.display().to_string()).unwrap_or_else(|| "<provider-dependencies>".into());
+        format!("Claude requires a separately installed SDK. Run npm install --prefix \"{dir}\" --save-exact @anthropic-ai/claude-agent-sdk@{CLAUDE_SDK_VERSION}, then refresh providers. FORGE does not install it automatically.")
+    })
+}
+
 fn run_timeout(program: &Path, args: &[&str], secs: u64) -> Option<(bool, String)> {
     let mut cmd = Command::new(program);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(args);
+    run_timeout_command(cmd, Duration::from_secs(secs))
+}
+
+fn run_timeout_command(mut cmd: Command, timeout: Duration) -> Option<(bool, String)> {
+    use std::io::Read;
+    use std::sync::mpsc;
+
+    // Drain both pipes concurrently: waiting for the process first deadlocks when a pipe fills.
+    // Reject oversized output rather than retaining unbounded data.
+    const OUTPUT_LIMIT: u64 = 1024 * 1024;
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    crate::proc::isolate(&mut cmd);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
+        cmd.creation_flags(0x0800_0000 | crate::proc::CREATE_SUSPENDED);
     }
     let mut child = cmd.spawn().ok()?;
-    let t0 = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(st)) => {
-                let out = child.wait_with_output().ok()?;
-                let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-                text.push_str(&String::from_utf8_lossy(&out.stderr));
-                return Some((st.success(), text));
-            }
-            Ok(None) if t0.elapsed() > Duration::from_secs(secs) => {
-                let _ = child.kill();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(30)),
-            Err(_) => return None,
-        }
+    #[cfg(unix)]
+    let _containment = crate::proc::contain_isolated(&child);
+    #[cfg(windows)]
+    let _containment = match crate::proc::contain(&child) {
+        Ok(job) => job,
+        Err(_) => { let _ = child.kill(); let _ = child.wait(); return None; }
+    };
+    #[cfg(windows)]
+    if crate::proc::resume_suspended(&child).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
     }
+    let t0 = Instant::now();
+    let (tx, rx) = mpsc::channel();
+    for (index, mut pipe) in [(0, Box::new(child.stdout.take()?) as Box<dyn Read + Send>), (1, Box::new(child.stderr.take()?) as Box<dyn Read + Send>)] {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let result = (&mut pipe).take(OUTPUT_LIMIT + 1).read_to_end(&mut output);
+            let output = (result.is_ok() && output.len() as u64 <= OUTPUT_LIMIT).then_some(output);
+            let _ = tx.send((index, output));
+        });
+    }
+    drop(tx);
+    let mut status = None;
+    let mut outputs = [None, None];
+    loop {
+        let mut readers_closed = false;
+        let mut reader_failed = false;
+        loop {
+            match rx.try_recv() {
+                Ok((index, Some(output))) => outputs[index] = Some(output),
+                Ok((_, None)) => { reader_failed = true; break; }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => { readers_closed = true; break; }
+            }
+        }
+        if reader_failed || (readers_closed && outputs.iter().any(Option::is_none)) { break; }
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(st) => status = st,
+                Err(_) => break,
+            }
+        }
+        if let (Some(st), [Some(stdout), Some(stderr)]) = (status, &outputs) {
+            let mut text = String::from_utf8_lossy(stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(stderr));
+            return Some((st.success(), text));
+        }
+        if t0.elapsed() >= timeout { break; }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
 }
 
 fn unsupported(note: &str) -> Value {
@@ -207,24 +292,69 @@ fn split_host_port(url: &str) -> Option<(String, u16)> {
 /// Minimal HTTP/1.0 GET to a loopback server (HTTP/1.0 avoids chunked bodies). Returns the body on a 200.
 fn http_get_loopback(url: &str, path: &str, secs: u64) -> Option<String> {
     use std::io::{Read, Write};
-    use std::net::{TcpStream, ToSocketAddrs};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+    const MAX_RESPONSE: usize = 1024 * 1024;
     if !is_loopback_http(url) {
         return None;
     }
+    let deadline = Instant::now().checked_add(Duration::from_secs(secs))?;
     let (host, port) = split_host_port(url)?;
-    let addr = (host.as_str(), port).to_socket_addrs().ok()?.next()?;
-    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(secs)).ok()?;
-    s.set_read_timeout(Some(Duration::from_secs(secs))).ok()?;
-    s.set_write_timeout(Some(Duration::from_secs(secs))).ok()?;
+    // Avoid DNS for localhost and try both families: many local servers listen on only one of them.
+    let addresses = if host == "localhost" {
+        vec![IpAddr::V6(Ipv6Addr::LOCALHOST), IpAddr::V4(Ipv4Addr::LOCALHOST)]
+    } else {
+        vec![host.parse::<IpAddr>().ok()?]
+    };
+    let mut s = None;
+    for ip in addresses.into_iter().filter(IpAddr::is_loopback) {
+        let remaining = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())?;
+        if let Ok(stream) = TcpStream::connect_timeout(&SocketAddr::new(ip, port), remaining) {
+            s = Some(stream);
+            break;
+        }
+    }
+    let mut s = s?;
+    let remaining = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())?;
+    s.set_write_timeout(Some(remaining)).ok()?;
     let req = format!("GET {path} HTTP/1.0\r\nHost: {host}:{port}\r\nAccept: application/json\r\n\r\n");
     s.write_all(req.as_bytes()).ok()?;
-    let mut raw = String::new();
-    // Some peers close with a reset (notably on Windows) after sending a complete response; keep what arrived.
-    if s.read_to_string(&mut raw).is_err() && raw.is_empty() {
-        return None;
+    let mut bytes = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let remaining = deadline.checked_duration_since(Instant::now())?;
+        if remaining.is_zero() { return None; }
+        s.set_read_timeout(Some(remaining)).ok()?;
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if bytes.len() + n > MAX_RESPONSE { return None; }
+                bytes.extend_from_slice(&buf[..n]);
+            }
+            // Some peers close with a reset after their response, notably on Windows.
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset && !bytes.is_empty() => break,
+            Err(_) => return None,
+        }
     }
+    let raw = String::from_utf8(bytes).ok()?;
+    http_response_body(&raw).map(str::to_string)
+}
+
+fn http_response_body(raw: &str) -> Option<&str> {
     let (head, body) = raw.split_once("\r\n\r\n")?;
-    head.starts_with("HTTP/1.0 200").then(|| body.to_string()).or_else(|| head.starts_with("HTTP/1.1 200").then(|| body.to_string()))
+    let mut lines = head.lines();
+    let mut status = lines.next()?.split_whitespace();
+    if !matches!(status.next(), Some("HTTP/1.0" | "HTTP/1.1")) || status.next() != Some("200") { return None; }
+    let mut length = None;
+    for line in lines {
+        let (name, value) = line.split_once(':')?;
+        if name.eq_ignore_ascii_case("content-length") {
+            let parsed: usize = value.trim().parse().ok()?;
+            if length.is_some_and(|previous| previous != parsed) { return None; }
+            length = Some(parsed);
+        }
+    }
+    if length.is_some_and(|expected| expected != body.len()) { return None; }
+    Some(body)
 }
 
 pub fn list_ollama_models(url: &str) -> Option<Vec<String>> {
@@ -275,6 +405,72 @@ pub fn detect_claude_local(claude: Option<&PathBuf>, ollama_url: &str) -> Provid
 mod tests {
     use super::*;
 
+    // The test binary acts as a deterministic local CLI; ordinary suite runs do nothing here.
+    #[test]
+    fn provider_probe_fixture() {
+        use std::io::Write;
+        match std::env::var("FORGE_PROBE_FIXTURE").as_deref() {
+            Ok("large") => { std::io::stdout().write_all(&vec![b'x'; 200_000]).unwrap(); }
+            Ok("oversized") => { let _ = std::io::stdout().write_all(&vec![b'x'; 1_100_000]); std::thread::sleep(Duration::from_secs(8)); }
+            Ok("hold") => {
+                let mut cmd = Command::new(std::env::current_exe().unwrap());
+                cmd.args(["--exact", "providers::tests::provider_probe_fixture", "--nocapture"]).env("FORGE_PROBE_FIXTURE", "sleep");
+                #[cfg(windows)]
+                { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0800_0000); }
+                cmd.spawn().unwrap();
+            }
+            Ok("sleep") => {
+                if let Some(marker) = std::env::var_os("FORGE_PROBE_MARKER") {
+                    std::thread::sleep(Duration::from_secs(1));
+                    let _ = std::fs::write(marker, "survived");
+                } else { std::thread::sleep(Duration::from_secs(3)); }
+            }
+            _ => {}
+        }
+    }
+
+    fn fixture_command(mode: &str) -> Command {
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", "providers::tests::provider_probe_fixture", "--nocapture"]).env("FORGE_PROBE_FIXTURE", mode);
+        cmd
+    }
+
+    #[test]
+    fn provider_probe_drains_large_output_and_respects_inherited_pipe_timeout() {
+        let (ok, output) = run_timeout_command(fixture_command("large"), Duration::from_secs(10)).unwrap();
+        assert!(ok && output.contains(&"x".repeat(200_000)));
+        let start = Instant::now();
+        assert!(run_timeout_command(fixture_command("hold"), Duration::from_millis(400)).is_none());
+        assert!(start.elapsed() < Duration::from_secs(2), "an inherited pipe must not defeat the deadline");
+        let start = Instant::now();
+        assert!(run_timeout_command(fixture_command("oversized"), Duration::from_secs(10)).is_none());
+        assert!(start.elapsed() < Duration::from_secs(5), "oversized output should be rejected promptly");
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn timed_out_provider_probe_terminates_its_descendant() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let mut cmd = fixture_command("hold");
+        cmd.env("FORGE_PROBE_MARKER", &marker);
+        assert!(run_timeout_command(cmd, Duration::from_millis(400)).is_none());
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "the timed-out probe's descendant must not survive its job");
+    }
+
+    #[test]
+    fn separately_installed_sdk_metadata_is_version_pinned() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("sdk.mjs"), "throw new Error('must never execute during detection')").unwrap();
+        std::fs::write(d.path().join("package.json"), json!({"name": "@anthropic-ai/claude-agent-sdk", "version": CLAUDE_SDK_VERSION}).to_string()).unwrap();
+        assert!(valid_claude_sdk(d.path()));
+        std::fs::write(d.path().join("package.json"), json!({"name": "@anthropic-ai/claude-agent-sdk", "version": "0.0.1"}).to_string()).unwrap();
+        assert!(!valid_claude_sdk(d.path()));
+        let package: Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../packages/engine/package.json"))).unwrap();
+        assert_eq!(package["devDependencies"]["@anthropic-ai/claude-agent-sdk"], CLAUDE_SDK_VERSION);
+    }
+
     #[test]
     fn codex_not_logged_in_is_not_signed_in() {
         assert!(codex_signed_in(true, "logged in using chatgpt"));
@@ -311,6 +507,48 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_or_invalid_http_responses_are_not_model_lists() {
+        assert_eq!(http_response_body("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"), Some("{}"));
+        for response in [
+            "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{}",
+            "HTTP/1.1 2000 Wrong\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n{}",
+        ] { assert!(http_response_body(response).is_none(), "{response:?}"); }
+    }
+
+    #[test]
+    fn loopback_discovery_limits_response_size_and_total_time() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 512];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(&vec![b'x'; 1024 * 1024 + 1]);
+        });
+        assert!(http_get_loopback(&format!("http://127.0.0.1:{port}"), "/", 2).is_none());
+        server.join().unwrap();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 512];
+            let _ = stream.read(&mut request);
+            for _ in 0..8 {
+                if stream.write_all(b"x").is_err() { break; }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        let start = Instant::now();
+        assert!(http_get_loopback(&format!("http://127.0.0.1:{port}"), "/", 1).is_none());
+        assert!(start.elapsed() < Duration::from_millis(1500), "a trickle must not extend the deadline");
+        server.join().unwrap();
+    }
+
+    #[test]
     fn model_discovery_parses_a_server_response() {
         use std::io::{Read, Write};
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -331,7 +569,7 @@ mod tests {
             s.write_all(resp.as_bytes()).unwrap();
             let _ = s.shutdown(std::net::Shutdown::Write);
         });
-        let names = list_ollama_models(&format!("http://127.0.0.1:{port}")).unwrap();
+        let names = list_ollama_models(&format!("http://localhost:{port}")).unwrap();
         assert_eq!(names, vec!["forge-qwen3.5-9b-32k:latest", "gemma3:12b", "qwen3:8b"], "embedding model hidden, forge tags first");
     }
 }

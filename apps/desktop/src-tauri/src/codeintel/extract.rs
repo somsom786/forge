@@ -82,6 +82,19 @@ impl<'a> Walker<'a> {
     }
 
     fn push(&mut self, n: Node, sig_node: Node, name: String, kind: &'static str, container: Option<&str>) {
+        let mut identifiers = std::collections::BTreeSet::new();
+        let mut stack = vec![sig_node];
+        let mut visited = 0;
+        while let Some(node) = stack.pop() {
+            visited += 1;
+            if visited > 4096 || identifiers.len() >= 128 { break; }
+            if matches!(node.kind(), "identifier" | "field_identifier" | "property_identifier" | "type_identifier" | "shorthand_property_identifier") {
+                let text = self.text(node);
+                if text != name && (3..=120).contains(&text.len()) { identifiers.insert(text.to_lowercase()); }
+            } else if !matches!(node.kind(), "string" | "string_literal" | "string_content" | "comment" | "line_comment" | "block_comment") {
+                stack.extend(children(node).into_iter().rev());
+            }
+        }
         self.out.push(Symbol {
             name,
             kind,
@@ -90,6 +103,7 @@ impl<'a> Walker<'a> {
             end_line: n.end_position().row as u32 + 1,
             signature: self.signature(sig_node),
             container: container.map(str::to_string),
+            syntactic_identifiers: identifiers.into_iter().collect(),
         });
     }
 
