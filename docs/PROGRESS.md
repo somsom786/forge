@@ -1,7 +1,10 @@
 # FORGE — Progress
 
-## Continuation, 2026-10-31
+## Continuation, 2026-11-01
 
+- Check registration now re-reads mission state under the registry lock and refuses terminal or unknown states. Windows tests passed for a deliberately stale nonterminal snapshot and an already-reserved mission; Linux CI pending.
+
+## Continuation, 2026-10-31
 - Turn completion now takes the same lifecycle lock as permission decisions, preventing a grant from racing with completion. Eleven Windows approval tests passed, including a synthetic completion-ordering fixture; Linux CI pending.
 - Live approvals now use an in-memory monotonic deadline in addition to the bound wall-clock expiry, preventing a backward wall-clock change from extending an active deadline. Expired and withdrawn deadline entries are pruned. Windows tests covered both initial decisions and reuse with an elapsed monotonic deadline while the wall deadline remained future; four scripted ACP tests and one real Claude Code test against a scripted local server passed. Actual suspend/resume and Linux CI remain untested.
 - Reproduced approval during a stopping session; stop now serializes with permission decisions, and both late requests and approvals are refused after stopping begins. Nine Windows scripted approval tests passed. Linux CI and live-provider behavior remain pending.

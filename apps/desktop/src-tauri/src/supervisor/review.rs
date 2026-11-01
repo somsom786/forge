@@ -140,6 +140,25 @@ impl Core {
         })
     }
 
+    /// Claim a check only while the current mission state and registry permit it.
+    pub(super) fn claim_check_slot(&self, mission_id: &str, cancel: Arc<AtomicBool>) -> Result<()> {
+        // This lock order is shared with mission operations and storage cleanup.
+        let reg = self.reg();
+        if reg.reserved.contains(mission_id) || reg.sessions.values().any(|h| h.mission_id == mission_id) {
+            return Err(ForgeError::InvalidState("another operation owns this mission right now (agent, start, merge or discard); try again when it finishes".into()));
+        }
+        let state = self.store.get_mission(mission_id)?.state;
+        if MissionState::parse(&state).is_none_or(MissionState::is_terminal) {
+            return Err(ForgeError::InvalidState("this mission is finished or has an unknown state".into()));
+        }
+        let mut checks = lock(&self.checks);
+        if checks.contains_key(mission_id) {
+            return Err(ForgeError::InvalidState("a check is already running on this mission".into()));
+        }
+        checks.insert(mission_id.to_string(), cancel);
+        Ok(())
+    }
+
     /// Start a check in the background; the result arrives as a `Verification` event.
     pub fn start_check(self: &Arc<Self>, mission_id: &str, check_id: &str) -> Result<VerificationRun> {
         if self.mission_busy(mission_id) {
@@ -156,19 +175,8 @@ impl Core {
         crate::execution::require(backend)?;
 
         let cancel = Arc::new(AtomicBool::new(false));
-        {
-            // Claim the mission for this check in the same critical section that proves nothing else owns it, so a
-            // start/merge/discard cannot slip in between the test and the registration (lock order: registry, then checks).
-            let reg = self.reg();
-            if reg.reserved.contains(mission_id) || reg.sessions.values().any(|h| h.mission_id == mission_id) {
-                return Err(ForgeError::InvalidState("another operation owns this mission right now (agent, start, merge or discard); try again when it finishes".into()));
-            }
-            let mut checks = lock(&self.checks);
-            if checks.contains_key(mission_id) {
-                return Err(ForgeError::InvalidState("a check is already running on this mission".into()));
-            }
-            checks.insert(mission_id.to_string(), cancel.clone());
-        }
+        // Re-read state under the reservation lock: the earlier snapshot can become terminal before this point.
+        self.claim_check_slot(mission_id, cancel.clone())?;
         let started = (|| -> Result<VerificationRun> {
             let pre = git::fingerprint(&wt, &base)?;
             let run = VerificationRun {

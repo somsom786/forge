@@ -232,6 +232,19 @@ fn a_check_cannot_start_while_another_operation_owns_the_mission() {
 }
 
 #[test]
+fn a_stale_nonterminal_snapshot_cannot_claim_a_check_after_cancellation() {
+    let f = fixture();
+    let m = new_mission(&f, "cancel before check registration", PermissionProfile::Default);
+    let snapshot = f.core.store.get_mission(&m.id).unwrap();
+    assert!(!MissionState::parse(&snapshot.state).unwrap().is_terminal());
+    f.core.store.transition(&m.id, MissionState::Cancelled, "test cancellation").unwrap();
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let error = f.core.claim_check_slot(&m.id, cancel).unwrap_err().to_string();
+    assert!(error.contains("finished"), "{error}");
+    assert!(!lock(&f.core.checks).contains_key(&m.id));
+}
+
+#[test]
 fn a_hostile_git_hook_never_runs_during_review_or_merge() {
     let f = fixture();
     let marker = f.repo.path().join("hook-ran.txt");
