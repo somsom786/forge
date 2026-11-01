@@ -189,16 +189,20 @@ fn a_running_experiment_cannot_be_started_twice_and_a_crash_is_recovered() {
     let running = f.core.store.exp_begin_attempt(&e.id, &serde_json::json!({})).unwrap();
     let err = f.core.experiment_run(&e.id).unwrap_err();
     assert!(err.to_string().contains("already running"), "{err}");
-    let wt = f.core.cfg.home.join("experiments").join(&e.id).join(running.attempt.to_string()).join("v");
+    let variant = f.core.store.exp_variants(&e.id).unwrap().remove(0);
+    let wt = f.core.cfg.home.join("experiments").join(&e.id).join(running.attempt.to_string()).join(&variant.id);
     std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
     git::run(r, &["worktree", "add", "--detach", &wt.to_string_lossy(), "fast"]).unwrap();
-    assert_eq!(worktree_count(r), 2);
+    let unrelated = wt.parent().unwrap().join("unrelated");
+    git::run(r, &["worktree", "add", "--detach", &unrelated.to_string_lossy(), "fast"]).unwrap();
+    assert_eq!(worktree_count(r), 3);
 
     f.core.recover().unwrap();
     let after = f.core.store.exp_get(&e.id).unwrap();
     assert_eq!(after.state, "interrupted");
     assert!(after.last_error.unwrap().contains("stopped"));
-    assert_eq!(worktree_count(r), 1, "the leftover worktree is removed");
+    assert_eq!(worktree_count(r), 2, "only the recorded variant worktree is removed");
+    assert!(unrelated.join("bench.js").exists(), "unrelated worktree is preserved");
     // It can be run again afterwards.
     assert_eq!(f.core.experiment_run(&e.id).unwrap().experiment.state, "completed");
 }

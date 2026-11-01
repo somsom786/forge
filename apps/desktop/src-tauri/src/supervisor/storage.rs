@@ -134,7 +134,7 @@ fn linked(m: &std::fs::Metadata) -> bool {
 }
 
 /// Check every ancestor below the owned data root. Never traverse links/junctions, even ones pointing back inside it.
-fn owned_artifact(home: &Path, path: &Path) -> Result<()> {
+pub(super) fn owned_artifact(home: &Path, path: &Path) -> Result<()> {
     let rel = path.strip_prefix(home).map_err(|_| ForgeError::PathRejected("artifact outside FORGE data".into()))?;
     let mut p = home.to_path_buf();
     for component in rel.components() {

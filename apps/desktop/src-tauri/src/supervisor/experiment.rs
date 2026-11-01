@@ -162,11 +162,10 @@ impl Core {
         let mut worktrees: Vec<PathBuf> = vec![];
         let outcome = self.run_attempt(&e, &root, &dir, &cancel, &mut worktrees, backend);
         for wt in &worktrees {
-            if let Err(err) = git::worktree_remove(&root, wt, true) {
+            if let Err(err) = self.remove_experiment_worktree(&root, wt) {
                 self.notice("warn", format!("could not remove the experiment worktree {}: {err}", wt.display()));
             }
         }
-        let _ = git::run(&root, &["worktree", "prune"]);
         lock(&self.experiments).remove(id);
         let finished = match outcome {
             Ok(report) if cancel.load(Ordering::SeqCst) => self.store.exp_finish_attempt(id, "cancelled", Some(&report), Some("cancelled by the user")),
@@ -293,7 +292,13 @@ impl Core {
         Ok(experiment::report(&e.metric, &observed))
     }
 
-    /// After a restart: an experiment left `running` is marked interrupted (its recorded runs stay) and its worktrees removed.
+    fn remove_experiment_worktree(&self, root: &Path, wt: &Path) -> Result<()> {
+        super::storage::owned_artifact(&self.cfg.home, wt)?;
+        git::verify_worktree(root, wt, None)?;
+        git::worktree_remove(root, wt, true)
+    }
+
+    /// After a restart, mark interrupted attempts and remove only recorded variant worktrees.
     pub(super) fn recover_experiments(&self) {
         let Ok(running) = self.store.exp_running() else { return };
         for e in running {
@@ -301,12 +306,23 @@ impl Core {
             if let Ok(p) = self.store.get_project(&e.project_id) {
                 let root = PathBuf::from(&p.root_path);
                 let dir = self.experiments_dir(&e.id).join(e.attempt.to_string());
-                if let Ok(entries) = std::fs::read_dir(&dir) {
-                    for wt in entries.flatten().map(|d| d.path()).filter(|p| p.join(".git").is_file()) {
-                        let _ = git::worktree_remove(&root, &wt, true);
+                if let Ok(variants) = self.store.exp_variants(&e.id) {
+                    for variant in variants {
+                        if variant.id.is_empty() || !variant.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                            self.notice("warn", format!("invalid experiment variant id {}; cleanup requires inspection", variant.id));
+                            continue;
+                        }
+                        let wt = dir.join(&variant.id);
+                        let result = if std::fs::symlink_metadata(&wt).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+                            git::worktree_remove(&root, &wt, true)
+                        } else {
+                            self.remove_experiment_worktree(&root, &wt)
+                        };
+                        if let Err(err) = result {
+                            self.notice("warn", format!("could not remove recovered experiment worktree {}: {err}", wt.display()));
+                        }
                     }
                 }
-                let _ = git::run(&root, &["worktree", "prune"]);
             }
             self.store.audit("system", "recovery.experiment", Some(&e.id), &json!({"attempt": e.attempt}));
         }

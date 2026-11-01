@@ -7,6 +7,8 @@ the commit log, not here.
 
 ## Release blockers
 
+Missing worktree directories that remain registered with Git require manual inspection. FORGE deliberately preserves the registration rather than pruning other worktrees or guessing ownership. Experiment cleanup refuses linked paths and verifies Git identity, but concurrent path replacement remains a filesystem race.
+
 Provider detection has a bounded response deadline and output limit. On Windows its CLI probes start suspended in a kill-on-close Job Object; a timed-out descendant fixture was terminated. Unix probes do not yet contain their descendants: a descendant retaining a pipe can leave a reader thread waiting until it exits, and repeated malicious probes could accumulate threads. Treat installed provider executables as trusted; the Windows Job Object provides cleanup, not isolation.
 
 | # | Risk | Kind | Where | What would close it |

@@ -1401,7 +1401,7 @@ impl Core {
     /// branch, under FORGE's own worktrees folder, and not a link to somewhere else (another mission's worktree, user data).
     pub(crate) fn removable_worktree(&self, root: &Path, wt: &Path, branch: Option<&str>) -> Result<()> {
         if !wt.exists() && std::fs::symlink_metadata(wt).is_err() {
-            return Ok(()); // already gone; git worktree prune handles the registration
+            return Ok(()); // the caller separately checks whether Git still has a registration
         }
         let real = self.inside_worktrees_folder(wt)?;
         git::verify_worktree(root, &real, branch)
@@ -1452,8 +1452,7 @@ impl Core {
             }
             let real = self.inside_worktrees_folder(wt)?;
             std::fs::remove_dir_all(&real).map_err(|e| ForgeError::Other(format!("could not finish removing {}: {e}. Close any program using files in it and try again.", real.display())))?;
-            let _ = git::run(root, &["worktree", "prune"]);
-            return Ok(());
+            return git::worktree_remove(root, wt, confirm_loss);
         }
         self.removable_worktree(root, wt, branch)?;
         Self::ensure_not_in_use(wt)?;

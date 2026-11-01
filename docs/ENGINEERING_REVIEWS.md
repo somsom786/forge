@@ -1,5 +1,9 @@
 # FORGE — Engineering Reviews
 
+## Worktree cleanup review (2026-11-01)
+
+A disposable Windows repository reproduced repository-wide `git worktree prune` deleting an unrelated missing worktree registration. Cleanup no longer invokes prune: absent registered paths fail closed, and experiment recovery limits removal to recorded variant paths after link and repository checks. Windows regression and experiment tests passed. Filesystem path-swap races and manual repair of missing registrations remain limitations.
+
 ## Continuation: verification evidence and sandbox mounts (2026-10-31)
 
 - Confirmed from the check runner and regression fixtures: an uncreated, truncated, failed or still-open scanner capture could previously be evaluated as complete; valid JSON prefixes with trailing output and malformed nested fields could be accepted. Capture now fails closed and freezes, and report parsing rejects these shapes. Windows targeted tests and full Linux/Windows CI at `4c7d5c1` passed, including real Gitleaks and OSV-Scanner checks on Linux. Later Playwright schema checks have targeted Windows tests and await full CI.

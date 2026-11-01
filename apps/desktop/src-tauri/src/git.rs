@@ -341,7 +341,23 @@ pub fn verify_worktree(repo: &Path, worktree: &Path, expected_branch: Option<&st
 /// Remove a worktree. Refuses when there is uncommitted work unless `force`.
 pub fn worktree_remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
     if !path.exists() {
-        let _ = run(repo, &["worktree", "prune"]);
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => return Err(ForgeError::PathRejected(format!("{} is a link, not a missing worktree", path.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(e.into()),
+        }
+        if !path.is_absolute() { return Err(ForgeError::PathRejected("missing worktree path must be absolute".into())); }
+        // A missing directory cannot prove ownership. Do not run repository-wide prune or remove a registration by guess.
+        let out = run_raw(repo, &["worktree", "list", "--porcelain", "-z"])?;
+        if !out.status.success() { return Err(ForgeError::Git(format!("could not inspect worktree registrations: {}", String::from_utf8_lossy(&out.stderr).trim()))); }
+        let text = std::str::from_utf8(&out.stdout).map_err(|_| ForgeError::Git("worktree registrations contain non-UTF-8 paths; inspect them manually".into()))?;
+        let registered = text.split('\0').filter_map(|s| s.strip_prefix("worktree ")).any(|p| {
+            let other = Path::new(p);
+            crate::paths::is_within(path, other) && crate::paths::is_within(other, path)
+        });
+        if registered {
+            return Err(ForgeError::InvalidState(format!("{} is missing but still registered with Git; inspect that specific registration before removing it", path.display())));
+        }
         return Ok(());
     }
     if !force {
@@ -627,6 +643,26 @@ u UU N... 100644 100644 100644 100644 a b c conflicted.rs\0\
         worktree_remove(repo.path(), &wt, true).unwrap();
         assert!(!wt.exists());
         delete_branch(repo.path(), "forge/m1", true).unwrap();
+    }
+
+    #[test]
+    fn removing_a_missing_worktree_does_not_prune_an_unrelated_registration() {
+        let repo = init_repo();
+        let parent = tempfile::tempdir().unwrap();
+        let external = parent.path().join("external");
+        let moved = parent.path().join("external-moved");
+        let base = head_commit(repo.path()).unwrap();
+        worktree_add(repo.path(), &external, "forge/unrelated-fixture", &base).unwrap();
+        run(repo.path(), &["config", "gc.worktreePruneExpire", "now"]).unwrap();
+        assert!(external.starts_with(parent.path()) && moved.starts_with(parent.path()));
+        std::fs::rename(&external, &moved).unwrap();
+        assert!(run(repo.path(), &["worktree", "list", "--porcelain"]).unwrap().contains("forge/unrelated-fixture"));
+        worktree_remove(repo.path(), &parent.path().join("missing-own"), false).unwrap();
+        assert!(run(repo.path(), &["worktree", "list", "--porcelain"]).unwrap().contains("forge/unrelated-fixture"), "unrelated worktree metadata was pruned");
+        assert!(moved.join("README.md").exists(), "the fixture's worktree files remain intact");
+        let error = worktree_remove(repo.path(), &external, false).unwrap_err().to_string();
+        assert!(error.contains("still registered"), "{error}");
+        assert!(run(repo.path(), &["worktree", "list", "--porcelain"]).unwrap().contains("forge/unrelated-fixture"));
     }
 
     #[test]

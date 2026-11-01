@@ -1,5 +1,6 @@
 # Validation matrix
 
+2026-11-01: PASS — Windows disposable-Git regression for unrelated missing registrations (1 test); PASS — Windows experiment suite (9 tests), including interrupted recovery preserving an unrelated worktree. The registration regression failed before the fix. Linux CI pending for these changes; concurrent filesystem path swaps were not tested.
 2026-11-01: PASS — Windows check-registration regressions, 2 tests: a stale pre-cancellation snapshot is refused at slot claim, and a reserved mission still blocks a check. Linux CI pending; the stale snapshot was simulated deterministically rather than by timing a race.
 2026-11-01: PASS — full CI `41242407430` at `6b17339`: Linux Rust 480 passed, 6 ignored; Windows Rust 463 passed, 6 ignored; Windows scripts and unsigned installer build, 180-second launch, uninstall and artifact upload passed. Linux executed the monotonic-deadline and delayed-reuse regressions. Later turn-completion serialization requires its own CI run. The informational OSV scan still reports findings documented below.
 2026-10-31: PASS — Windows approval suite, 11 tests, including a synthetic turn-completion ordering fixture. Linux CI pending.
